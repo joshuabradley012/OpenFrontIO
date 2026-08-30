@@ -190,13 +190,21 @@ export class PlaybookBotExecution implements Execution {
     }
     this.prevIncoming = inc;
   }
+  // #3 (`utility`): one `troops` rule (Military.troopsRule) replaces counter / expand / tribes / wars
   private rules: { name: string; every: number; run: () => void }[] = [
     { name: "split", every: 200, run: () => this.military.watchSplit() },
-    { name: "counter", every: 10, run: () => this.military.counterAttack() },
-    { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
-    { name: "expand", every: 10, run: () => this.military.expand() },
-    { name: "tribes", every: 10, run: () => this.military.harvestBots() },
-    { name: "wars", every: 10, run: () => this.military.fight() },
+    ...(this.p.utility
+      ? [
+          { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
+          { name: "troops", every: 10, run: () => this.military.troopsRule() },
+        ]
+      : [
+          { name: "counter", every: 10, run: () => this.military.counterAttack() },
+          { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
+          { name: "expand", every: 10, run: () => this.military.expand() },
+          { name: "tribes", every: 10, run: () => this.military.harvestBots() },
+          { name: "wars", every: 10, run: () => this.military.fight() },
+        ]),
     { name: "alliances", every: 300, run: () => { this.diplomacy.requestAlliances(); this.diplomacy.manageExpiries(); this.diplomacy.manageEmbargoes(); } },
     { name: "early boat", every: 20, run: () => { if (!this.boatSent && this.sit.tick >= this.p.boatAtTick) this.boatSent = this.military.earlyBoat() || this.sit.tick > this.p.boatAtTick + 600; } },
     { name: "tribe boats", every: 100, run: () => { if (this.sit.tick >= 300) this.military.huntBotsByBoat(); } },

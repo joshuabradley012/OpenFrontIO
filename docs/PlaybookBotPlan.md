@@ -918,3 +918,53 @@ stopping stays off (item 6 above); the fit is a proxy metric and a leaf
 evaluator, not a graduation criterion. Mixed-length dirs must be filtered
 (`--min-length`): a 10-minute game's FINAL is its 10-minute row and inflates
 every early ρ.
+
+### #3 — One currency for troops (`utility`)
+
+**What the flag does.** With `utility` on, one `troops` rule (every 10 ticks,
+`Military.troopsRule`) replaces counter / expand / tribes / wars in the rule
+table. Counters go first (rank 0, `counterAttack` unchanged), then the
+follow-up clicks of running tribe waves (commitments), then every option the
+chain could send this pass becomes an `Option {kind, target, troops, rank,
+weight, why}` (`Utility.ts`): the expand click (`expandOption`), each tribe's
+first click (`tribeOptions`), and each war candidate the scorer accepted
+(`warPick().alts` — the old `fight()` split into `warPick`, the decision, and
+`actWar`, the send; every bonus lambda — trust, threat map, relation, shadow,
+drained, plannedTarget, sticky target — still lives in `warPick`'s scorer).
+The currency is **tiles per troop lost**: free land at 20 a tile (`mag/5`),
+tribes and wars from `estimateAttack` over the phase horizon (2:30 in the
+opening, 5:00 later, the rest of the clock in the endgame; cached 50 ticks),
+never under a tenth of the wave. Considerations (Mark's compensated product):
+border threat for every kind (`ThreatMap.undefended` / troops, else the worst
+bsr), click size for tribes, and for wars troops/cap as a logistic around
+`fightAbove` (a midpoint, no longer a gate), the estimate's margin, trust,
+an alliance about to lapse elsewhere, the scorer's own score, and a ×1.5
+commitment for the running target. Ranks (Dill): 0 counter, 1 opportunity
+(collapsed / gap owner / MIRV threat / drained), 2 normal. Execution: rank,
+then weight, every option takes what `send()` allows — the reserve, the
+whole-or-nothing war, one war per pass, the tribe concurrency cap, hold mode
+and the sticky target all stay. `UTIL` lines (top 3) every 300 ticks. Fires
+when the first thing sent differs from what the chain would have sent first
+(the chain: expand if it can, else the cheapest affordable tribe, else the war).
+
+**What the numbers say** (`utility.test.ts` fixtures, the estimator against
+the real attack maths): a 1.67× tribe click takes its tiles at ~21 troops each
+and a 2× war wave at ~40, against free land's 20 — so while any free land
+remains the expand click keeps the top weight, tribes come next and wars last,
+i.e. the chain's order. That is the `botsAfterWild` A/B's finding restated in
+one currency. Where the flag changes decisions: an opportunity war (rank 1)
+goes before the expand click that used to starve it; wars at cap or with a
+good margin outweigh free land on a contested border; the tie-break inside a
+rank follows the estimate, not the table. Boats are not options yet (the
+brief's "when cheap"): `earlyBoat` / `huntBotsByBoat` / `seaExpansion` keep
+their own rules.
+
+**Tests.** `tests/playbook/utility.test.ts`: the curves and compensation on
+plain numbers; the ranking; a fixture with free land, a tribe and a war
+candidate (all three scored, executed in weight order, no fire when the order
+matches the chain); a counter still first; a whole-or-nothing war on a
+drained target no longer starved by a 60 % expand click (fires). Golden hash
+unchanged with the flag off.
+
+**A/B:** `CONFIGS='{"base":{},"x":{"utility":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
