@@ -74,10 +74,13 @@ export class Rivals {
   }
 
   // ---------------------------------------------------------------- events
-  /** An alliance with `p` ended. `broken` = ended before its expiry (they broke it; the bot never does). */
-  onAllianceEnded(p: Player, broken: boolean = this.wasBroken(p)): void {
+  /** An alliance with `p` ended. `broken` = ended before its expiry (they broke it; the bot never does). `planned` =
+   *  we let it lapse to attack them (Diplomacy.plannedTarget): a lapse of our choosing earns them no trust — the
+   *  +0.1 used to make the planned prey look trustworthy in the war scorer's trust bonus. */
+  onAllianceEnded(p: Player, planned = false, broken: boolean = this.wasBroken(p)): void {
     this.expiry.delete(p);
     if (broken) this.bump(p, -0.3, "broke the alliance early");
+    else if (planned) this.ctx.log(`t${this.ctx.mg.ticks()} trust ${p.name()} ${this.trust(p).toFixed(2)} unchanged: we let the alliance lapse`);
     else this.bump(p, +0.1, "alliance ran its course");
   }
   private wasBroken(p: Player): boolean {

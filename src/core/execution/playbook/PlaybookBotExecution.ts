@@ -134,7 +134,10 @@ export class PlaybookBotExecution implements Execution {
     // while a rival can still fire; remove the rivals; then push for the win.
     const diff = this.mg.config().gameConfig().difficulty;
     const denial = diff === Difficulty.Easy ? 0.75 : diff === Difficulty.Medium ? 0.65 : diff === Difficulty.Hard ? 0.55 : 0.5;
-    const threats = this.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot && !me.isOnSameTeam(p) && p.units(UnitType.MissileSilo).length > 0 && (p.gold() >= 20_000_000n || p.units(UnitType.MIRV).length > 0));
+    // a rival can fire once it has a silo and either the live MIRV price (25M + 15M per launch on the map, the gate
+    // NationMIRVBehavior.considerMIRV uses) or a MIRV already built
+    const mirvInfo = this.mg.config().unitInfo(UnitType.MIRV);
+    const threats = this.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot && !me.isOnSameTeam(p) && p.units(UnitType.MissileSilo).length > 0 && (p.gold() >= mirvInfo.cost(this.mg, p) || p.units(UnitType.MIRV).length > 0));
     let mode: "grow" | "hold" | "push" = "grow";
     if (this.p.finishRule && share >= denial - 0.03) mode = threats.length > 0 ? "hold" : "push";
     else if (this.p.finishRule && share >= 0.45 && threats.length === 0) mode = "push";
@@ -144,7 +147,13 @@ export class PlaybookBotExecution implements Execution {
     // C1 (`nationAware`): hold only for a nation whose own attack rules would let it hit us at expiry
     const nationHold = expiring.find((o) => o.type() === PlayerType.Nation && (this.p.nationAware ? this.q.rivals.couldAttackAtExpiry(o, troops).can : o.troops() > troops * 0.85)) ?? null;
     if (this.p.nationAware && t % 100 === 0) { const heur = expiring.find((o) => o.type() === PlayerType.Nation && o.troops() > troops * 0.85) ?? null; if (heur !== nationHold) this.ctx.fire("nationAware"); }
-    return { tick: t, threats, expiring, hold: nationHold, mode };
+    // `holdHumans`: a human ally stronger than us gets the same 45 s hold — a human can attack the moment it lapses too
+    let hold = nationHold;
+    if (this.p.holdHumans && hold === null) {
+      hold = expiring.find((o) => o.type() === PlayerType.Human && o.troops() > troops * 0.85) ?? null;
+      if (hold !== null && t - this.lastHoldFire >= 100) { this.lastHoldFire = t; this.ctx.fire("holdHumans"); }
+    }
+    return { tick: t, threats, expiring, hold, mode };
   }
   /** The one place troops leave home. Never below the reserve; returns what was actually sent (0 = nothing). */
   private send(targetID: string | null, n: number, why: string, min = 500, capFloor = 0): number {
@@ -176,7 +185,7 @@ export class PlaybookBotExecution implements Execution {
     for (const p of this.prevAllies) {
       if (allies.has(p) || !p.isAlive()) continue;
       this.diplomacy.onAllianceEnded(p);
-      this.q.rivals.onAllianceEnded(p);
+      this.q.rivals.onAllianceEnded(p, p === this.diplomacy.plannedTarget); // a lapse we chose says nothing about them
     }
     this.prevAllies = allies;
     const inc = new Set(this.sit.incoming.map((a) => a.attacker().id()));
@@ -190,10 +199,13 @@ export class PlaybookBotExecution implements Execution {
     { name: "split", every: 200, run: () => this.military.watchSplit() },
     { name: "counter", every: 10, run: () => this.military.counterAttack() },
     { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
-    { name: "expand", every: 10, run: () => this.military.expand() },
+    { name: "expand", every: this.p.expandEvery, run: () => this.military.expand() },
     { name: "tribes", every: 10, run: () => this.military.harvestBots() },
     { name: "wars", every: 10, run: () => this.military.fight() },
-    { name: "alliances", every: 300, run: () => { this.diplomacy.requestAlliances(); this.diplomacy.manageExpiries(); this.diplomacy.manageEmbargoes(); } },
+    { name: "alliances", every: this.p.allianceEvery, run: () => { this.diplomacy.requestAlliances(); this.diplomacy.manageEmbargoes(); } },
+    // every alliance inside its 300-tick renewal window is seen six times, so a gift or renewal that could not go
+    // through on one pass (donation cooldown, no room for the gift) is retried before the expiry
+    { name: "expiries", every: 50, run: () => this.diplomacy.manageExpiries() },
     { name: "early boat", every: 20, run: () => { if (!this.boatSent && this.sit.tick >= this.p.boatAtTick) this.boatSent = this.military.earlyBoat() || this.sit.tick > this.p.boatAtTick + 600; } },
     { name: "tribe boats", every: 100, run: () => { if (this.sit.tick >= 300) this.military.huntBotsByBoat(); } },
     { name: "sea expansion", every: 100, run: () => { if (this.sit.tick >= 600) this.military.seaExpansion(); } },

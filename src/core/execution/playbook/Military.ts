@@ -13,7 +13,7 @@ import { SituationQueries } from "./Situation";
 export class Military {
   private currentTarget_: Player | null = null;
   private waves = new Map<Player, { want: number; sent: number; last: number }>();
-  private sentAt = new Map<Player, number>();
+  private sentAt = new Map<Player, { tick: number; contested: boolean }>();
   private blacklist = new Map<Player, number>();
   public bombs = 0;
   private lastBombTick = -1e9;
@@ -45,18 +45,33 @@ export class Military {
   }
 
   // ---------------------------------------------------------------- reachability
-  /** Record an attack we just sent; if it has vanished 2 ticks later the target wasn't really reachable. */
-  noteSent(target: Player): void { this.sentAt.set(target, this.ctx.mg.ticks()); }
+  /** Record a first wave we just sent (and whether the target had a wave on us it could cancel against). */
+  noteSent(target: Player): void { this.sentAt.set(target, { tick: this.ctx.mg.ticks(), contested: this.ctx.me.incomingAttacks().some((a) => a.attacker() === target) }); }
+  /** A wave gone 2–12 ticks after it left means the engine dropped it. AttackExecution folds a second land attack
+   *  into the running one (so an attack always remains), cancels a wave troop-for-troop against the target's own
+   *  wave on us, and retreats one whose target has no tile beside ours any more (we won, it died, it became a
+   *  friend). Only a wave that died with the target still on our border and no wave of theirs to cancel against
+   *  marks the target unreachable for 600 ticks; the old check blacklisted every vanished wave, a won fight and a
+   *  cancelled counter included. */
   reachable(target: Player): boolean {
+    const t = this.ctx.mg.ticks(), me = this.ctx.me;
     const bl = this.blacklist.get(target);
-    if (bl !== undefined && this.ctx.mg.ticks() < bl) return false;
-    const t0 = this.sentAt.get(target);
-    if (t0 !== undefined && this.ctx.mg.ticks() - t0 >= 2 && this.ctx.mg.ticks() - t0 < 12 && !this.q.outgoingTo(target)) {
-      this.blacklist.set(target, this.ctx.mg.ticks() + 600);
+    if (bl !== undefined && t < bl) return false;
+    const s = this.sentAt.get(target);
+    if (s !== undefined && t - s.tick >= 2 && t - s.tick < 12 && !this.q.outgoingTo(target)) {
       this.sentAt.delete(target);
+      if (s.contested || !target.isAlive() || me.isFriendly(target) || !this.sharesBorder(target)) return true;
+      this.blacklist.set(target, t + 600);
+      this.ctx.log(`t${t} ${target.name()} unreachable: the wave vanished with it still on our border`);
       return false;
     }
     return true;
+  }
+  /** Any tile of `p` beside one of ours (walks p's border; only called when a wave has vanished). */
+  private sharesBorder(p: Player): boolean {
+    const mg = this.ctx.mg, mine = this.ctx.me.smallID();
+    for (const t of p.borderTiles()) for (const n of mg.neighbors(t)) if (mg.ownerID(n) === mine) return true;
+    return false;
   }
 
   // ---------------------------------------------------------------- housekeeping
@@ -68,7 +83,7 @@ export class Military {
     const dead = (p: Player) => !p.isAlive();
     for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged]) for (const p of m.keys()) if (dead(p)) m.delete(p);
     for (const [p, until] of this.blacklist) if (t >= until) this.blacklist.delete(p);
-    for (const [p, at] of this.sentAt) if (t - at >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
+    for (const [p, s] of this.sentAt) if (t - s.tick >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
     for (const [p, at] of this.lastCounter) if (t - at >= 300) this.lastCounter.delete(p);
     for (const [p, at] of this.boatedAt) if (t - at >= 900) this.boatedAt.delete(p);
     for (const [p, at] of this.pileInLogged) if (t - at >= 600) this.pileInLogged.delete(p);
@@ -139,6 +154,7 @@ export class Military {
   // ---------------------------------------------------------------- MIRV and the finish
   private lastMirvTick = -1e9;
   private lastWarTick = -1e9;
+  private strictFired = -1e9;
   private bombOutOfRange_ = 0;
   /** Playbook phase 6: a MIRV goes to (1) whoever has one in the air at us, (2) anyone over half the map,
    *  (3) from 25:00, the largest un-allied player above us when we are in the top three — launch first, then
@@ -162,11 +178,30 @@ export class Military {
     }
     if (!target) return;
     const center = calculateTerritoryCenter(this.ctx.mg, target);
-    if (center === null || me.canBuild(UnitType.MIRV, center) === false) return;
-    this.ctx.mg.addExecution(new MirvExecution(me, center));
+    if (center === null) return;
+    const tile = this.mirvTile(target, center);
+    if (tile === null) { this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} held: every tile of it sits under a SAM`); return; }
+    if (me.canBuild(UnitType.MIRV, tile) === false) return;
+    this.ctx.mg.addExecution(new MirvExecution(me, tile));
     this.lastMirvTick = this.ctx.mg.ticks();
     this.bombs++;
-    this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} ${target.numTilesOwned()}t (${why})`);
+    this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} ${target.numTilesOwned()}t (${why})${tile === center ? "" : " — aimed off-centre, the centre is under a SAM"}`);
+  }
+  /** The territory centre unless one of the target's SAMs covers it (Config.samRange(level) + 5, as maybeBomb): then
+   *  the uncovered tile of its territory nearest the centre (sampled from its border), or null if there is none. */
+  private mirvTile(target: Player, center: TileRef): TileRef | null {
+    const mg = this.ctx.mg;
+    const sams = target.units(UnitType.SAMLauncher);
+    const covered = (t: TileRef) => sams.some((s) => mg.euclideanDistSquared(s.tile(), t) <= (mg.config().samRange(s.level()) + 5) ** 2);
+    if (!covered(center)) return center;
+    const border = target.borderTiles(), step = Math.max(1, Math.floor(border.size / 120));
+    let best: TileRef | null = null, bestD = 1e18, i = 0;
+    for (const t of border) {
+      if ((i++ % step) !== 0 || covered(t)) continue;
+      const d = mg.euclideanDistSquared(t, center);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
   }
 
   // ---------------------------------------------------------------- territory integrity
@@ -350,8 +385,18 @@ export class Military {
     if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return; // a 1.67× push that keeps home healthy is always taken
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
-    const wars = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot && !this.counters.has(a.target() as Player)).length;
-    if (wars >= (this.ctx.mg.ticks() >= 15000 && atCapNow ? 2 : 1) && !opportunity) return;
+    const nonBot = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
+    const wars = nonBot.filter((a) => !this.counters.has(a.target() as Player)).length;
+    const limit = this.ctx.mg.ticks() >= 15000 && atCapNow ? 2 : 1;
+    if (wars >= limit && !opportunity) return;
+    // `strictOneWar`: counters occupy the second slot — one war plus counters, but no second war (opportunity wars
+    // included) while a counter runs. A counter on the current target is that war (the old count skipped it, so
+    // wars read 0 and another war could open beside it).
+    if (this.ctx.p.strictOneWar) {
+      const countersRunning = nonBot.some((a) => this.counters.has(a.target() as Player));
+      const warsStrict = wars + nonBot.filter((a) => this.counters.has(a.target() as Player) && a.target() === this.currentTarget_).length;
+      if (countersRunning && warsStrict >= 1) { if (this.ctx.mg.ticks() - this.strictFired >= 100) { this.strictFired = this.ctx.mg.ticks(); this.ctx.fire("strictOneWar"); } return; }
+    }
     const early = !atCapNow && !opportunity && (this.ctx.mg.ticks() < this.ctx.p.fightNotBeforeTick || me.unitsOwned(UnitType.City) < this.ctx.p.fightMinCities);
     let { rivals } = nb;
     // before the 5-minute mark only clear prey: a neighbour we can hit with 2.5× its whole army

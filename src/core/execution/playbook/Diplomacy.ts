@@ -59,14 +59,22 @@ export class Diplomacy {
     }
   }
 
+  /** What was already done for the alliance with each ally in its current renewal window (keyed by its expiry: a
+   *  renewed alliance starts over). Runs every 50 ticks inside the 300-tick window, so a gift the donation
+   *  cooldown or the ally's full cap refused on one pass is tried again on the next. */
+  private expiryState = new Map<Player, { expiresAt: number; gifted: boolean; extended: boolean }>();
   /** 30 s before an alliance ends: renew it unless the ally has become prey we can take, in which case let it lapse and queue the attack. */
   manageExpiries(): void {
     const me = this.ctx.me;
     const offset = this.ctx.mg.config().allianceExtensionPromptOffset();
+    for (const [p, st] of this.expiryState) if (!p.isAlive() || me.allianceWith(p)?.expiresAt() !== st.expiresAt) this.expiryState.delete(p);
     for (const al of me.alliances()) {
       const other = al.other(me);
       const left = al.expiresAt() - this.ctx.mg.ticks();
       if (left > offset || left < 0) continue;
+      if (this.plannedTarget_ === other) continue; // decided on an earlier pass: it lapses
+      let st = this.expiryState.get(other);
+      if (!st) { st = { expiresAt: al.expiresAt(), gifted: false, extended: false }; this.expiryState.set(other, st); }
       const { rivals, friends } = this.q.neighbours();
       const prey = (friends.includes(other) && other.troops() < me.troops() * 0.4 && me.troops() > this.q.cap() * this.ctx.p.fightAbove && rivals.length <= 1) || this.q.annexable(other) || (this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && other.troops() < me.troops() * 0.5 && other.numTilesOwned() < me.numTilesOwned());
       // A Hard nation renews only if we are as strong as it, a threat to it, or on friendly terms.
@@ -74,11 +82,12 @@ export class Diplomacy {
       // C1 (`nationAware`): "weaker side" = its own attack rules would let it hit us at expiry, not the 0.9× heuristic.
       const weakerSide = this.ctx.p.nationAware ? this.q.rivals.couldAttackAtExpiry(other, me.troops()).can : me.troops() < other.troops() * 0.9;
       if (this.ctx.p.nationAware && weakerSide !== me.troops() < other.troops() * 0.9) this.ctx.fire("nationAware");
-      if (!prey && other.type() === PlayerType.Nation && weakerSide && me.canDonateTroops(other)) {
+      if (!prey && !st.gifted && other.type() === PlayerType.Nation && weakerSide && me.canDonateTroops(other)) {
         const gift = Math.ceil(this.ctx.mg.config().maxTroops(other) / 7) + 1000;
         if (gift < me.troops() * 0.3 && gift <= this.ctx.mg.config().maxTroops(other) - other.troops()) {
           this.ctx.mg.addExecution(new DonateTroopsExecution(me, other.id(), gift));
           this.ctx.log(`t${this.ctx.mg.ticks()} gift ${Math.round(gift / 1000)}k troops to ${other.name()} before renewal`);
+          st.gifted = true;
         }
       }
       if (prey) {
@@ -86,7 +95,7 @@ export class Diplomacy {
         this.ctx.log(`t${this.ctx.mg.ticks()} let alliance with ${other.name()} lapse (${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`);
         continue;
       }
-      this.ctx.mg.addExecution(new AllianceExtensionExecution(me, other.id()));
+      if (!st.extended) { this.ctx.mg.addExecution(new AllianceExtensionExecution(me, other.id())); st.extended = true; }
     }
     if (this.plannedTarget_ && (me.isFriendly(this.plannedTarget_) === false && !this.plannedTarget_.isAlive())) this.plannedTarget_ = null;
   }
