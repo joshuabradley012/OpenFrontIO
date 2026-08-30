@@ -58,6 +58,12 @@ export interface PlaybookParams {
   estSpeedScale: number;
   simWars: boolean; // #4: fight() picks the war target and size with the calibrated estimator (smallest 1k-step wave that wins with a 20 % margin, bisection; a running wave on the target counts as part of it, the target's allies' pile-in (trustWars) as part of its army); off = the fightRatio scorer. Default off until the 30-game Medium A/B
   hystRetreats: boolean; // #4: manageRetreats judges a war every 100 ticks as 'continue' (estimate, 600-tick horizon) vs 'retreat now', continue must win by 0.1 + 0.2 × clamp(maxBsr − 1, 0, 2) and lose twice in a row before the wave comes home; a wave under retreatBelowRatio × the target's troops that no longer wins is lost outright; off = the literal 20 % / 70 % thresholds every 10 ticks. Default off until the 30-game Medium A/B
+  // Opportunity #2 (nation AI as a perfect-information opponent), one flag per edge; all default off until the 30-game Medium A/B
+  markTargets: boolean; // fight()/counterAttack mark the war target (TargetPlayerExecution, the human 'target' button) so allied nations' `assist` and their nuke targeting pile on; re-marked every targetCooldown while the war runs
+  wildernessAware: boolean; // a nation with unowned, fallout-free land on its border sends its surplus there and returns before looking at players (AiAttackBehavior.maybeAttack): nationCanAttack/nationWouldSend read false/0 for it, and the reserve halves while every unfriendly nation neighbour is wilderness-bound
+  drainedNations: boolean; // a nation under its reserve ratio (troops < 0.3 × max) is drained until it regrows to its trigger ratio: fight() takes it at 1.5× (affordable gate and score bonus), and the counter is never sized below the wave it cancels
+  retaliateAware: boolean; // nations retaliate only against their largest attacker: a target already under a bigger attack (or marked by one of our allies) is preferred and taken at 1.2× with a wave kept below the bigger one; absorbs the brief's `secondAttacker`
+  relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -107,4 +113,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   estSpeedScale: 1.0,
   simWars: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4); the uncalibrated version lost 7W-23L (C3)
   hystRetreats: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4)
+  markTargets: false, // default off until the 30-game Medium A/B
+  wildernessAware: false, // default off until the 30-game Medium A/B
+  drainedNations: false, // default off until the 30-game Medium A/B
+  retaliateAware: false, // default off until the 30-game Medium A/B
+  relationAware: false, // default off until the 30-game Medium A/B
 };

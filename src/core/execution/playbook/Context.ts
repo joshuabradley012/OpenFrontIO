@@ -19,3 +19,16 @@ export interface BotContext {
   /** A flagged branch changed a decision vs the flag being off; counts land in the lab's FINAL `fired=` field. */
   fire(flag: string): void;
 }
+
+/** `ctx.fire` rate-limited to one count per `every` ticks per site (ground rule 2: a flag that changes the same
+ *  decision every tick should not swamp the lab's liveness counter). */
+export class FireLimiter {
+  private at = new Map<string, number>();
+  constructor(private ctx: BotContext) {}
+  fire(flag: string, site: string, every = 100): void {
+    const t = this.ctx.mg.ticks(), k = `${flag}/${site}`;
+    if (t - (this.at.get(k) ?? -1e9) < every) return;
+    this.at.set(k, t);
+    this.ctx.fire(flag);
+  }
+}

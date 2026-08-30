@@ -1,23 +1,27 @@
 // Diplomacy: alliances (accept, request, renew or let lapse), embargoes, and the reaction to an ended alliance.
 
-import { Player, PlayerType } from "../../game/Game";
+import { Player, PlayerType, Relation } from "../../game/Game";
 import { AllianceExtensionExecution } from "../alliance/AllianceExtensionExecution";
 import { AllianceRequestExecution } from "../alliance/AllianceRequestExecution";
 import { DonateTroopsExecution } from "../DonateTroopExecution";
-import { BotContext } from "./Context";
+import { BotContext, FireLimiter } from "./Context";
 import { Economy } from "./Economy";
 import { Military } from "./Military";
 import { SituationQueries } from "./Situation";
 
 export class Diplomacy {
   private plannedTarget_: Player | null = null; // ally whose alliance we let lapse on purpose
+  private lim: FireLimiter;
+  private againstRulesLogged = new Map<Player, number>();
 
   constructor(
     private ctx: BotContext,
     private q: SituationQueries,
     private military: Military,
     private economy: Economy,
-  ) {}
+  ) {
+    this.lim = new FireLimiter(ctx);
+  }
 
   /** Ally whose alliance we let lapse on purpose (read by Military.fight / maybeBomb). */
   get plannedTarget(): Player | null {
@@ -43,8 +47,21 @@ export class Diplomacy {
     if (o.troops() < me.troops() * 0.5 && this.ctx.mg.ticks() >= 1200) return true;
     const all = [...this.q.neighbours().rivals, ...this.q.neighbours().friends].filter((p) => p.type() !== PlayerType.Bot);
     if (all.length < 2) return false;
-    const weakest = all.reduce((a, b) => (b.troops() < a.troops() ? b : a));
+    const weakest = this.preyPick(all);
     return o === weakest && o.troops() * 2 < me.troops() * this.ctx.p.fightMaxShare && o.numTilesOwned() <= me.numTilesOwned() * 1.5;
+  }
+  /** The weakest non-bot neighbour — with `relationAware`, among those within 1.15× of the weakest's troops, the nation
+   *  whose relation to us is highest: a lapsed ally (still Friendly / Neutral) drops to Distrustful on the first hit,
+   *  a never-allied nation at 0 goes Hostile (−70 on Medium) and hunts us at up to 3× its troops (`hated`). */
+  private preyPick(all: Player[]): Player {
+    const weakest = all.reduce((a, b) => (b.troops() < a.troops() ? b : a));
+    if (!this.ctx.p.relationAware) return weakest;
+    const me = this.ctx.me;
+    const rel = (p: Player) => (p.type() === PlayerType.Nation ? p.relation(me) : Relation.Hostile); // humans: no relation to prefer
+    let best = weakest;
+    for (const p of all) if (p.troops() <= weakest.troops() * 1.15 && (rel(p) > rel(best) || (rel(p) === rel(best) && p.troops() < best.troops()))) best = p;
+    if (best !== weakest) this.lim.fire("relationAware", "prey");
+    return best;
   }
 
   requestAlliances(): void {
@@ -55,6 +72,13 @@ export class Diplomacy {
       if (o === this.military.currentTarget || o === this.plannedTarget_) continue;
       if (this.isPrey(o) || this.q.annexable(o)) continue; // an ally can never be annexed
       if (!me.canSendAllianceRequest(o)) continue;
+      // `relationAware`: ask a nation only when its own decision rules would say yes (Rivals.wouldAcceptAlliance) —
+      // a refusal we asked for is not a signal, and the trust dock for it (Rivals.onRequestRefused) counted our spam
+      if (this.ctx.p.relationAware && !this.q.rivals.wouldAcceptAlliance(o)) {
+        this.lim.fire("relationAware", "request");
+        if (this.ctx.mg.ticks() - (this.againstRulesLogged.get(o) ?? -1e9) >= 1800) { this.againstRulesLogged.set(o, this.ctx.mg.ticks()); this.ctx.log(`t${this.ctx.mg.ticks()} no alliance request to ${o.name()}: its rules would refuse (relation ${Relation[o.relation(me)]}, ${o.alliances().length} alliances)`); }
+        continue;
+      }
       this.ctx.mg.addExecution(new AllianceRequestExecution(me, o.id()));
     }
   }
