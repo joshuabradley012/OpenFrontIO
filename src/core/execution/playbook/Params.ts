@@ -153,14 +153,14 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   retaliateAware: false, // default off until the 30-game Medium A/B
   relationAware: false, // default off until the 30-game Medium A/B
   buildSearch: false, // default off until the 30-game Medium A/B
-  takeFallout: false, // default off until the 30-game Medium A/B
+  takeFallout: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"takeFallout":false} vs {})ntil the 30-game Medium A/B
   steamrollCap: false,
   holdHumans: false,
   strictOneWar: false,
   boatsNearest: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"boatsNearest":false} vs {})ntil the 30-game Medium A/B
   finishByBoat: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"finishByBoat":false} vs {})ntil the 30-game Medium A/B
   multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
-  boatsWaterPath: false, // default off until the 30-game Medium A/B
+  boatsWaterPath: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"boatsWaterPath":false} vs {})ntil the 30-game Medium A/B
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B
   warYield: false, // default off until the 30-game Medium A/B

@@ -13,7 +13,7 @@ import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExe
 import { PlayerType, UnitType } from "../../src/core/game/Game";
 import { playbookSetup, Rect, RivalSpec } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, fightNotBeforeTick: 1e9, boatsNearest: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false }; // the 2026-08-30 defaults are on; the fixtures set each flag explicitly
+const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, fightNotBeforeTick: 1e9, boatsNearest: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, boatsWaterPath: false, takeFallout: false }; // the 2026-08-30 defaults are on; the fixtures set each flag explicitly
 const ME: Rect = [1120, 396, 1150, 445]; // Africa's Red Sea bank, coast at y 396–407
 const GULF: RivalSpec = { name: "Gulf", type: PlayerType.Bot, at: [1245, 356], tiles: [1232, 346, 1258, 366], troops: 4000 }; // behind the Arabian peninsula
 const MED: RivalSpec = { name: "Med", type: PlayerType.Bot, at: [1106, 290], tiles: [1096, 280, 1118, 300], troops: 4000 }; // the Mediterranean coast
