@@ -1,23 +1,141 @@
 {
-  "fightAbove": {"lo": 0.4, "hi": 0.95, "init": 0.7},
-  "fightMaxShare": {"lo": 0.3, "hi": 0.9, "init": 0.6},
-  "reserveShare": {"lo": 0.1, "hi": 0.5, "init": 0.3},
-  "capFullShare": {"lo": 0.3, "hi": 0.9, "init": 0.6},
-  "bombReserve": {"lo": 0, "hi": 1000000, "init": 250000, "int": true},
-
-  "threatReserveGain": {"lo": 0.5, "hi": 4.0, "init": 2},
-  "threatBusyWeight": {"lo": 0, "hi": 6, "init": 3},
-  "threatVulnWeight": {"lo": 0, "hi": 4, "init": 2},
-  "threatPreRatio": {"lo": 1.1, "hi": 3.0, "init": 1.5},
-
-  "buildCapGoldPerTroop": {"lo": 5, "hi": 40, "init": 20},
-  "buildHorizon": {"lo": 2000, "hi": 12000, "init": 6000, "int": true},
-
-  "retalRatio": {"lo": 1.0, "hi": 1.8, "init": 1.2},
-  "drainRatio": {"lo": 1.0, "hi": 2.0, "init": 1.5},
-  "drainBelow": {"lo": 0.15, "hi": 0.45, "init": 0.3},
-
-  "hystMargin": {"lo": 0.0, "hi": 0.3, "init": 0.1},
-  "hystSlope": {"lo": 0.0, "hi": 0.5, "init": 0.2},
-  "hystStrikes": {"lo": 1, "hi": 4, "init": 2, "int": true}
+  "fightAbove": {
+    "lo": 0.4,
+    "hi": 0.95,
+    "init": 0.7
+  },
+  "fightMaxShare": {
+    "lo": 0.3,
+    "hi": 0.9,
+    "init": 0.6
+  },
+  "reserveShare": {
+    "lo": 0.1,
+    "hi": 0.5,
+    "init": 0.3
+  },
+  "capFullShare": {
+    "lo": 0.3,
+    "hi": 0.9,
+    "init": 0.6
+  },
+  "bombReserve": {
+    "lo": 0,
+    "hi": 1000000,
+    "init": 250000,
+    "int": true
+  },
+  "threatReserveGain": {
+    "lo": 0.5,
+    "hi": 4.0,
+    "init": 2
+  },
+  "threatBusyWeight": {
+    "lo": 0,
+    "hi": 6,
+    "init": 3
+  },
+  "threatVulnWeight": {
+    "lo": 0,
+    "hi": 4,
+    "init": 2
+  },
+  "threatPreRatio": {
+    "lo": 1.1,
+    "hi": 3.0,
+    "init": 1.5
+  },
+  "buildCapGoldPerTroop": {
+    "lo": 5,
+    "hi": 40,
+    "init": 20
+  },
+  "buildHorizon": {
+    "lo": 2000,
+    "hi": 12000,
+    "init": 6000,
+    "int": true
+  },
+  "retalRatio": {
+    "lo": 1.0,
+    "hi": 1.8,
+    "init": 1.2
+  },
+  "drainRatio": {
+    "lo": 1.0,
+    "hi": 2.0,
+    "init": 1.5
+  },
+  "drainBelow": {
+    "lo": 0.15,
+    "hi": 0.45,
+    "init": 0.3
+  },
+  "hystMargin": {
+    "lo": 0.0,
+    "hi": 0.3,
+    "init": 0.1
+  },
+  "hystSlope": {
+    "lo": 0.0,
+    "hi": 0.5,
+    "init": 0.2
+  },
+  "hystStrikes": {
+    "lo": 1,
+    "hi": 4,
+    "init": 2,
+    "int": true
+  },
+  "contestRank": {
+    "lo": 2,
+    "hi": 4,
+    "init": 3,
+    "int": true
+  },
+  "contestLeadRatio": {
+    "lo": 1.1,
+    "hi": 2.5,
+    "init": 1.5
+  },
+  "plateauWindow": {
+    "lo": 1200,
+    "hi": 6000,
+    "init": 3000,
+    "int": true
+  },
+  "plateauGrowth": {
+    "lo": 0.02,
+    "hi": 0.12,
+    "init": 0.05
+  },
+  "warRoiMax": {
+    "lo": 300,
+    "hi": 2000,
+    "init": 500,
+    "int": true
+  },
+  "warRoiMinTiles": {
+    "lo": 25,
+    "hi": 150,
+    "init": 50,
+    "int": true
+  },
+  "warRoiCooldown": {
+    "lo": 1200,
+    "hi": 6000,
+    "init": 3000,
+    "int": true
+  },
+  "webRatio": {
+    "lo": 1.2,
+    "hi": 3.5,
+    "init": 2.0
+  },
+  "webUntil": {
+    "lo": 3000,
+    "hi": 12000,
+    "init": 6000,
+    "int": true
+  }
 }
