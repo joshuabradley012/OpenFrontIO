@@ -17,6 +17,30 @@ const HYST_EVERY = 100; // hystRetreats: ticks between re-estimates of a running
 const HYST_HORIZON = 600; // hystRetreats: the 'continue' branch is judged one minute ahead
 const HYST_TILE_WORTH = 60; // hystRetreats: what a tile of the target is worth in troops — the non-wilderness troop-sink bar (free land costs 16–24 a tile). The wilderness discount belongs to opening a war, not to abandoning one
 const RETREAT_MALUS = 0.75; // AttackExecution.retreat(25) against a player: the share of a recalled wave that gets home
+/** `boatsWaterPath`: the longest water path (tiles the transport sails, Military.waterPath) a boat rule accepts. The
+ *  engine paths the ship over water around every coast (TransportShipExecution → WaterPathFinder), often several
+ *  times the straight-line distance the rules used to rank by: 45 lab games launched every early boat at tick 60
+ *  to an "empty shore" 54–112 tiles straight-line, and tribe/island boats sailed a median 156 tiles (p90 292). */
+export const BOAT_MAX_PATH = { early: 80, tribe: 150, island: 150, sea: 200, finish: 250, invade: 300 } as const;
+const WATER_MAX_DIST = Math.max(...Object.values(BOAT_MAX_PATH)); // the fill stops at the longest cap any rule accepts (300)
+const WATER_BFS_TILES = 400_000; // ... and at this many water tiles (a 1000-tile coast × 300 sails 300k; a 40k budget starved an 8-minute empire's coast to a 50-tile band)
+const WATER_CACHE_TICKS = 100; // the fill is reused by every boat rule of the pass and for this long after
+/** `boatsWaterPath`: water-path lengths from our shore, from one breadth-first fill over the water tiles the
+ *  engine's transport path uses (GameMap.isWater — ocean and lake alike, shoreline water included), 4-connected.
+ *  `dist` holds length + 1 per tile (0 = not reached), a typed array the size of the map reused across fills. */
+export class WaterPath {
+  size = 0; // water tiles the fill reached
+  constructor(private mg: Game, private dist: Uint16Array) {}
+  /** Tiles a boat sails from our nearest sampled shore to `t` (a shore tile: its nearest water neighbour + 1; a
+   *  water tile: itself); Infinity when no water path inside WATER_MAX_DIST / WATER_BFS_TILES reaches it. */
+  len(t: TileRef): number {
+    const mg = this.mg, dist = this.dist;
+    if (mg.isWater(t)) return dist[t] === 0 ? Infinity : dist[t] - 1;
+    let best = Infinity;
+    for (const n of mg.neighbors(t)) { if (!mg.isWater(n)) continue; const d = dist[n]; if (d !== 0 && d < best) best = d; } // d = length + 1: the step ashore
+    return best;
+  }
+}
 /** A war fight() would open: the decision half of the old fight(); actWar() is the other half. */
 interface WarPick {
   r: Player;
@@ -184,6 +208,36 @@ export class Military {
     return { x0: x0 - r, y0: y0 - r, x1: x1 + r, y1: y1 + r };
   }
 
+  // ---------------------------------------------------------------- boatsWaterPath: the distance the ship will sail
+  private waterCache: { tick: number; wp: WaterPath } | null = null;
+  private waterDist: Uint16Array | null = null; // one map-sized array, cleared per fill
+  /** How many fills ran (tests: once per pass, then cached WATER_CACHE_TICKS). */
+  waterPathRuns = 0;
+  /** `boatsWaterPath`: breadth-first over water from every water neighbour of our sampled shore (shoreSample — the
+   *  same tiles boatsNearest measures from; without it, the same sample of the whole ocean shore), out to
+   *  WATER_MAX_DIST tiles and at most WATER_BFS_TILES of them, cached WATER_CACHE_TICKS ticks. Every boat rule of a
+   *  pass shares one fill. */
+  waterPath(): WaterPath {
+    const mg = this.ctx.mg, t = mg.ticks();
+    if (this.waterCache !== null && t - this.waterCache.tick < WATER_CACHE_TICKS) return this.waterCache.wp;
+    this.waterDist ??= new Uint16Array(mg.width() * mg.height());
+    const dist = this.waterDist;
+    dist.fill(0);
+    const q: TileRef[] = [];
+    for (const s of this.shoreSample()) for (const n of mg.neighbors(s)) if (mg.isWater(n) && dist[n] === 0) { dist[n] = 2; q.push(n); } // length 1, stored + 1
+    let i = 0;
+    while (i < q.length && q.length < WATER_BFS_TILES) {
+      const c = q[i++], d = dist[c] + 1;
+      if (d > WATER_MAX_DIST + 1) break;
+      for (const n of mg.neighbors(c)) if (mg.isWater(n) && dist[n] === 0) { dist[n] = d; q.push(n); }
+    }
+    this.waterPathRuns++;
+    const wp = new WaterPath(mg, dist);
+    wp.size = q.length;
+    this.waterCache = { tick: t, wp };
+    return wp;
+  }
+
   // ---------------------------------------------------------------- boats in the mid and late game
   private lastSeaTick = -1e9;
   /** Playbook: boats are the answer to a closed land border. Whenever a boat is free and either the land front is
@@ -206,7 +260,14 @@ export class Military {
     const sample = this.ctx.p.boatsNearest ? this.shoreSample() : [];
     const nearest = sample.length > 0;
     const dist = nearest ? (t: TileRef) => this.nearestShoreDist(t, sample) : distOld;
-    const cands: { tile: TileRef; troops: number; score: number; oldScore: number; oldOk: boolean; what: string }[] = [];
+    // `boatsWaterPath`: rank by the path the ship sails (d), refuse beyond BOAT_MAX_PATH.sea; dm is the straight-line
+    // distance the rule ranks by otherwise — slScore / slOk is that ranking, kept for the liveness count
+    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null;
+    // with the flag on, our own coast is near by water too (a tile 40 tiles up it sails 40), so more candidates are
+    // tried and the bounded breadth-first acrossWaterNear (radius 2 × dm + 20) does the land check — the depth-first
+    // acrossWater gives up at 4000 tiles and calls a tile up our own coast "across water" on a big landmass
+    const across = (t: TileRef, dm: number) => (nearest || wp ? this.q.acrossWaterNear(t, dm) : this.q.acrossWater(t));
+    const cands: { tile: TileRef; troops: number; score: number; dm: number; slScore: number; slOk: boolean; oldScore: number; oldOk: boolean; what: string }[] = [];
     // (a) free shore across water: 15 % of home, worth the most per troop
     let seen = 0;
     const box = this.scanBox(sample, fx, fy, 300);
@@ -215,9 +276,14 @@ export class Military {
       const t = this.ctx.mg.ref(x, y);
       if (!this.ctx.mg.isLand(t) || !this.ctx.mg.isOceanShore(t) || this.ctx.mg.hasOwner(t)) continue;
       const dOld = Math.abs(x - fx) + Math.abs(y - fy);
-      const d = nearest ? dist(t) : dOld;
-      if (d < (nearest ? 10 : 30) || (nearest && d > 300) || seen++ > 400) continue;
-      cands.push({ tile: t, troops: Math.max(5000, Math.floor(this.ctx.sit.troops * 0.15)), score: nearest ? 300 / Math.max(1, d / 40) : 300 - d, oldScore: 300 - dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 300 && Math.abs(y - fy) <= 300 && (x - fx) % 8 === 0 && (y - fy) % 8 === 0, what: "free shore" }); // oldOk: on the old scan's grid and inside its window
+      const dm = nearest ? dist(t) : dOld;
+      if (dm < (nearest ? 10 : 30) || seen++ > 400) continue;
+      const slOk = !(nearest && dm > 300);
+      const d = wp ? wp.len(t) : dm;
+      const capped = wp ? d > BOAT_MAX_PATH.sea : !slOk;
+      if (capped && !slOk) continue;
+      const slScore = nearest ? 300 / Math.max(1, dm / 40) : 300 - dm;
+      cands.push({ tile: t, troops: Math.max(5000, Math.floor(this.ctx.sit.troops * 0.15)), score: capped ? -1e9 : nearest ? 300 / Math.max(1, d / 40) : 300 - d, dm, slScore, slOk, oldScore: 300 - dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 300 && Math.abs(y - fy) <= 300 && (x - fx) % 8 === 0 && (y - fy) % 8 === 0, what: "free shore" }); // oldOk: on the old scan's grid and inside its window
     }
     // (b) collapsed players (bombed, MIRVed): the follow-up; (c) weak players without posts; (d) tribes
     for (const o of this.ctx.mg.players()) {
@@ -230,29 +296,36 @@ export class Military {
       if (!isBot && !me.canAttackPlayer(o)) continue;
       const want = Math.ceil(o.troops() * (isBot ? 2 : 3)) + 2000;
       if (want > this.ctx.sit.spendable * 0.5) continue;
-      let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9;
+      let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9, slT: TileRef | null = null, slD = 1e9;
       for (const t of o.borderTiles()) {
         if ((i++ % 9) !== 0 || !this.ctx.mg.isOceanShore(t)) continue;
-        const d = dist(t); if (d < bestD) { bestD = d; bestT = t; }
+        const dm = dist(t); if (dm < slD) { slD = dm; slT = t; }
+        const d = wp ? wp.len(t) : dm; if (d < bestD) { bestD = d; bestT = t; }
         if (nearest) { const dO = distOld(t); if (dO < oldD) { oldD = dO; oldT = t; } }
       }
-      if (!nearest) { oldT = bestT; oldD = bestD; }
+      if (!nearest) { oldT = slT; oldD = slD; }
       const value = coll ? 600 : weak ? 400 : 250;
       const what = `${coll ? "collapsed " : weak ? "weak " : "tribe "}${o.name()} ${o.numTilesOwned()}t/${Math.round(o.troops() / 1000)}k`;
       const oldOk = oldT !== null && oldD <= 500 && !(late && weak && oldD > 150 && o.troops() >= this.ctx.sit.troops * 0.25);
       const oldScore = value - oldD / 2 + (o.units(UnitType.City).length * 10);
-      if (bestT === null || bestD > 500) continue;
-      if (late && weak && bestD > 150 && o.troops() >= this.ctx.sit.troops * 0.25) continue; // the late-game jump is a short one
-      const score = nearest ? (value + o.units(UnitType.City).length * 10) / Math.max(1, bestD / 40) : oldScore;
-      cands.push({ tile: bestT, troops: want, score, oldScore, oldOk: oldOk && oldT === bestT, what });
-      if (nearest && oldOk && oldT !== null && oldT !== bestT) cands.push({ tile: oldT, troops: want, score: -1e9, oldScore, oldOk: true, what }); // the old ranking's tile, for the liveness count only
+      const slOk = slT !== null && slD <= 500 && !(late && weak && slD > 150 && o.troops() >= this.ctx.sit.troops * 0.25);
+      const slScore = nearest ? (value + o.units(UnitType.City).length * 10) / Math.max(1, slD / 40) : value - slD / 2 + (o.units(UnitType.City).length * 10);
+      const capped = bestT === null || bestD > (wp ? BOAT_MAX_PATH.sea : 500) || (late && weak && bestD > 150 && o.troops() >= this.ctx.sit.troops * 0.25); // the late-game jump is a short one
+      if (capped && !(wp && slOk)) continue;
+      const score = capped ? -1e9 : nearest ? (value + o.units(UnitType.City).length * 10) / Math.max(1, bestD / 40) : oldScore;
+      const tile = capped ? slT! : bestT!;
+      cands.push({ tile, troops: want, score, dm: slD, slScore, slOk: slOk && slT === tile, oldScore, oldOk: oldOk && oldT === tile, what });
+      if (nearest && oldOk && oldT !== null && oldT !== tile) cands.push({ tile: oldT, troops: want, score: -1e9, dm: slD, slScore, slOk: false, oldScore, oldOk: true, what }); // the old ranking's tile, for the liveness count only
+      if (wp && slOk && slT !== null && slT !== tile) cands.push({ tile: slT, troops: want, score: -1e9, dm: slD, slScore, slOk: true, oldScore, oldOk: false, what }); // the straight-line ranking's tile, for the liveness count only
     }
     cands.sort((a, b) => b.score - a.score);
-    for (const c of cands.slice(0, 10)) {
+    // `boatsWaterPath` liveness: what the straight-line ranking (this rule with the flag off) would have launched at
+    const slPick = (extra: number) => cands.filter((o) => o.slOk).sort((a, b) => b.slScore - a.slScore).slice(0, 10).find((o) => o.troops <= this.ctx.sit.spendable + extra && across(o.tile, o.dm));
+    for (const c of cands.slice(0, wp ? 30 : 10)) {
       if (c.score <= -1e9) continue;
       if (c.troops > this.ctx.sit.spendable) continue;
-      if (nearest ? !this.q.acrossWaterNear(c.tile, dist(c.tile)) : !this.q.acrossWater(c.tile)) continue;
-      const sent = this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}${nearest ? ` (${dist(c.tile)} tiles)` : ""}`);
+      if (!across(c.tile, c.dm)) continue;
+      const sent = this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}${wp ? ` (${wp.len(c.tile)} tiles by water)` : nearest ? ` (${dist(c.tile)} tiles)` : ""}`);
       if (sent === 0) continue;
       this.lastSeaTick = this.ctx.mg.ticks();
       if (nearest) {
@@ -260,8 +333,10 @@ export class Military {
         const old = cands.filter((o) => o.oldOk).sort((a, b) => b.oldScore - a.oldScore).slice(0, 10).find((o) => o.troops <= this.ctx.sit.spendable + sent && this.q.acrossWater(o.tile));
         if (old === undefined || old.tile !== c.tile) this.lim.fire("boatsNearest", "sea");
       }
+      if (wp) { const sl = slPick(sent); if (sl === undefined || sl.tile !== c.tile) this.lim.fire("boatsWaterPath", "sea"); }
       return;
     }
+    if (wp) { const sl = slPick(0); if (sl !== undefined && sl.score <= -1e9) this.lim.fire("boatsWaterPath", "sea"); } // refused by the cap
   }
 
   // ---------------------------------------------------------------- MIRV and the finish
@@ -993,21 +1068,31 @@ export class Military {
     const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
     const nearest = sample.length > 0;
     const dist = nearest ? (t: TileRef) => this.nearestShoreDist(t, sample) : distOld;
-    const cands: { tile: TileRef; troops: number; d: number; oldD: number; oldOk: boolean; what: string }[] = [];
+    // `boatsWaterPath`: rank by the path the ship sails (d), refuse beyond BOAT_MAX_PATH.early; dm is the
+    // straight-line distance (slOk: the straight-line ranking's candidates, for the liveness count)
+    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null;
+    // with the flag on, our own coast is near by water too (a tile 40 tiles up it sails 40), so more candidates are
+    // tried and the bounded breadth-first acrossWaterNear (radius 2 × dm + 20) does the land check — the depth-first
+    // acrossWater gives up at 4000 tiles and calls a tile up our own coast "across water" on a big landmass
+    const across = (t: TileRef, dm: number) => (nearest || wp ? this.q.acrossWaterNear(t, dm) : this.q.acrossWater(t));
+    const cands: { tile: TileRef; troops: number; d: number; dm: number; slOk: boolean; oldD: number; oldOk: boolean; what: string }[] = [];
     for (const bot of this.ctx.mg.players()) {
       if (bot.type() !== PlayerType.Bot || !bot.isAlive()) continue;
       const want = Math.ceil(bot.troops() * 2) + 500; // a beach landing costs more than a land attack: 2×, not 1.67×
       if (want > me.troops() * 0.4) continue;
-      let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9;
+      let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9, slT: TileRef | null = null, slD = 1e9;
       for (const t of bot.borderTiles()) {
         if ((i++ % 5) !== 0 || !this.ctx.mg.isShore(t)) continue;
-        const d = dist(t); if (d < bestD) { bestD = d; bestT = t; }
+        const dm = dist(t); if (dm < slD) { slD = dm; slT = t; }
+        const d = wp ? wp.len(t) : dm; if (d < bestD) { bestD = d; bestT = t; }
         if (nearest) { const dO = distOld(t); if (dO < oldD) { oldD = dO; oldT = t; } }
       }
-      if (!nearest) { oldT = bestT; oldD = bestD; }
+      if (!nearest) { oldT = slT; oldD = slD; }
       const troops = Math.max(want, Math.floor(me.troops() * this.ctx.p.boatShare));
-      if (bestT !== null && bestD <= 250) cands.push({ tile: bestT, troops, d: bestD + 80, oldD: oldD + 80, oldOk: oldD <= 250 && oldT === bestT, what: `tribe ${bot.name()}` }); // open shore preferred: free land, no losses; a tribe only when no empty coast is near
-      if (nearest && oldT !== null && oldD <= 250 && oldT !== bestT) cands.push({ tile: oldT, troops, d: 1e9, oldD: oldD + 80, oldOk: true, what: `tribe ${bot.name()}` }); // the old ranking's tile, for the liveness count only
+      const ok = bestT !== null && bestD <= (wp ? BOAT_MAX_PATH.early : 250), slOk = slT !== null && slD <= 250;
+      if (ok) cands.push({ tile: bestT!, troops, d: bestD + 80, dm: slD + 80, slOk: slOk && slT === bestT, oldD: oldD + 80, oldOk: oldD <= 250 && oldT === bestT, what: `tribe ${bot.name()}` }); // open shore preferred: free land, no losses; a tribe only when no empty coast is near
+      if (nearest && oldT !== null && oldD <= 250 && (!ok || oldT !== bestT)) cands.push({ tile: oldT, troops, d: 1e9, dm: slD + 80, slOk: false, oldD: oldD + 80, oldOk: true, what: `tribe ${bot.name()}` }); // the old ranking's tile, for the liveness count only
+      if (wp && slOk && (!ok || slT !== bestT)) cands.push({ tile: slT!, troops, d: 1e9, dm: slD + 80, slOk: true, oldD: oldD + 80, oldOk: false, what: `tribe ${bot.name()}` }); // the straight-line ranking's tile, for the liveness count only
     }
     const box = this.scanBox(sample, fx, fy, 200);
     for (let y = box.y0; y <= box.y1; y += 6) for (let x = box.x0; x <= box.x1; x += 6) {
@@ -1015,21 +1100,28 @@ export class Military {
       const t = this.ctx.mg.ref(x, y);
       if (!this.ctx.mg.isLand(t) || !this.ctx.mg.isShore(t) || this.ctx.mg.hasOwner(t)) continue;
       const dOld = Math.abs(x - fx) + Math.abs(y - fy);
-      const d = nearest ? dist(t) : dOld;
-      if (nearest && d > 200) continue;
-      if (d >= (nearest ? 10 : 30)) cands.push({ tile: t, troops: Math.floor(me.troops() * this.ctx.p.boatShare), d, oldD: dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 200 && Math.abs(y - fy) <= 200 && (x - fx) % 6 === 0 && (y - fy) % 6 === 0, what: "empty shore" });
+      const dm = nearest ? dist(t) : dOld;
+      if (dm < (nearest ? 10 : 30)) continue;
+      const slOk = !(nearest && dm > 200);
+      const d = wp ? wp.len(t) : dm;
+      if (wp ? d > BOAT_MAX_PATH.early && !slOk : !slOk) continue;
+      cands.push({ tile: t, troops: Math.floor(me.troops() * this.ctx.p.boatShare), d: wp && d > BOAT_MAX_PATH.early ? 1e9 : d, dm, slOk, oldD: dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 200 && Math.abs(y - fy) <= 200 && (x - fx) % 6 === 0 && (y - fy) % 6 === 0, what: "empty shore" });
     }
     cands.sort((a, b) => a.d - b.d);
-    for (const c of cands.slice(0, 16)) {
-      if (c.d >= 1e9 || c.troops < 500 || (nearest ? !this.q.acrossWaterNear(c.tile, c.d) : !this.q.acrossWater(c.tile))) continue;
-      if (this.ctx.boat(c.tile, c.troops, `early boat → ${c.what}, ${c.d} tiles`) === 0) continue;
+    // `boatsWaterPath` liveness: what the straight-line ranking (this rule with the flag off) would have launched at
+    const slPick = () => cands.filter((o) => o.slOk).sort((a, b) => a.dm - b.dm).slice(0, 16).find((o) => o.troops >= 500 && across(o.tile, o.dm));
+    for (const c of cands.slice(0, wp ? 48 : 16)) {
+      if (c.d >= 1e9 || c.troops < 500 || !across(c.tile, c.dm)) continue;
+      if (this.ctx.boat(c.tile, c.troops, `early boat → ${c.what}, ${c.d} tiles${wp ? " by water" : ""}`) === 0) continue;
       if (nearest) {
         // liveness: what the old ranking (middle tile, 30-tile floor) would have launched at
         const old = cands.filter((o) => o.oldOk).sort((a, b) => a.oldD - b.oldD).slice(0, 16).find((o) => o.troops >= 500 && this.q.acrossWater(o.tile));
         if (old === undefined || old.tile !== c.tile) this.lim.fire("boatsNearest", "early");
       }
+      if (wp) { const sl = slPick(); if (sl === undefined || sl.tile !== c.tile) this.lim.fire("boatsWaterPath", "early"); }
       return true;
     }
+    if (wp) { const sl = slPick(); if (sl !== undefined && sl.d >= 1e9) this.lim.fire("boatsWaterPath", "early"); } // refused by the cap
     return false;
   }
 
@@ -1041,17 +1133,23 @@ export class Military {
     const from = border[this.ctx.random.nextInt(0, border.length)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
     const mine = this.q.landmassTiles(this.ctx.p.islandMaxTiles + 1);
-    let best: TileRef | null = null, bestD = 1e9;
+    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null; // `boatsWaterPath`: rank by the sailed path, refuse beyond BOAT_MAX_PATH.island
+    let best: TileRef | null = null, bestD = 1e9, slBest: TileRef | null = null, slD = 1e9;
     for (let dy = -200; dy <= 200; dy += 6) for (let dx = -200; dx <= 200; dx += 6) {
       const x = fx + dx, y = fy + dy;
       if (!this.ctx.mg.isValidCoord(x, y)) continue;
       const t = this.ctx.mg.ref(x, y);
       if (!this.ctx.mg.isLand(t) || !this.ctx.mg.isShore(t) || this.ctx.mg.hasOwner(t) || mine.has(t)) continue;
-      const d = Math.abs(dx) + Math.abs(dy);
-      if (d >= 30 && d < bestD) { bestD = d; best = t; }
+      const dm = Math.abs(dx) + Math.abs(dy);
+      if (dm < 30) continue;
+      if (dm < slD) { slD = dm; slBest = t; }
+      const d = wp ? wp.len(t) : dm;
+      if (d <= (wp ? BOAT_MAX_PATH.island : 1e9) && d < bestD) { bestD = d; best = t; }
     }
-    if (best === null) return false;
-    return this.ctx.boat(best, Math.floor(this.ctx.sit.troops * this.ctx.p.boatShare), `island boat, ${bestD} tiles`) > 0;
+    if (best === null) { if (wp && slBest !== null) this.lim.fire("boatsWaterPath", "island"); return false; } // refused by the cap
+    const sent = this.ctx.boat(best, Math.floor(this.ctx.sit.troops * this.ctx.p.boatShare), `island boat, ${bestD} tiles${wp ? " by water" : ""}`) > 0;
+    if (sent && wp && slBest !== best) this.lim.fire("boatsWaterPath", "island");
+    return sent;
   }
 
   /** No bots on our borders: boat to the nearest bot within reach, with 1.67× its troops. */
@@ -1067,7 +1165,8 @@ export class Military {
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
     const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
     const nearest = sample.length > 0;
-    let best: TileRef | null = null, bestBot: Player | null = null, bestD = 1e9, oldBest: TileRef | null = null, oldD = 1e9;
+    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null; // `boatsWaterPath`: rank by the sailed path, refuse beyond BOAT_MAX_PATH.tribe; sl* is the straight-line pick, for the liveness count
+    let best: TileRef | null = null, bestBot: Player | null = null, bestD = 1e9, bestDm = 1e9, oldBest: TileRef | null = null, oldD = 1e9, slBest: TileRef | null = null, slD = 1e9;
     for (const bot of this.ctx.mg.players()) {
       if (bot.type() !== PlayerType.Bot || !bot.isAlive() || bot.numTilesOwned() < 100) continue;
       if (this.ctx.mg.ticks() - (this.boatedAt.get(bot) ?? -1e9) < 900) continue;
@@ -1079,18 +1178,24 @@ export class Military {
         if ((i++ % 7) !== 0) continue;
         if (!this.ctx.mg.isShore(t)) continue;
         const dO = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
-        const d = nearest ? this.nearestShoreDist(t, sample) : dO;
-        if (d < bestD && d <= 350) { bestD = d; best = t; bestBot = bot; }
+        const dm = nearest ? this.nearestShoreDist(t, sample) : dO;
+        const d = wp ? wp.len(t) : dm;
+        if (d < bestD && d <= (wp ? BOAT_MAX_PATH.tribe : 350)) { bestD = d; bestDm = dm; best = t; bestBot = bot; }
+        if (dm < slD && dm <= 350) { slD = dm; slBest = t; }
         if (dO < oldD && dO <= 350) { oldD = dO; oldBest = t; }
       }
     }
-    if (best === null || bestBot === null) return;
-    if (nearest ? !this.q.acrossWaterNear(best, bestD) : !this.q.acrossWater(best)) return; // reachable by land: that is a land attack, not a boat
+    if (best === null || bestBot === null) {
+      if (wp && slBest !== null && (nearest ? this.q.acrossWaterNear(slBest, slD) : this.q.acrossWater(slBest))) this.lim.fire("boatsWaterPath", "tribe"); // refused by the cap
+      return;
+    }
+    if (nearest ? !this.q.acrossWaterNear(best, bestDm) : !this.q.acrossWater(best)) return; // reachable by land: that is a land attack, not a boat
     const troops = Math.ceil(bestBot.troops() * 2) + 500;
     if (troops > this.ctx.sit.spendable) return;
-    if (this.ctx.boat(best, troops, `to tribe ${bestBot.name()} ${bestBot.numTilesOwned()}t/${Math.round(bestBot.troops() / 1000)}k, ${bestD} tiles`) === 0) return;
-    this.boatedAt.set(bestBot, this.ctx.mg.ticks());
+    if (this.ctx.boat(best, troops, `to tribe ${bestBot.name()} ${bestBot.numTilesOwned()}t/${Math.round(bestBot.troops() / 1000)}k, ${bestD} tiles${wp ? " by water" : ""}`) === 0) return;
+    if (!this.ctx.dry) this.boatedAt.set(bestBot, this.ctx.mg.ticks());
     if (nearest && oldBest !== best) this.lim.fire("boatsNearest", "tribe");
+    if (wp && slBest !== best) this.lim.fire("boatsWaterPath", "tribe");
   }
 
   /** Boxed in at cap with nothing to fight on land: land a big boat on the weakest unfriendly player within reach. */
@@ -1111,8 +1216,9 @@ export class Military {
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
     const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
     const nearest = sample.length > 0;
+    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null; // `boatsWaterPath`: rank by the sailed path, refuse beyond BOAT_MAX_PATH.invade; slBest is the straight-line pick, for the liveness count
     const { rivals } = this.q.neighbours();
-    let best: { tile: TileRef; p: Player; d: number; score: number } | null = null, oldBest: { tile: TileRef; score: number } | null = null;
+    let best: { tile: TileRef; p: Player; d: number; score: number } | null = null, oldBest: { tile: TileRef; score: number } | null = null, slBest: { tile: TileRef; score: number } | null = null;
     for (const o of this.ctx.mg.players()) {
       if (o === me || !o.isAlive() || me.isFriendly(o) || o.type() === PlayerType.Bot || rivals.includes(o)) continue;
       if (o.troops() > me.troops() * 0.25 || o.numTilesOwned() < 300 || o.units(UnitType.DefensePost).length > 0) continue;
@@ -1120,20 +1226,23 @@ export class Military {
       for (const t of o.borderTiles()) {
         if ((i++ % 9) !== 0 || !this.ctx.mg.isShore(t)) continue;
         const dO = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
-        const d = nearest ? this.nearestShoreDist(t, sample) : dO;
+        const dm = nearest ? this.nearestShoreDist(t, sample) : dO;
+        const d = wp ? wp.len(t) : dm;
         const base = this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - o.units(UnitType.DefensePost).length * 2;
         if (nearest && dO <= 500) { const s = base - dO / 100; if (oldBest === null || s > oldBest.score) oldBest = { tile: t, score: s }; }
-        if (d > 500) continue;
+        if (wp && dm <= 500) { const s = nearest ? base / Math.max(1, dm / 40) : base - dm / 100; if (slBest === null || s > slBest.score) slBest = { tile: t, score: s }; }
+        if (d > (wp ? BOAT_MAX_PATH.invade : 500)) continue;
         const score = nearest ? base / Math.max(1, d / 40) : this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - d / 100 - o.units(UnitType.DefensePost).length * 2;
         if (best === null || score > best.score) best = { tile: t, p: o, d, score };
       }
     }
-    if (best === null) return;
+    if (best === null) { if (wp && slBest !== null) this.lim.fire("boatsWaterPath", "invade"); return; } // refused by the cap
     const troops = Math.min(Math.floor(this.ctx.sit.spendable * 0.5), Math.floor(this.ctx.sit.troops - this.ctx.sit.cap * 0.3), Math.ceil(best.p.troops() * 3) + 5000);
     if (troops < 20000 || troops < best.p.troops() * 3) return; // a landing under 3× is the boat that takes no land
-    if (this.ctx.boat(best.tile, troops, `INVADE ${best.p.name()} ${best.p.numTilesOwned()}t/${Math.round(best.p.troops() / 1000)}k, ${best.d} tiles`) === 0) return;
+    if (this.ctx.boat(best.tile, troops, `INVADE ${best.p.name()} ${best.p.numTilesOwned()}t/${Math.round(best.p.troops() / 1000)}k, ${best.d} tiles${wp ? " by water" : ""}`) === 0) return;
     this.lastInvasionTick = this.ctx.mg.ticks();
     if (nearest && (oldBest === null || oldBest.tile !== best.tile)) this.lim.fire("boatsNearest", "invade");
+    if (wp && (slBest === null || slBest.tile !== best.tile)) this.lim.fire("boatsWaterPath", "invade");
   }
 
   // ---------------------------------------------------------------- finishByBoat: the remnant a land war cannot reach
@@ -1170,6 +1279,7 @@ export class Military {
     if (this.ctx.sit.boats >= mg.config().boatMaxNumber()) return;
     const sample = this.shoreSample();
     if (sample.length === 0) return;
+    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null; // `boatsWaterPath`: the landing nearest by sailed path, refused beyond BOAT_MAX_PATH.finish
     const targets: Player[] = [];
     if (this.currentTarget_ !== null && now - this.lastWarTick < 1800) targets.push(this.currentTarget_);
     for (const a of me.outgoingAttacks()) { const t = a.target(); if (t.isPlayer() && t.type() !== PlayerType.Bot && !targets.includes(t)) targets.push(t); }
@@ -1180,15 +1290,19 @@ export class Military {
       if (now - (this.finishedAt.get(t) ?? -1e9) < 600) continue;
       const part = this.unreachablePart(t);
       if (part === null || part.shore.length === 0) continue;
-      let tile: TileRef | null = null, dist = 1e9;
-      for (const s of part.shore) { const d = this.nearestShoreDist(s, sample); if (d < dist) { dist = d; tile = s; } }
-      if (tile === null || dist > 600) continue;
+      let tile: TileRef | null = null, dist = 1e9, slTile: TileRef | null = null, slDist = 1e9;
+      for (const s of part.shore) {
+        const dm = this.nearestShoreDist(s, sample); if (dm < slDist) { slDist = dm; slTile = s; }
+        const d = wp ? wp.len(s) : dm; if (d < dist) { dist = d; tile = s; }
+      }
+      if (tile === null || dist > (wp ? BOAT_MAX_PATH.finish : 600)) { if (wp && slTile !== null && slDist <= 600) this.lim.fire("boatsWaterPath", "finish"); continue; } // refused by the cap
       const share = part.tiles / Math.max(1, t.numTilesOwned()), spendable = this.ctx.sit.spendable, theirs = t.troops();
       const troops = Math.min(Math.ceil(2 * theirs * share) + 2000, Math.floor(spendable * 0.4));
-      const sent = this.ctx.boat(tile, troops, `finish ${t.name()} across water, ${dist} tiles`);
+      const sent = this.ctx.boat(tile, troops, `finish ${t.name()} across water, ${dist} tiles${wp ? " by water" : ""}`);
       if (sent === 0) continue;
       this.finishedAt.set(t, now);
       this.ctx.fire("finishByBoat");
+      if (wp && slTile !== tile) this.lim.fire("boatsWaterPath", "finish");
       this.ctx.log(`t${now} FINISH BY BOAT ${t.name()} ${part.tiles} unreachable tiles of ${t.numTilesOwned()}, troops ${Math.round(theirs)} spendable ${Math.floor(spendable)} → ${sent} landing ${dist} tiles out`);
       return;
     }

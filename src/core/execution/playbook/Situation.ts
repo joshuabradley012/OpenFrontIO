@@ -59,7 +59,7 @@ export class SituationQueries {
     return "consolidate";
   }
   /** Unowned, fallout-free land on our own landmass (flood fill capped at 4000 tiles, refreshed every 100 ticks). */
-  private freeLandReachable(tick: number): boolean {
+  freeLandReachable(tick: number): boolean {
     if (tick - this.freeLandCache.tick < 100) return this.freeLandCache.ok;
     const mg = this.ctx.mg;
     let ok = false;

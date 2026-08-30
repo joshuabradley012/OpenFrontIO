@@ -1288,3 +1288,97 @@ loses by construction: `Config.attackLogic` prices the attacker's per-tile loss 
 so a "bite" at a thin border pays the full price (africa 12-min smoke: 36 bites,
 rank 13 vs 6 off). The flag, `Military.bite()` and its tests are gone; the
 `RivalView.borderShare` field it added stays (cheap, used by nothing yet).
+
+## Boats II (`boatsWaterPath`, `boatsAfterCoast`, 2026-08-29, branch `bot/boats2`)
+
+Josh, from the GUI: boats still take far paths, and go before the bot has
+expanded to the coast. The 45-game lab data agrees — every game launches an
+early boat at tick 60 (6k troops, "empty shore" 54–112 tiles straight-line) and
+tribe/island boats sail a median 156 tiles (p90 292). The cause: every boat rule
+ranks by manhattan distance, while the engine paths the transport over water
+(`TransportShipExecution` → `WaterPathFinder`, the tiles where
+`GameMap.isWater`) around every coast, often several times the straight line —
+and manhattan crosses land, so a shore on the far side of the continent reads
+"200 tiles". Two default-off flags, composing with `boatsNearest` on or off:
+
+**`boatsWaterPath`.** `Military.waterPath()` is one breadth-first fill over
+water tiles (4-connected, ocean and lake alike, shoreline water included — the
+transport's graph) from every water neighbour of `shoreSample()` (the tiles
+`boatsNearest` measures from; with it off, the same sample of the whole ocean
+shore), out to `WATER_MAX_DIST` = 300 tiles (the longest cap below) and at most
+`WATER_BFS_TILES` = 400k of them, into one map-sized `Uint16Array` reused
+across fills; computed at most once per pass and cached 100 ticks
+(`waterPathRuns` counts the fills). `WaterPath.len(t)` is the tiles a boat
+sails to shore tile `t` — its nearest reached water neighbour + 1 — or
+Infinity beyond the fill. Every boat rule ranks by that length instead of
+manhattan (the value formulas are unchanged, `d` substituted) and refuses a
+candidate whose path exceeds `Military.BOAT_MAX_PATH`: early 80, tribe hunt /
+island 150, sea expansion 200, finishByBoat 250, seaInvasion 300. With the flag
+on the land check is the bounded `acrossWaterNear(t, dm)` in every rule
+(`acrossWater`'s depth-first fill calls a tile up our own coast "across water" on
+a big landmass) and the early / sea-expansion rules try 48 / 30 candidates
+instead of 16 / 10, because our own coast is near by water too. Boat lines carry
+the sailed distance (`… 32 tiles by water`). Fires (one count per site per 100
+ticks) when the launched candidate differs from the straight-line pick — the
+same rule with the flag off, `boatsNearest` as configured — or when the cap
+refuses a launch the straight-line ranking would have made.
+
+_A first cut capped the fill at 40k tiles and read Infinity beyond it, as the
+brief said; on an 8-minute africa empire the ocean shore is 125–160 sampled
+tiles and the fill within 300 sails is 113–133k water tiles, so 40k was a
+40-tile band and every candidate read Infinity: zero boats, rank 24 vs 2. The
+fill is bounded by distance now and the tile budget is a safety._
+
+**`boatsAfterCoast`.** `PlaybookBotExecution.coastFirst()`: no early boat and no
+tribe boat (`huntBotsByBoat`) while free land is still reachable by land on our
+own landmass — `sit.wilderness` (a border tile beside unowned land) or
+`Situation.freeLandReachable` (the phase model's capped flood fill, now public)
+— unless we started on a small landmass (`onSmallLandmass`, `islandMaxTiles`),
+where the only way out is a boat. Sea expansion keeps its own
+`wilderness && capShare < 0.4` gate; finishByBoat and seaInvasion are unchanged.
+The early-boat window (`boatAtTick` … + 600) is not extended: when the coast
+comes later the tribe and sea rules take over. Liveness: the suppressed rule is
+dry-run (`BotContext.dry` — `boat()` reports the launch instead of making it,
+`fire()` and the `FireLimiter` count nothing, `boatedAt` stays untouched) and
+the flag fires once for the early boat (the old rule launches once) and per
+tribe-boat pass the old rule would have launched on.
+
+**Tests.** `tests/playbook/boats2.test.ts` on the world test map at
+Bab-el-Mandeb: the fill — Arabia's Red Sea coast at (1172, 412) reads 32 both
+ways, the Persian Gulf at (1238, 352) 274 by water vs 136 straight-line (round
+the peninsula), the Mediterranean at (1106, 286) 148 either way; a tribe on the
+Gulf alone gets the boat off (136 straight-line) and is refused on (the flag
+fires); with a Mediterranean tribe too, off boats to the Gulf and on to the
+Mediterranean, `129 tiles by water`; the early boat with `boatsNearest` off is
+refused (the middle-tile scan's 80-tile pick sails more than 80) and with it on
+goes to the strait shore at 32 by water without firing (the same pick); the
+fill runs once per pass — one fill at tick 300, the same object 50 ticks later,
+one fill for the tick-600 pass where tribe boats and sea expansion both run.
+`boatsAfterCoast`: the Red Sea bank with free land behind it sends the early
+boat at tick 60 off and none by tick 500 on (with a tribe across the strait; the
+flag fires for the early boat and each tribe pass); a 1365-tile island start at
+(1620, 438) still boats at tick 60. Golden unchanged; the 3-minute africa
+transcript with `{}` is byte-identical before and after (only `botMs`/`gameMs`).
+
+**Smoke** (`MIN=8 SPAWN=africa DIFF=medium`, one seed — not evidence):
+
+| config | rank | share | boats | first boat | sailed (median / p90 / max) | botMs | fired |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `{}` | 2 | 0.62 | 26 | t60, empty shore 64 straight-line | — (not logged) | 812 | — |
+| `boatsNearest` + `boatsWaterPath` | 2 | 1.00 (leader) | 26 | t80, empty shore 52 by water | 26 / 187 / 193 | 1365 | boatsWaterPath 40, boatsNearest 19 |
+| all four (`+ boatsAfterCoast, finishByBoat`) | 24 | 0.17 | 0 | none | — | 789 | boatsWaterPath 53, boatsAfterCoast 1 |
+
+The all-four game is the finding: `boatsAfterCoast` held the early boat until
+the free land ran out at t297, by when the 52-tile shore was taken; the only
+early candidate left was 153 tiles off (refused), and from t600 every
+sea-expansion candidate this landlocked-by-water empire could see was on the far
+side of the continent — manhattan 150–490, Infinity by water — so it sat at
+its cap (`idle at cap: Libya`) while the `{}` game boated hundreds
+of tiles to Polish Army, Tang Dominion and India and took rank 2. Whether the
+early stepping stone matters that much, and whether the 200-tile sea cap is too
+tight for a big empire, is what the A/B is for; on this seed `boatsWaterPath`
+alone is a clear win and `boatsAfterCoast` a clear loss. BFS cost: the flag adds
+~550 ms over 48 fills (≈ 11 ms each, 113–133k tiles) to an 8-minute game —
+`WATER_CACHE_TICKS` 200 would halve it if that matters.
+
+**A/B:** `CONFIGS='{"base":{},"near":{"boatsNearest":true},"wp":{"boatsNearest":true,"boatsWaterPath":true},"coast":{"boatsNearest":true,"boatsAfterCoast":true},"all":{"boatsNearest":true,"boatsWaterPath":true,"boatsAfterCoast":true,"finishByBoat":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.

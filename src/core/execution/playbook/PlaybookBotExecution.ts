@@ -39,6 +39,9 @@ export class PlaybookBotExecution implements Execution {
   private config!: Config;
   private random: PseudoRandom;
   private boatSent = false;
+  private earlyWould = false; // `boatsAfterCoast`: the old early-boat rule would have launched by now (it launches once)
+  private dry = false; // `boatsAfterCoast`: dry-running a rule — see BotContext.dry
+  private dryBoats = 0;
   private landmassChecked = false;
   private onSmallLandmass = false;
   public log: string[] = [];
@@ -73,7 +76,8 @@ export class PlaybookBotExecution implements Execution {
       send: (targetID, n, why, min, capFloor) => bot.send(targetID, n, why, min, capFloor),
       boat: (tile, n, why) => bot.boat(tile, n, why),
       log: (line) => { if (bot.log.length < 2000) bot.log.push(line); },
-      fire: (flag) => bot.fired.set(flag, (bot.fired.get(flag) ?? 0) + 1),
+      fire: (flag) => { if (!bot.dry) bot.fired.set(flag, (bot.fired.get(flag) ?? 0) + 1); },
+      get dry() { return bot.dry; },
     };
     this.lim = new FireLimiter(this.ctx);
     this.q = new SituationQueries(this.ctx);
@@ -192,6 +196,7 @@ export class PlaybookBotExecution implements Execution {
     if (this.sit.hold !== null || (this.sit.mode === "hold" && !why.includes("collapsed"))) return 0;
     const amount = Math.min(Math.floor(n), Math.floor(this.sit.spendable));
     if (amount < 500 || this.player.canBuild(UnitType.TransportShip, tile) === false) return 0;
+    if (this.dry) { this.dryBoats++; return amount; } // `boatsAfterCoast`: would have launched
     this.mg.addExecution(new TransportShipExecution(this.player, tile, amount));
     this.sit.spendable -= amount; this.sit.troops -= amount; this.sit.boats++;
     if (this.log.length < 2000) this.log.push(`t${this.sit.tick} boat ${Math.round(amount / 1000)}k: ${why}`);
@@ -233,14 +238,35 @@ export class PlaybookBotExecution implements Execution {
     // every alliance inside its 300-tick renewal window is seen six times, so a gift or renewal that could not go
     // through on one pass (donation cooldown, no room for the gift) is retried before the expiry
     { name: "expiries", every: 50, run: () => this.diplomacy.manageExpiries() },
-    { name: "early boat", every: 20, run: () => { if (!this.boatSent && this.sit.tick >= this.p.boatAtTick) this.boatSent = this.military.earlyBoat() || this.sit.tick > this.p.boatAtTick + 600; } },
-    { name: "tribe boats", every: 100, run: () => { if (this.sit.tick >= 300) this.military.huntBotsByBoat(); } },
+    { name: "early boat", every: 20, run: () => {
+      if (this.boatSent || this.sit.tick < this.p.boatAtTick) return;
+      if (this.coastFirst()) { if (!this.earlyWould && this.dryRun(() => this.military.earlyBoat())) { this.earlyWould = true; this.ctx.fire("boatsAfterCoast"); } return; }
+      this.boatSent = this.military.earlyBoat() || this.sit.tick > this.p.boatAtTick + 600;
+    } },
+    { name: "tribe boats", every: 100, run: () => {
+      if (this.sit.tick < 300) return;
+      if (this.coastFirst()) { if (this.dryRun(() => this.military.huntBotsByBoat())) this.ctx.fire("boatsAfterCoast"); return; }
+      this.military.huntBotsByBoat();
+    } },
     { name: "sea expansion", every: 100, run: () => { if (this.sit.tick >= 600) this.military.seaExpansion(); } },
     { name: "finish by boat", every: 100, run: () => { if (this.p.finishByBoat && this.sit.tick >= 1200) this.military.finishByBoat(); } }, // `finishByBoat`: the remnant a land war cannot reach
     { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick); } },
     { name: "mirv", every: 100, run: () => this.military.maybeMIRV() },
     { name: "prune", every: 300, run: () => { this.military.prune(); this.q.prune(); } }, // the per-player maps would otherwise grow for the whole game
   ];
+
+  /** `boatsAfterCoast`: expand to the coast first — no early or tribe boat while free land is still reachable by land
+   *  on our own landmass (a border tile beside unowned land, or Situation.freeLandReachable's capped flood fill),
+   *  unless we started on a small landmass (islandMaxTiles), where the only way out is a boat. */
+  private coastFirst(): boolean {
+    return this.p.boatsAfterCoast && !this.onSmallLandmass && (this.sit.wilderness || this.q.freeLandReachable(this.sit.tick));
+  }
+  /** Runs `rule` with boat() reporting launches instead of making them; true when it would have launched a boat. */
+  private dryRun(rule: () => void): boolean {
+    this.dry = true; this.dryBoats = 0;
+    try { rule(); } finally { this.dry = false; }
+    return this.dryBoats > 0;
+  }
 
   tick(ticks: number): void {
     const me = this.player;
