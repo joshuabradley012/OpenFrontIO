@@ -70,6 +70,7 @@ export interface PlaybookParams {
   utility: boolean; // #3: one `troops` rule replaces counter/expand/tribes/wars — every troop option (expand click, tribe click, war wave per candidate, counter) is scored in one currency (expected tiles per troop × curved considerations, Utility.ts) and executed by rank then weight; counters always go, one war per pass, the invariants (reserve, whole-or-nothing wars, one war at a time, hold, sticky target) stay. Default off until the 30-game Medium A/B
   relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
   takeFallout: boolean; // expand into irradiated land: PlayerImpl.nearby() hides unowned fallout tiles, so `wilderness` is false when only fallout borders us and expand() never sends a click — yet a TerraNullius attack takes those tiles (at 2.5–5× the loss, conquest clears the fallout). With the flag on, an expand click goes at the contested share whenever unowned fallout land touches our border and troops are ≥ fightAbove × cap (idle troops are free); default off until the 30-game Medium A/B
+  steamrollLevels: boolean; // the nations' steamroll MIRV rule counts city LEVELS (Player.unitCount sums unit.level()), not units: keep our city-level sum under 0.9 × mult × the runner-up's level sum (floor: the rule's minLeader) — no new city and no city level past it; spare gold goes to ports, rail, bombs, SAMs instead. Captures can still cross the line (nationMirvAware then buys SAM cover)
   steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
   holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
   // Constants of the ab1-neutral flags, exposed so cmaes.py can tune them with the flag on (scripts/lab/specs/neutral-flags.json).
@@ -159,6 +160,7 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   relationAware: false, // default off until the 30-game Medium A/B
   buildSearch: false, // default off until the 30-game Medium A/B
   takeFallout: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"takeFallout":false} vs {})ntil the 30-game Medium A/B
+  steamrollLevels: true, // ON by default 2026-08-30: the 30-min africa baseline sat at 27 vs 22.5 by 9:30 and 101 vs 37.5 by 13:00 and every MIRV it took was this rule; A/B as a removal, {"steamrollLevels":false} vs {}
   steamrollCap: false,
   holdHumans: false,
   strictOneWar: false,

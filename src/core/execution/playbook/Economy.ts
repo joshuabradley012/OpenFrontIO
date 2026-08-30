@@ -8,7 +8,7 @@ import { closestTile } from "../Util";
 import { BuildKind, describePlan, EconModel, EconState, horizonForPhase, Plan, portLevelRate, search } from "./BuildSearch";
 import { BotContext, FireLimiter } from "./Context";
 import { Military } from "./Military";
-import { MirvRisk } from "./MirvRisk";
+import { MirvRisk, mirvRules } from "./MirvRisk";
 import { SituationQueries } from "./Situation";
 
 export class Economy {
@@ -212,7 +212,9 @@ export class Economy {
       }
     }
     const samFund = samBuy !== null ? samBuy.need : 0n;
-    const cityCapHit = cityUnits.length >= this.cityUnitCap() || nearLine;
+    const levelCapHit = this.ctx.p.steamrollLevels && this.levelLineHit(ticks); // `steamrollLevels`: the rule counts levels
+    const holdLevels = nearLine || levelCapHit;
+    const cityCapHit = cityUnits.length >= this.cityUnitCap() || holdLevels;
     if (nearLine && cityUnits.length < this.cityUnitCap()) this.lim.fire("nationMirvAware", "cap");
     if (this.ctx.p.steamrollCap && cityCapHit !== cityUnits.length >= this.cityUnitCap(false) && ticks - this.lastCapFire >= 100) { this.lastCapFire = ticks; this.ctx.fire("steamrollCap"); }
     const myRank = this.ctx.mg.ticks() >= 9000 ? this.rank() : 99;
@@ -316,7 +318,7 @@ export class Economy {
     if (capFull && gold - siloReserve - mirvFund >= cost(UnitType.City)) {
       const rt = cityCapHit ? null : this.railInfillTile();
       if (rt !== null && this.tryBuild(UnitType.City, rt)) { this.rail.infilled++; return; }
-      const city = nearLine ? undefined : cityUnits.find((c) => me.canUpgradeUnit(c)); // `nationMirvAware`: the rule counts levels (Player.unitCount sums them)
+      const city = holdLevels ? undefined : cityUnits.find((c) => me.canUpgradeUnit(c)); // `nationMirvAware` / `steamrollLevels`: the rule counts levels (Player.unitCount sums them)
       if (city) { upgrade(city); return; }
       const tile = cityCapHit ? null : this.interiorTile(UnitType.City);
       if (tile !== null && this.tryBuild(UnitType.City, tile)) return;
@@ -346,11 +348,28 @@ export class Economy {
     if (spareR("city", cost(UnitType.City))) {
       const rt = cityCapHit ? null : this.railInfillTile();
       if (rt !== null && this.tryBuild(UnitType.City, rt)) { this.rail.infilled++; return; }
-      const city = nearLine ? undefined : cityUnits.find((c) => me.canUpgradeUnit(c)); // `nationMirvAware`: the rule counts levels (Player.unitCount sums them)
+      const city = holdLevels ? undefined : cityUnits.find((c) => me.canUpgradeUnit(c)); // `nationMirvAware` / `steamrollLevels`: the rule counts levels (Player.unitCount sums them)
       if (city) { upgrade(city); return; }
       const tile = cityCapHit ? null : this.interiorTile(UnitType.City);
       if (tile !== null && this.tryBuild(UnitType.City, tile)) return;
     }
+  }
+  /** `steamrollLevels`: is our city-level sum at the line the nations' steamroll rule reads (0.9 × mult × the runner-up's
+   *  level sum, never under minLeader)? Logged every 600 ticks while held; fires per pass held. */
+  private levelLineLogged = -1e9;
+  levelLineHit(ticks: number): boolean {
+    const me = this.ctx.me, mg = this.ctx.mg;
+    const { mult, minLeader } = mirvRules(mg.config().gameConfig().difficulty);
+    let second = 0, who = "";
+    for (const p of mg.players()) { if (p === me || !p.isAlive() || p.type() === PlayerType.Bot) continue; const l = p.unitsOwned(UnitType.City); if (l > second) { second = l; who = p.name(); } }
+    const cap = Math.max(minLeader, Math.floor(second * mult * 0.9));
+    const mine = me.unitsOwned(UnitType.City);
+    const hit = mine >= cap;
+    if (hit) {
+      this.lim.fire("steamrollLevels", "hold");
+      if (ticks - this.levelLineLogged >= 600) { this.levelLineLogged = ticks; this.ctx.log(`t${ticks} STEAMROLL LEVELS: ${mine} city levels vs line ${cap} (${who} ${second} × ${mult} × 0.9): no city, no level`); }
+    }
+    return hit;
   }
 
   // ---------------------------------------------------------------- #7 buildSearch: the planner path
