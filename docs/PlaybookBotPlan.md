@@ -968,3 +968,46 @@ unchanged with the flag off.
 
 **A/B:** `CONFIGS='{"base":{},"x":{"utility":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 
+### #6 — A war plan with a preparation phase (`campaigns`)
+
+**What the flag does.** `Campaign.ts` is a phase machine for one target —
+`prepare → wave → followup → consolidate` — owned by Military and fed pure
+`CampaignFacts`. `actWar` opens one whenever the war rule (or the utility
+layer) would send a wave at a target that is **not** an opportunity
+(collapsed / gap owner / MIRV threat / drained go at once, as before).
+*prepare*: the wave is escrowed — `send()` / `boat()` keep the spendable above
+`Military.escrow` for anything but the war or a counter — Economy's threat-post
+rule takes `Military.prepTarget` right after the expiring allies, and
+Diplomacy neither accepts nor requests an alliance with it and lets an existing
+one lapse. The wave goes at the earliest of: affordable (send's room ≥ 0.9 ×
+wave) and no alliance of ours with one of the target's allies within 450 ticks
+of expiry and a post facing the target (waited for at most 300 ticks); the
+target's drained / collapse window opening; the cap of 900 ticks (after which
+only affordability gates it). *wave* → *followup* once the attack is in;
+follow-ups flow through the sticky-target logic; *consolidate* on the target's
+death or 100 ticks after our last attack on it is gone, then a 600-tick
+cooldown in which no new campaign opens. Aborts (→ consolidate): a non-bot
+attack on us above 15 % of our troops (300-tick cooldown: the counter has the
+army), the target allying with one of our allies, the target becoming our
+ally, the ratio under `fightRatio × 0.8` for 300 ticks, or a prepare the war
+rule stopped picking (cap + 600) — these end at once, and a plan that would
+abort on its first tick is refused instead of opened (`CAMPAIGN no war on …`,
+once per 600 ticks). A prepare under 300 ticks old holds its target against a
+different pick (the scorer and the utility layer give the prep target the
+running war's +3 / ×1.5, so it comes back next pass); the first smoke swapped
+two equal-scored targets every pass. "Attacked by someone bigger" is not an
+abort: with `retaliateAware` that is the shadow wave's opportunity. `CAMPAIGN`
+lines on every phase change; fires whenever a wave the chain would have sent
+is delayed (prepare, sticky, waiting, cooldown, refused), on an abort, when the
+escrow trims a spend, and when Economy/Diplomacy act on the prep target.
+
+**Tests.** `tests/playbook/campaigns.test.ts`: the machine on plain facts
+(ready conditions, phases, every abort); a normal target enters prepare at
+the first war pass, the post goes up on its border, the wave follows with a
+`CAMPAIGN go … post in place` line and the follow-up phase; a drained target
+skips prepare; a 25 % incoming wave aborts the plan and the cooldown blocks a
+new one. Golden hash unchanged with the flag off.
+
+**A/B:** `CONFIGS='{"base":{},"x":{"campaigns":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+(and `{"utility":true,"campaigns":true}` for the pair — the review suggested
+#3 / #5 / #6 as one package).

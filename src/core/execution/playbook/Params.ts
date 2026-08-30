@@ -65,6 +65,7 @@ export interface PlaybookParams {
   drainedNations: boolean; // a nation under its reserve ratio (troops < 0.3 × max) is drained until it regrows to its trigger ratio: fight() takes it at 1.5× (affordable gate and score bonus), and the counter is never sized below the wave it cancels
   retaliateAware: boolean; // nations retaliate only against their largest attacker: a target already under a bigger attack (or marked by one of our allies) is preferred and taken at 1.2× with a wave kept below the bigger one; absorbs the brief's `secondAttacker`
   utility: boolean; // #3: one `troops` rule replaces counter/expand/tribes/wars — every troop option (expand click, tribe click, war wave per candidate, counter) is scored in one currency (expected tiles per troop × curved considerations, Utility.ts) and executed by rank then weight; counters always go, one war per pass, the invariants (reserve, whole-or-nothing wars, one war at a time, hold, sticky target) stay. Default off until the 30-game Medium A/B
+  campaigns: boolean; // #6: a war on a normal target (not collapsed / gap / threat / drained) goes through a Campaign (Campaign.ts): prepare (the wave is escrowed from other spends, a threat post is asked for on that border, no alliance with the target) until the wave is affordable and timed, then wave → follow-ups → consolidate with a cooldown; aborts on a big incoming attack, the target allying with our ally, or the ratio under fightRatio × 0.8 for 300 ticks. Default off until the 30-game Medium A/B
   relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
 }
 
@@ -122,4 +123,5 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   relationAware: false, // default off until the 30-game Medium A/B
   buildSearch: false, // default off until the 30-game Medium A/B
   utility: false, // default off until the 30-game Medium A/B
+  campaigns: false, // default off until the 30-game Medium A/B
 };
