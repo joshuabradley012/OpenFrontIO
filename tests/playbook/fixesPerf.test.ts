@@ -125,14 +125,14 @@ describe("reachable(): a vanished wave is not always an unreachable target", () 
     expect(h.log.some((l) => l.includes("unreachable"))).toBe(false);
   });
 
-  test("a wave that dies with the target still on our border blacklists it for 600 ticks", async () => {
+  test("a wave that dies uncontested without taking a tile blacklists the target for 600 ticks", async () => {
     const h = await playbookSetup({ spawn: [50, 40], tiles: ME, troops: 100_000, rivals: [{ name: "R", type: PlayerType.Nation, at: [50, 75], tiles: RV, troops: 100_000 }] });
     const r = h.rival("R"), mil = military(h);
     h.step(1);
     mil.noteSent(r); // no attack ever ran
     h.step(3);
     expect(mil.reachable(r)).toBe(false);
-    expect(h.log.some((l) => /R unreachable: the wave vanished with it still on our border/.test(l))).toBe(true);
+    expect(h.log.some((l) => /R unreachable: the wave vanished without taking a tile/.test(l))).toBe(true);
     h.step(600);
     expect(mil.reachable(r)).toBe(true);
   });

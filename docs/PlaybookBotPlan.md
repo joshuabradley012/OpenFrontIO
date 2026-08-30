@@ -561,7 +561,8 @@ split per tick (invalidated after `acceptAlliances`); `interiorTile` ranks the
 per-player map (`bombed` is kept on purpose: a structure is bombed once).
 
 **Bug fixes (no flag):** `reachable()` blacklists only a wave that vanished
-with the target still on our border and no wave of theirs to cancel against;
+uncontested without taking a tile (a won fight, a dead target or a cancelled
+counter no longer blacklist; a diagonal-only neighbour still does);
 a lapse we planned (`plannedTarget`) leaves trust unchanged; `manageExpiries`
 runs every 50 ticks and retries a gift/renewal that could not go through, once
 per alliance; the MIRV-threat gate reads the live MIRV price; `maybeMIRV`

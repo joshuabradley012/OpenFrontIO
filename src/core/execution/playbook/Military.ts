@@ -13,7 +13,7 @@ import { SituationQueries } from "./Situation";
 export class Military {
   private currentTarget_: Player | null = null;
   private waves = new Map<Player, { want: number; sent: number; last: number }>();
-  private sentAt = new Map<Player, { tick: number; contested: boolean }>();
+  private sentAt = new Map<Player, { tick: number; tiles: number; contested: boolean }>();
   private blacklist = new Map<Player, number>();
   public bombs = 0;
   private lastBombTick = -1e9;
@@ -45,14 +45,15 @@ export class Military {
   }
 
   // ---------------------------------------------------------------- reachability
-  /** Record a first wave we just sent (and whether the target had a wave on us it could cancel against). */
-  noteSent(target: Player): void { this.sentAt.set(target, { tick: this.ctx.mg.ticks(), contested: this.ctx.me.incomingAttacks().some((a) => a.attacker() === target) }); }
+  /** Record a first wave we just sent: the target's size, and whether it had a wave on us ours could cancel against. */
+  noteSent(target: Player): void { this.sentAt.set(target, { tick: this.ctx.mg.ticks(), tiles: target.numTilesOwned(), contested: this.ctx.me.incomingAttacks().some((a) => a.attacker() === target) }); }
   /** A wave gone 2–12 ticks after it left means the engine dropped it. AttackExecution folds a second land attack
    *  into the running one (so an attack always remains), cancels a wave troop-for-troop against the target's own
-   *  wave on us, and retreats one whose target has no tile beside ours any more (we won, it died, it became a
-   *  friend). Only a wave that died with the target still on our border and no wave of theirs to cancel against
-   *  marks the target unreachable for 600 ticks; the old check blacklisted every vanished wave, a won fight and a
-   *  cancelled counter included. */
+   *  wave on us, and retreats one with nothing left to conquer — either because we took everything beside us (the
+   *  target shrank or died) or because there never was anything: a neighbour `nearby()` lists only diagonally, or
+   *  across a strait. Only that last case — the wave vanished uncontested without taking a tile — marks the target
+   *  unreachable for 600 ticks; the old check blacklisted every vanished wave, a won fight and a cancelled counter
+   *  included. */
   reachable(target: Player): boolean {
     const t = this.ctx.mg.ticks(), me = this.ctx.me;
     const bl = this.blacklist.get(target);
@@ -60,18 +61,12 @@ export class Military {
     const s = this.sentAt.get(target);
     if (s !== undefined && t - s.tick >= 2 && t - s.tick < 12 && !this.q.outgoingTo(target)) {
       this.sentAt.delete(target);
-      if (s.contested || !target.isAlive() || me.isFriendly(target) || !this.sharesBorder(target)) return true;
+      if (s.contested || !target.isAlive() || me.isFriendly(target) || target.numTilesOwned() < s.tiles) return true;
       this.blacklist.set(target, t + 600);
-      this.ctx.log(`t${t} ${target.name()} unreachable: the wave vanished with it still on our border`);
+      this.ctx.log(`t${t} ${target.name()} unreachable: the wave vanished without taking a tile`);
       return false;
     }
     return true;
-  }
-  /** Any tile of `p` beside one of ours (walks p's border; only called when a wave has vanished). */
-  private sharesBorder(p: Player): boolean {
-    const mg = this.ctx.mg, mine = this.ctx.me.smallID();
-    for (const t of p.borderTiles()) for (const n of mg.neighbors(t)) if (mg.ownerID(n) === mine) return true;
-    return false;
   }
 
   // ---------------------------------------------------------------- housekeeping
