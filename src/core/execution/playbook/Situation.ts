@@ -132,23 +132,52 @@ export class SituationQueries {
   }
 
   // ---------------------------------------------------------------- annexation
-  private annexCache = new Map<Player, { tick: number; ok: boolean }>();
+  private annexCache = new Map<Player, { tick: number; ok: boolean; old: boolean }>();
   /** A neighbour we could annex by encirclement: no ocean coast, no map edge, and we already hold at least
-   *  40 % of its border. Such a neighbour must never be an ally (an ally's cluster never flips). */
+   *  40 % of its border. Such a neighbour must never be an ally (an ally's cluster never flips).
+   *  `annexWars`: the border is sampled (every third tile) and each sample classed as ours-adjacent, coast-or-edge
+   *  (ocean shore, map edge, or a lake-only shore) or other (touching a third party or unowned land). Annexable =
+   *  ours-adjacent ≥ 40 % and other ≤ 15 % of the samples and smaller than us — a coastal player whose land side
+   *  we hold can be annexed; the old rule refused it on its first shore tile. The test is geometry only: the
+   *  consumers apply "not our ally" (warPick's rivals, Diplomacy's request/accept lists are unfriendly by
+   *  construction) and manageExpiries reads it for an ally on purpose, to let that alliance lapse. */
   annexable(p: Player): boolean {
     const c = this.annexCache.get(p);
     if (c && this.ctx.mg.ticks() - c.tick < 100) return c.ok;
+    const mg = this.ctx.mg, me = this.ctx.me;
     let ok = true, ours = 0, n = 0, i = 0;
+    if (this.ctx.p.annexWars) {
+      let other = 0, anyCoast = false;
+      for (const t of p.borderTiles()) {
+        if (mg.isOceanShore(t) || mg.isOnEdgeOfMap(t)) anyCoast = true;
+        if ((i++ % 3) !== 0) continue;
+        n++;
+        let mine = false, third = false;
+        for (const nb of mg.neighbors(t)) { const o = mg.owner(nb); if (o === me) { mine = true; break; } if (o !== p && mg.isLand(nb)) third = true; }
+        if (mine) ours++; else if (third) other++; // else: coast, map edge or a lake shore — nobody can reinforce through it
+      }
+      const smaller = p.numTilesOwned() < me.numTilesOwned();
+      ok = n > 0 && ours / n >= 0.4 && other / n <= 0.15 && smaller;
+      const old = !anyCoast && n > 0 && ours / n >= 0.4 && smaller;
+      this.annexCache.set(p, { tick: mg.ticks(), ok, old });
+      if (ok && !(c && c.ok)) this.ctx.log(`t${mg.ticks()} ANNEX target ${p.name()} ${p.numTilesOwned()}t (${Math.round((100 * ours) / n)} % of its border is ours, ${Math.round((100 * other) / n)} % faces others${anyCoast ? ", coastal" : ""})`);
+      return ok;
+    }
     for (const t of p.borderTiles()) {
-      if (this.ctx.mg.isOceanShore(t) || this.ctx.mg.isOnEdgeOfMap(t)) { ok = false; break; }
+      if (mg.isOceanShore(t) || mg.isOnEdgeOfMap(t)) { ok = false; break; }
       if ((i++ % 3) !== 0) continue;
       n++;
-      for (const nb of this.ctx.mg.neighbors(t)) { if (this.ctx.mg.owner(nb) === this.ctx.me) { ours++; break; } }
+      for (const nb of mg.neighbors(t)) { if (mg.owner(nb) === me) { ours++; break; } }
     }
-    ok = ok && n > 0 && ours / n >= 0.4 && p.numTilesOwned() < this.ctx.me.numTilesOwned();
-    this.annexCache.set(p, { tick: this.ctx.mg.ticks(), ok });
-    if (ok && !(c && c.ok)) this.ctx.log(`t${this.ctx.mg.ticks()} ANNEX target ${p.name()} ${p.numTilesOwned()}t (${Math.round((100 * ours) / n)} % of its border is ours)`);
+    ok = ok && n > 0 && ours / n >= 0.4 && p.numTilesOwned() < me.numTilesOwned();
+    this.annexCache.set(p, { tick: mg.ticks(), ok, old: ok });
+    if (ok && !(c && c.ok)) this.ctx.log(`t${mg.ticks()} ANNEX target ${p.name()} ${p.numTilesOwned()}t (${Math.round((100 * ours) / n)} % of its border is ours)`);
     return ok;
+  }
+  /** `annexWars` liveness: annexable(p) differs from what the flag-off rule would say (read after annexable(p)). */
+  annexableChanged(p: Player): boolean {
+    const c = this.annexCache.get(p);
+    return c !== undefined && c.ok !== c.old;
   }
 
   // ---------------------------------------------------------------- landmass and water
