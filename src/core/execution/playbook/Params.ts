@@ -26,7 +26,7 @@ export interface PlaybookParams {
   fightNotBeforeTick: number; // no wars with nations/humans before this tick
   fightMinCities: number; // ... or before this many cities
   fightMaxShare: number; // never commit more than this share of home troops to one target
-  retreatBelowRatio: number; // retreat an attack whose troops fall below this × target troops
+  retreatBelowRatio: number; // hystRetreats: a wave under this × the target's troops whose re-estimate no longer wins is lost outright (read nowhere with the flag off)
   capFullShare: number; // buy cap when troops exceed this share of cap
   citiesBeforePort: number;
   portMinPartnerDist: number;
@@ -48,6 +48,15 @@ export interface PlaybookParams {
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
+  // Opportunity #4 (estimator calibration): every estimateAttack call scales its per-tile loss by the defender's class
+  // and its tiles/tick by estSpeedScale. 1.0 = the raw replay; paste the values scripts/lab/calibrate.py fits from a
+  // sweep's EST/ACT log pairs (docs/PlaybookBotPlan.md "Calibrating the estimator").
+  estLossScaleNation: number;
+  estLossScaleHuman: number;
+  estLossScaleBot: number;
+  estSpeedScale: number;
+  simWars: boolean; // #4: fight() picks the war target and size with the calibrated estimator (smallest 1k-step wave that wins with a 20 % margin, bisection; a running wave on the target counts as part of it, the target's allies' pile-in (trustWars) as part of its army); off = the fightRatio scorer. Default off until the 30-game Medium A/B
+  hystRetreats: boolean; // #4: manageRetreats judges a war every 100 ticks as 'continue' (estimate, 600-tick horizon) vs 'retreat now', continue must win by 0.1 + 0.2 × clamp(maxBsr − 1, 0, 2) and lose twice in a row before the wave comes home; a wave under retreatBelowRatio × the target's troops that no longer wins is lost outright; off = the literal 20 % / 70 % thresholds every 10 ticks. Default off until the 30-game Medium A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -90,4 +99,10 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
   trustWars: true, // PROVISIONAL (re-scored: 10W-9L over 19 live games, dScore +0.19 [+0.02, +0.36], sign test undecided — confirm with ladder.sh before folding). Original A/B: 30-game Medium A/B on the realRetreats base 11W-8L (11 identical), 8 crowns vs 5, 21 top-3 vs 17, +19 % land
   nationAware: true, // PROVISIONAL, see trustWars; alone 9W-6L, 15 identical
+  estLossScaleNation: 1.0, // uncalibrated until a sweep has been through calibrate.py
+  estLossScaleHuman: 1.0,
+  estLossScaleBot: 1.0,
+  estSpeedScale: 1.0,
+  simWars: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4); the uncalibrated version lost 7W-23L (C3)
+  hystRetreats: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4)
 };
