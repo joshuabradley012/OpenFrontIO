@@ -547,3 +547,5 @@ click is ≤ `botEarlyShare` of spendable troops. A 6-game 10-min test favoured
 9 wins / 7 losses / 14 identical, one outlier). The 20-min Hetzner sweep of
 2026-08-29 (`jbase`, `jearly`, `jes25`, `jes35`) is the current evidence — its
 results and verdict live next to the parameter in `PlaybookBotExecution.ts`.
+
+**Empty mirrored slots (2026-08-29):** with `MIRROR=1`/the EXTRA batches, australia has no spawn from med3 on, africa at med8, and north-russia / south-america / east-asia(b) at med9 (`pickSpawn` throws "no spawn near"). The failures are identical across configs, so the pairing survives; budget ~25 % fewer pairs for batches 6–9, or move the region centres for those shifts.

@@ -1056,3 +1056,26 @@ new one. Golden hash unchanged with the flag off.
 **A/B:** `CONFIGS='{"base":{},"x":{"campaigns":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 (and `{"utility":true,"campaigns":true}` for the pair — the review suggested
 #3 / #5 / #6 as one package).
+
+## Review-package A/B `ab1` (2026-08-29 late, `lab-out/ab1`)
+
+`CONFIGS` = base + the twelve review flags (simWars deferred until calibration), `SPRT=1 MIRROR=1 MINUTES=20 WORKERS=4` on cpx62@fsn1; 10 batches (med0–med9, mirrored), 1,287 games, ~€0.3, 32 min wall clock. Score = summarize.py's land+rank+crown; pairs are live games vs base.
+
+| flag | W/L/T | dScore [95 % CI] | sign p | verdict |
+|---|---|---|---|---|
+| campaigns | 38/60/1 | −0.186 [−0.298, −0.075] | 0.033 | **decisive loss — delete** |
+| hystRetreats | 46/49/3 | −0.100 [−0.226, +0.009] | 0.84 | leaning harmful |
+| markTargets | 41/58/0 | −0.081 [−0.175, +0.019] | 0.11 | leaning harmful (4 deaths vs 0) |
+| threatMap | 46/51/2 | −0.073 [−0.170, +0.018] | 0.69 | noise |
+| drainedNations | 46/51/2 | −0.067 [−0.151, +0.022] | 0.69 | noise |
+| relationAware | 42/46/11 | −0.037 [−0.132, +0.059] | 0.75 | noise |
+| retaliateAware | 42/36/20 | −0.025 [−0.117, +0.054] | 0.57 | noise |
+| utility | 53/44/2 | −0.006 [−0.089, +0.084] | 0.42 | noise (SPRT: CONTINUE after 10 batches) |
+| buildSearch | 49/50/0 | −0.002 [−0.095, +0.095] | 1.0 | noise (+11 % median tiles, fewer crowns) |
+| strictOneWar | 19/13/66 | +0.018 [−0.027, +0.066] | 0.38 | only positive; fires in a third of games |
+| wildernessAware | 11/7/81 | −0.005 | — | never changes a decision in this lab |
+| steamrollCap | 2/1/95 | −0.001 | — | never changes a decision in this lab |
+
+Reading: none of the mechanisms beats the CMA-ES-tuned base at its hand-picked constants; the SPRT (δ = 0.10) rejected every flag except utility. Next: delete campaigns; put the constants of the neutral flags (threatReserveGain, the utility curve midpoints, buildSearch's CAP_GOLD_PER_TROOP, retaliate/drained ratios) into `cmaes.py --race` with the flag on before judging them; run simWars with the calibrated scales (calibrate.py on ab1's base: estLossScaleNation 0.868, estLossScaleBot 0.719, estSpeedScale 1.285, from 17k engaged waves; spread ≈ 1.0 in log space).
+
+Grid note: with `MIRROR=1` the shifted slots med3+/australia, med8/africa and med9/north-russia, south-america, east-asia(b) have no valid spawn (`pickSpawn` throws "no spawn near"); they fail identically for every config, so pairing is unaffected but the later batches carry fewer pairs.
