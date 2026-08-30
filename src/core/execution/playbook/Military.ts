@@ -370,12 +370,12 @@ export class Military {
   }
 
   /** Bring a wave home. Player.orderRetreat() only flags the attack; the troops return when a RetreatExecution
-   *  runs executeRetreat() 20 ticks later — with `realRetreats` on we schedule that execution (once: a wave
-   *  already flagged is skipped), off keeps the flag-only call (A1 finding: such waves freeze forever). */
+   *  runs executeRetreat() 20 ticks later, so that execution is scheduled here (once: a wave already flagged is
+   *  skipped). Until 2026-08-29 the bot called orderRetreat() directly and every retreat froze forever (A1
+   *  finding); fixing it was the largest single gain of the rebuild — ladder1, 45 paired 30-min games on a
+   *  shifted grid: retreats off = 1 crown vs 11, 13W-32L, p = 0.007 (docs/PlaybookBotPlan.md, Ladder). */
   retreat(a: Attack): void {
-    if (!this.ctx.p.realRetreats) { this.ctx.me.orderRetreat(a.id()); return; }
     if (a.retreating() || a.retreated()) return;
-    this.ctx.fire("realRetreats");
     this.ctx.mg.addExecution(new RetreatExecution(this.ctx.me, a.id()));
   }
 

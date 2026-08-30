@@ -43,7 +43,6 @@ export interface PlaybookParams {
   spawnInland: number; // tiles walked inland from the chosen shore
   finishRule: boolean; // hold under the nations' victory-denial line while a MIRV-capable rival exists; remove them; then push all-out
   endgameV2: boolean; // 15:00+: hydrogen bombs instead of hoarding, weak allies lapse, short boat jumps at 2×
-  realRetreats: boolean; // schedule a RetreatExecution when retreating (A1 finding: Player.orderRetreat() only flags the wave; without the execution it never comes home, stays in outgoingAttacks() and blocks that target)
   portWithoutPartnerTick: number; // first port on any ocean coast from this tick even with no partner (1e9 = never)
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
@@ -85,9 +84,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   spawnInland: 0, // 30-game lab: 8 tiles inland = 18/30 alive vs 27/30 on the shore (an inland circle can be surrounded; the coast cannot)
   finishRule: true,
   endgameV2: true,
-  realRetreats: true, // PROVISIONAL (re-scored: 17W-12L over 29 live games, dScore +0.13 [−0.04, +0.29], undecided; kept because it is a bug fix with a positive mean — confirm with ladder.sh on a shifted 60-game grid). Original A/B: 30-game Medium A/B 18W-11L vs off, 30/30 alive, 5 crowns (2), +70 % land (3.53M vs 2.08M tiles); on = frozen waves finally return (see the interface comment)
   portWithoutPartnerTick: 1500,
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
-  trustWars: true, // PROVISIONAL (re-scored: 10W-9L over 19 live games, dScore +0.19 [+0.02, +0.36], sign test undecided — confirm with ladder.sh before folding). Original A/B: 30-game Medium A/B on the realRetreats base 11W-8L (11 identical), 8 crowns vs 5, 21 top-3 vs 17, +19 % land
-  nationAware: true, // PROVISIONAL, see trustWars; alone 9W-6L, 15 identical
+  trustWars: true, // kept 2026-08-29: ladder1 (45 paired 30-min games, shifted grid) trustWars+nationAware off = 11W-17L-17T vs on, dScore −0.06 [−0.19, +0.05], undecided; small positive mean, rarely fires — see PlaybookBotPlan.md Ladder
+  nationAware: true, // kept with trustWars (see above)
 };

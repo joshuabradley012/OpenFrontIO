@@ -36,8 +36,9 @@ flag-off transcript was proven byte-identical at merge time).
 lost their A/Bs and were removed in 7cd2c9c56 (code, tests, `Estimate.ts`,
 `Spend.ts`; a default-config game was diff-identical before and after). The
 simWars/scoredSpend ideas live in git history — last commit with
-`Estimate.ts`/`Spend.ts` is 95f4b634a. Remaining flags: `realRetreats`,
-`trustWars`, `nationAware` (all default on, PROVISIONAL).
+`Estimate.ts`/`Spend.ts` is 95f4b634a. *Ladder (2026-08-29 late):* retreats
+confirmed decisively and folded into the code (no flag); `trustWars` and
+`nationAware` confirmed neutral-to-positive and kept on. No flags remain.
 
 **What to do next (C3)**
 1. One sweep, MINUTES=20, all in the same CONFIGS so games pair:
@@ -68,8 +69,6 @@ simWars/scoredSpend ideas live in git history — last commit with
   telling Josh. A box `openfront-lab-c3` may still exist from an aborted run.
 
 **Known loose ends**
-- `realRetreats` off keeps the old no-op retreat on purpose (baseline
-  fidelity); once it graduates, delete the `orderRetreat` path.
 - `Spend.ts` value constants (`CAP_GOLD_PER_TROOP` = 20, port/rail curves)
   are first estimates from the labs, not swept.
 - `bsr` approximates "their border facing us" by our border facing them.
@@ -538,3 +537,28 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 **Next lab session:** `ladder.sh` on the two provisional flags (60 games,
 30 min, SHIFT=150) → fold or revert; then `cmaes.py --pop 10 --gens 12
 --games-growth`; then Hard.
+
+## Ladder (2026-08-29 late; `lab-out/ladder1`)
+
+Shifted grid (`SHIFT=150`, `med0–med9`), 30-minute games, 45 paired games
+per config (some shifted spawn slots are empty), 4× cpx62.
+
+| config | alive | crowns | top-3 | total tiles | median | live W-L-T | dScore [95 % CI] | p | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| base (retreats + trust/nation on) | 44 | 11 | 32 | 6.66M | 127k | — | — | — | — |
+| retreats off | 45 | 1 | 22 | 3.71M | 74k | 13-32-0 | −0.175 [−0.339, +0.003] | 0.007 | decisive loss |
+| trustWars + nationAware off | 43 | 12 | 30 | 7.62M | 127k | 11-17-17 | −0.061 [−0.193, +0.045] | 0.345 | undecided |
+| all three off | 45 | 8 | 26 | 4.97M | 86k | 14-31-0 | −0.065 [−0.250, +0.115] | 0.016 | decisive loss |
+
+Decisions: retreats folded (the `realRetreats` flag removed; the fix is
+unconditional). `trustWars`/`nationAware` kept on: neutral-to-positive, cheap,
+rarely fire. `PlaybookParams` now carries no feature flags.
+
+Midgame observation from the same 45 base games: median land 25k / 71k / 94k /
+127k / 125k / 129k tiles at 5 / 10 / 15 / 20 / 25 / 30 min — growth stops at
+20:00; ATTACK lines per 5-minute bucket 396 / 778 / 745 / 683 / 534 / 394;
+`INVADE` (sea invasion) fired 0 times in 45 games; "idle at cap" logged 20
+times, always naming one giant neighbour (e.g. Japan 260k tiles / 6.3M).
+
+Lab can now run to a real win: `MIN=full` (170-minute ceiling), the loop
+stops on `game.getWinner()`, FINAL carries `winner=us|other|none`.

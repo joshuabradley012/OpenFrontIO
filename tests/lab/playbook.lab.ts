@@ -92,11 +92,13 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
   let botMs = 0; const origTick = bot.tick.bind(bot); bot.tick = (t: number) => { const s0 = performance.now(); origTick(t); botMs += performance.now() - s0; };
   game.addExecution(bot, new WinCheckExecution());
   const rows: string[] = [`== ${label} | spawn ${game.x(spawn)},${game.y(spawn)} (${spawnNote}) | ${difficulty} ==`];
-  const ticks = minutes * 600;
+  const ticks = minutes * 600; // MIN=full → 170 (WinCheckExecution's hard limit): the game runs until someone wins
   let allMs = 0;
   for (let t = 0; t < ticks; t++) {
     const s0 = performance.now(); game.executeNextTick(); allMs += performance.now() - s0;
     if (!me.isAlive()) { rows.push(`  DEAD at ${(t / 10).toFixed(0)}s`); break; }
+    const w = game.getWinner();
+    if (w !== null) { rows.push(`  WINNER ${typeof w === "string" ? w : w.name()} at ${(t / 10).toFixed(0)}s (${w === me ? "us" : "not us"})`); break; }
     if ((t + 1) % 300 === 0) {
       const ranked = game.players().filter((p) => p.type() !== PlayerType.Bot).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
       const rank = ranked.findIndex((p) => p === me) + 1; const share = (me.numTilesOwned() / Math.max(1, ranked[0]?.numTilesOwned() ?? 1)).toFixed(2);
@@ -105,7 +107,7 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
   }
   const ranked = game.players().filter((p) => p.type() !== PlayerType.Bot && p.isAlive()).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
   const rank = ranked.findIndex((p) => p === me) + 1; const leader = ranked[0]?.numTilesOwned() ?? 1;
-  rows.push(`  FINAL rank=${rank || 99} share=${(me.numTilesOwned() / Math.max(1, leader)).toFixed(2)} botMs=${Math.round(botMs)} gameMs=${Math.round(allMs)} alive=${me.isAlive()} tiles=${me.numTilesOwned()} troops=${Math.round(me.troops()/1000)}k cities=${me.unitsOwned(UnitType.City)} ports=${me.unitsOwned(UnitType.Port)} factories=${me.unitsOwned(UnitType.Factory)} silos=${me.unitsOwned(UnitType.MissileSilo)} sams=${me.unitsOwned(UnitType.SAMLauncher)} bombs=${bot.bombs} trainGold=${Math.round(Number(me.trainGold())/1000)}k gold=${Math.round(Number(me.gold())/1000)}k players=${game.players().filter((p) => p.type() !== PlayerType.Bot).length} fired=${[...bot.fired].map(([k, v]) => `${k}:${v}`).join(",")}`);
+  rows.push(`  FINAL rank=${rank || 99} share=${(me.numTilesOwned() / Math.max(1, leader)).toFixed(2)} botMs=${Math.round(botMs)} gameMs=${Math.round(allMs)} alive=${me.isAlive()} tiles=${me.numTilesOwned()} troops=${Math.round(me.troops()/1000)}k cities=${me.unitsOwned(UnitType.City)} ports=${me.unitsOwned(UnitType.Port)} factories=${me.unitsOwned(UnitType.Factory)} silos=${me.unitsOwned(UnitType.MissileSilo)} sams=${me.unitsOwned(UnitType.SAMLauncher)} bombs=${bot.bombs} trainGold=${Math.round(Number(me.trainGold())/1000)}k gold=${Math.round(Number(me.gold())/1000)}k winner=${game.getWinner() === null ? "none" : game.getWinner() === me ? "us" : "other"} players=${game.players().filter((p) => p.type() !== PlayerType.Bot).length} fired=${[...bot.fired].map(([k, v]) => `${k}:${v}`).join(",")}`);
   rows.push("  log: " + bot.log.join(" | "));
   return rows.join("\n");
 }
@@ -118,7 +120,7 @@ export async function runLab(): Promise<void> {
   if (process.env.EXPAND) { params.expandContested = Number(process.env.EXPAND); params.expandFree = Number(process.env.EXPAND) / 2; }
   if (process.env.EVERY) params.expandEvery = Number(process.env.EVERY);
   if (process.env.PARAMS) { const o = JSON.parse(process.env.PARAMS); Object.assign(params, o); if (o.spawnInland !== undefined) DEFAULT_PLAYBOOK.spawnInland = o.spawnInland; }
-  const minutes = process.env.MIN ? Number(process.env.MIN) : 20;
+  const minutes = process.env.MIN === "full" ? 170 : process.env.MIN ? Number(process.env.MIN) : 20;
   const shift = Number(process.env.SHIFT ?? 0);
   for (const [name, pref0] of spawns) { const pref: [number, number] = [pref0[0] + shift, pref0[1] + shift]; if (process.env.SPAWN && process.env.SPAWN !== name) continue; out.push(await runGame(name, params, minutes, process.env.DIFF === "medium" ? Difficulty.Medium : Difficulty.Hard, pref)); fs.writeFileSync(OUT + (process.env.OUTFILE ?? "lab_v10.txt"), out.join("\n\n")); }
   fs.writeFileSync(OUT + "lab_baseline.txt", out.join("\n\n"));
