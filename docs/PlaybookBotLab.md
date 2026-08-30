@@ -127,7 +127,10 @@ four times (`Test Files 4 passed`), 4× the CPU.
    worktrees (full copies of the tree).
 4. `npm run inst` on a box only when `node_modules` is missing or
    `package-lock.json` changed since the last install there.
-5. Clears `/root/lab-out` and launches `scripts/lab/sweep.sh SHARD=i/N` on
+5. Clears `/root/lab-out`, builds the job queue locally (longest-expected-first
+   via `scripts/lab/durations.py` over `lab-out` history — the long games start
+   first so no box idles at the end; `HISTORY=dir` overrides), delivers it to
+   box 1 and launches `scripts/lab/sweep.sh QUEUE=…` on
    box *i* with `nohup`, then polls once a minute printing
    `HH:MM N done, M failed` summed over the boxes. A dropped ssh or a killed
    local shell cannot stop a sweep; if the local script dies, rsync
@@ -143,9 +146,9 @@ four times (`Test Files 4 passed`), 4× the CPU.
 | `CONFIGS` | required | JSON name → params. Use `{}` for the baseline. |
 | `MINUTES` | 20 | game length |
 | `WORKERS` | 1 | boxes; each runs every N-th game of the same job list |
-| `SERVER_TYPE` | cpx51 | dedicated CCX types are refused on this account |
+| `SERVER_TYPE` | cpx62 | dedicated CCX types are refused on this account; cpx51 (ash/hil only) is the old default |
 | `IMAGE` | auto | newest `lab-image=1` snapshot; `none` = ubuntu + cloud-init; or an image id |
-| `LOCATION` | ash | Ashburn |
+| `LOCATION` | fsn1 | Falkenstein — cpx62 here is €0.25/h vs cpx51@ash €0.45 and measured ~12 % faster per game (2026-08-30) |
 | `NAME` | openfront-lab | server name / prefix; also the `pool` label |
 | `DEST` | ./lab-out | local results dir |
 | `KEEP` | 0 | 1 = leave the servers running |
@@ -180,8 +183,11 @@ in `sweep.log`, and keeps its stderr in `$OUT/.err_cfg_batch_spawn` on the box
 ## `scripts/lab/sweep.sh` — the box-side runner
 
 Builds a job list (config × batch × spawn) in a fixed order, keeps every N-th
-entry when `SHARD=i/N` is set, runs it with `xargs -0 -P JOBS` through
-`node --import tsx tests/lab/playbook.lab.ts` (one retry per game), then —
+entry, runs JOBS workers that pull games off the queue through
+`node --import tsx tests/lab/playbook.lab.ts` (one retry per game — except a
+deterministic "no spawn near" crash, which is SKIPPED, and rare since the
+lab relaxes the 120-tile spawn-exclusion radius when a region's ranks run
+out), then —
 unless `AGGREGATE=0` — calls `scripts/lab/aggregate.sh`, which turns the
 `p_*.txt` transcripts into `ab30_<config>_<batch>.txt` (one FINAL line per
 spawn, the format `summarize.py` reads). `aggregate.sh <dir>` is idempotent;

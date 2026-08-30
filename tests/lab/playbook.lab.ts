@@ -83,9 +83,19 @@ function pickSpawn(game: Game, _nations: Nation[], prefer: [number, number], _mi
   // a milestone bot without the exclude parameter (before 1926105b6) cannot walk the ranks: use today's picker
   const own = typeof Bot.PlaybookBotExecution.pickSpawn === "function" && Bot.PlaybookBotExecution.pickSpawn.length >= 3;
   const picker = own ? Bot.PlaybookBotExecution : CurrentBot;
-  for (let i = 0; i <= rank; i++) { t = picker.pickSpawn(game, global ? undefined : prefer, exclude); if (t === null) break; exclude.push([game.x(t), game.y(t)]); }
+  // 441 lab games used to die here ("no spawn near"): the 120-tile exclusion circles exhaust a small
+  // region (australia rank >= 3) before the rank is reached. Restart the whole walk with a smaller
+  // radius — ranks that resolve at 120 are untouched (the first pass is the old behaviour), and the
+  // relaxation is deterministic. A milestone bot without the radius parameter ignores it and can still
+  // come up empty; sweep.sh turns that crash into a SKIPPED line, not a retry.
+  let excludeRadius = 120;
+  for (const r of [120, 60, 30, 15]) {
+    excludeRadius = r; exclude.length = 0; t = null;
+    for (let i = 0; i <= rank; i++) { t = picker.pickSpawn(game, global ? undefined : prefer, exclude, r); if (t === null) break; exclude.push([game.x(t), game.y(t)]); }
+    if (t !== null) break;
+  }
   if (t === null) throw new Error("no spawn near " + prefer);
-  spawnNote = (global ? `global rank ${rank}` : `bot picker rank ${rank}`) + (botDir ? `, bot ${botDir}${own ? "" : ", today's picker"}` : "");
+  spawnNote = (global ? `global rank ${rank}` : `bot picker rank ${rank}`) + (excludeRadius !== 120 ? `, exclude ${excludeRadius}` : "") + (botDir ? `, bot ${botDir}${own ? "" : ", today's picker"}` : "");
   return t;
 }
 function neighboursBots(me: Player): string { return me.nearby().filter((n): n is Player => n.isPlayer() && n.type() === PlayerType.Bot).map((b) => Math.round(b.troops() / 1000) + "k/" + b.numTilesOwned() + "t").join(" ") || "-"; }

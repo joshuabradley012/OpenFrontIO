@@ -18,7 +18,7 @@
 # grid it was not tuned on; SHIFT=0 for the tuning grid), DEST (results dir,
 # default lab-out/ladder-<timestamp>), NAME_CAND (config name, default
 # "cand"), plus everything remote.sh / sweep.sh accept (SERVER_TYPE, KEEP,
-# REUSE, JOBS, BATCHES ...). SERVER_TYPE defaults to cpx51 here.
+# REUSE, JOBS, BATCHES ...). SERVER_TYPE defaults to cpx62 here.
 #
 # SHIFT reaches the games through the environment (sweep.sh's game processes
 # inherit it; remote.sh forwards it to the box since 6f949877c). Note that the
@@ -65,11 +65,14 @@ mkdir -p "$DEST"
 if [ "$RUNNER" = local ]; then
   CONFIGS="$CONFIGS" MINUTES="$MINUTES" SHIFT="$SHIFT" OUT="$DEST" bash scripts/lab/sweep.sh
 else
-  CONFIGS="$CONFIGS" MINUTES="$MINUTES" SHIFT="$SHIFT" DEST="$DEST" SERVER_TYPE="${SERVER_TYPE:-cpx51}" bash scripts/lab/remote.sh
+  CONFIGS="$CONFIGS" MINUTES="$MINUTES" SHIFT="$SHIFT" DEST="$DEST" SERVER_TYPE="${SERVER_TYPE:-cpx62}" bash scripts/lab/remote.sh
 fi
 echo
-echo "== per-config table: fit_old = alive+share+top3, score = land+rank+crown; live-game paired stats and SPRT vs $NAME_CAND =="
-python3 scripts/lab/summarize.py --sprt "$DEST" $names
+# The table's paired lines are each VERSION vs $NAME_CAND (its baseline is the first config: a positive d means the
+# version beat the candidate); the ladder below reads the other way, $NAME_CAND vs each version, and carries the
+# sequential test — the table used to print --sprt in the version − cand sign beside the ladder's cand − version.
+echo "== per-config table: fit_old = alive+share+top3, score = land+rank+crown; paired stats of each version vs $NAME_CAND (d = version − $NAME_CAND) =="
+python3 scripts/lab/summarize.py "$DEST" $names
 echo
-echo "== Bradley-Terry ladder (pairs by alive, tiles), SPRT of $NAME_CAND vs each version, transitivity =="
+echo "== Bradley-Terry ladder (pairs by alive, tiles), $NAME_CAND vs each version (d = $NAME_CAND − version), SPRT, transitivity =="
 python3 scripts/lab/summarize.py --sprt --ladder "$DEST" $names

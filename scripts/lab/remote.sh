@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Run a lab sweep on throwaway Hetzner Cloud servers — one box or a pool of WORKERS boxes that each take
-# one shard of the same job list (scripts/lab/sweep.sh SHARD=i/N). Results are merged locally.
+# Run a lab sweep on throwaway Hetzner Cloud servers — one box, or a pool of WORKERS boxes pulling games
+# from one longest-expected-first queue on the first box (scripts/lab/sweep.sh QUEUE=…), so no box idles
+# while another still has games. Results are merged locally.
 #
 #   CONFIGS='{"base":{},"early":{"botsAfterWild":false}}' MINUTES=20 WORKERS=4 scripts/lab/remote.sh
 #
-# Env: CONFIGS, MINUTES (20), WORKERS (1), SERVER_TYPE (cpx51 — dedicated CCX types are refused on this
+# Env: CONFIGS, MINUTES (20), WORKERS (1), SERVER_TYPE (cpx62 — dedicated CCX types are refused on this
 # account), LOCATION (ash), NAME (openfront-lab; workers are NAME-1..N when WORKERS>1), IMAGE (snapshot
 # id/name from scripts/lab/snapshot.sh; "auto" = newest snapshot labelled lab-image=1, "none" = plain
 # ubuntu-24.04 + cloud-init; default auto), DEST (local results dir, default ./lab-out), KEEP=1 to leave
 # the boxes running, REUSE=1 to use running boxes with those names, BATCHES / SPAWNS / JOBS pass through
-# to sweep.sh, as do SHIFT, MIRROR / MIRRORSHIFT / MIRRORSEED (mirrored slots) and SEED (opponent field); STAGED=1 runs the
+# to sweep.sh, as do SHIFT, MIRROR / MIRRORSHIFT / MIRRORSEED (mirrored slots), SEED (opponent field), and the
+# game-side knobs TRIBES, EXPAND, EVERY, BOT_DIR (tests/lab/playbook.lab.ts reads them); STAGED=1 runs the
 # first STAGE1 (3) batches, then the rest only for an unclear verdict (summarize.py --verdict VERDICT, default 3);
 # SPRT=1 (implies staged) keeps adding chunks of STAGE1 batches from BATCHES then EXTRA (med5..med9), up to
 # MAXBATCHES (10), until summarize.py's sequential test (--sprt, DELTA = its --delta) says ACCEPT or REJECT for
@@ -22,15 +24,19 @@ cd "$(dirname "$0")/../.."
 : "${CONFIGS:?set CONFIGS}"
 MINUTES=${MINUTES:-20}
 WORKERS=${WORKERS:-1}
-SERVER_TYPE=${SERVER_TYPE:-cpx51}
-LOCATION=${LOCATION:-ash}
+# cpx62@fsn1: same 16 shared vCPU as cpx51 but €0.25/h vs €0.45 and measured ~12 % faster per game
+# (2026-08-30). cpx51 exists only in ash/hil; pass SERVER_TYPE/LOCATION for those.
+SERVER_TYPE=${SERVER_TYPE:-cpx62}
+LOCATION=${LOCATION:-fsn1}
 NAME=${NAME:-openfront-lab}
 IMAGE=${IMAGE:-auto}
 # IPV6=1: boxes without a public IPv4 (Hetzner caps the account at 4 primary IPv4s; IPv6-only boxes are not counted),
 # reached over IPv6 from this machine (needs IPv6 here: curl -6 https://ifconfig.co). rsync needs the [addr] form.
 IPV6=${IPV6:-0}
-IPV6_FLAG=$([ "$IPV6" = 1 ] && echo --without-ipv4)
-IPFLAG=$([ "$IPV6" = 1 ] && echo -6)
+# Plain ifs: `X=$([ … ] && echo …)` returns the test's exit status when the test fails, and under set -e
+# that aborted the whole script silently for the default IPV6=0.
+IPV6_FLAG=; IPFLAG=
+if [ "$IPV6" = 1 ]; then IPV6_FLAG=--without-ipv4; IPFLAG=-6; fi
 # macOS rsync (2.6.9) cannot parse user@[v6]:path, so an IPv6 box is addressed as the dummy host "lab6" with ssh -o HostName=<addr>
 rh() { case "$1" in *:*) echo "lab6";; *) echo "$1";; esac; }
 rso() { case "$1" in *:*) echo "-o HostName=$1";; esac; }
@@ -107,6 +113,20 @@ sync_one() {
 }
 for ip in "${ips[@]}"; do sync_one "$ip" & done; wait
 
+# One pull queue for the whole pool: workers on every box claim games from box 1 over ssh with a
+# throwaway key, so a fast box drains what a slow one has not started (the old static shards left the
+# pool ~35 % idle at the end of full-game sweeps). Single box: the queue stays local, no key needed.
+QUEUE_HOST=${ips[0]}
+if [ "${#ips[@]}" -gt 1 ]; then
+  QKEY=$(mktemp -d)/lab_queue
+  ssh-keygen -q -t ed25519 -N "" -f "$QKEY"
+  for ip in "${ips[@]}"; do
+    rsync -az -e "$RSYNC_SSH $(rso "$ip")" "$QKEY" root@"$(rh "$ip")":/root/.ssh/lab_queue &
+  done; wait
+  $SSH@"$QUEUE_HOST" "cat >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/lab_queue && mkdir -p /etc/ssh/sshd_config.d && printf 'MaxStartups 300\nMaxSessions 100\n' > /etc/ssh/sshd_config.d/90-lab.conf && (systemctl reload ssh || systemctl reload sshd || true)" < "$QKEY.pub"
+  for ip in "${ips[@]}"; do [ "$ip" = "$QUEUE_HOST" ] || $SSH@"$ip" 'chmod 600 /root/.ssh/lab_queue' & done; wait
+fi
+
 # Launch one shard per box, detached, so a dropped ssh session (or a killed local shell) cannot take the
 # sweep down with it. /root/lab-out is cleared first: with REUSE a stale game from an earlier sweep with the
 # same config name would otherwise be merged into this one.
@@ -114,26 +134,58 @@ for ip in "${ips[@]}"; do sync_one "$ip" & done; wait
 run_pool() {
   local batches=$1 slug; slug=$(echo "$batches" | tr ' ' '-')
   echo "running sweep on ${#ips[@]} box(es) ..."
+  mkdir -p "$DEST"
+  # Build the job queue locally, longest-expected-first (the duration history lives here, not on the
+  # boxes), and deliver it to the queue box. sweep.sh QUEUE_READY=1 consumes it without rebuilding.
+  python3 scripts/lab/durations.py "${HISTORY:-lab-out}" > "$DEST/durations.tsv" 2>/dev/null || : > "$DEST/durations.tsv"
+  env CONFIGS="$CONFIGS" BATCHES="$batches" ${SPAWNS:+SPAWNS="$SPAWNS"} ${MIRROR:+MIRROR=$MIRROR} \
+    DURATIONS="$DEST/durations.tsv" LIST=1 bash scripts/lab/sweep.sh > "$DEST/queue.$slug.txt"
+  echo "  queue: $(wc -l < "$DEST/queue.$slug.txt" | tr -d ' ') games, longest first"
+  for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait
+  rsync -az -e "$RSYNC_SSH $(rso "$QUEUE_HOST")" "$DEST/queue.$slug.txt" root@"$(rh "$QUEUE_HOST")":/root/lab-out/queue.txt
   # The launch runs in a subshell as a setsid/nohup'd background job, so sshd has nothing left to wait for
   # and ssh returns at once. (A bare `nohup … &` made ssh block until the whole sweep finished, which
   # serialised the shards.) `timeout` is belt and braces: a hung ssh cannot stall the other launches.
-  i=0
   for ip in "${ips[@]}"; do
-    $TIMEOUT $SSH@"$ip" "cd /root/openfront && rm -rf /root/lab-out && mkdir -p /root/lab-out && (setsid nohup env CONFIGS='$CONFIGS' MINUTES=$MINUTES SHARD=$i/${#ips[@]} AGGREGATE=0 BATCHES='$batches' ${SPAWNS:+SPAWNS='$SPAWNS'} ${JOBS:+JOBS=$JOBS} ${SHIFT:+SHIFT=$SHIFT} ${MIRROR:+MIRROR=$MIRROR} ${MIRRORSHIFT:+MIRRORSHIFT=$MIRRORSHIFT} ${MIRRORSEED:+MIRRORSEED=$MIRRORSEED} ${SEED:+SEED=$SEED} OUT=/root/lab-out bash scripts/lab/sweep.sh > /root/lab-out/sweep.log 2>&1 < /dev/null &); sleep 1; head -1 /root/lab-out/sweep.log" \
+    q=local; [ "$ip" = "$QUEUE_HOST" ] || q=$QUEUE_HOST
+    $TIMEOUT $SSH@"$ip" "cd /root/openfront && (setsid nohup env CONFIGS='$CONFIGS' MINUTES=$MINUTES QUEUE=$q QUEUE_READY=1 AGGREGATE=0 BATCHES='$batches' ${SPAWNS:+SPAWNS='$SPAWNS'} ${JOBS:+JOBS=$JOBS} ${SHIFT:+SHIFT=$SHIFT} ${MIRROR:+MIRROR=$MIRROR} ${MIRRORSHIFT:+MIRRORSHIFT=$MIRRORSHIFT} ${MIRRORSEED:+MIRRORSEED=$MIRRORSEED} ${SEED:+SEED=$SEED} ${TRIBES:+TRIBES=$TRIBES} ${EXPAND:+EXPAND=$EXPAND} ${EVERY:+EVERY=$EVERY} ${BOT_DIR:+BOT_DIR='$BOT_DIR'} OUT=/root/lab-out bash scripts/lab/sweep.sh > /root/lab-out/sweep.log 2>&1 < /dev/null &); sleep 1; head -1 /root/lab-out/sweep.log" \
       || echo "WARNING: launch on $ip did not confirm; check /root/lab-out/sweep.log there"
-    i=$((i + 1))
   done
-  sleep 15
-  running() { for ip in "${ips[@]}"; do $SSH@"$ip" 'pgrep -f "[s]cripts/lab/sweep.sh" >/dev/null' 2>/dev/null && return 0; done; return 1; }
+  sleep 3
+  running() {
+    local out rc=1
+    for ip in "${ips[@]}"; do
+      out=$($SSH@"$ip" 'pgrep -f "[s]cripts/lab/sweep.sh" >/dev/null && echo yes || echo no' 2>/dev/null) || out=""
+      case "$out" in yes) return 0;; no) ;; *) rc=2;; esac
+    done
+    return $rc
+  }
   count() {
-    local d=0 f=0 x
+    local d=0 f=0 k=0 x
     for ip in "${ips[@]}"; do
       x=$($SSH@"$ip" 'grep -c "^done" /root/lab-out/sweep.log; true' 2>/dev/null); d=$((d + ${x:-0}))
       x=$($SSH@"$ip" 'grep -c "^FAILED" /root/lab-out/sweep.log; true' 2>/dev/null); f=$((f + ${x:-0}))
+      x=$($SSH@"$ip" 'grep -c "^SKIPPED" /root/lab-out/sweep.log; true' 2>/dev/null); k=$((k + ${x:-0}))
     done
-    echo "$d done, $f failed"
+    echo "$d done, $f failed${k:+, $k skipped}"
   }
-  while running; do echo "  $(date +%H:%M) $(count)"; sleep 60; done
+  fails=0
+  while :; do
+    rc=0; running || rc=$?
+    if [ "$rc" = 0 ]; then
+      fails=0; c=$(count)
+      # Poll every 10 s so the end of a sweep (and each racing stage) is seen promptly, but only log a
+      # line when the counts move — the old 60 s cadence added ~1 min of dead time per stage.
+      [ "$c" != "${lastc:-}" ] && { echo "  $(date +%H:%M) $c"; lastc=$c; }
+      sleep 10; continue
+    fi
+    if [ "$rc" = 2 ]; then
+      fails=$((fails + 1))
+      if [ "$fails" -ge 10 ]; then echo "ERROR: a box has not answered ssh for $fails polls; results not pulled, boxes kept: ${names[*]} (${ips[*]})"; exit 1; fi
+      echo "  $(date +%H:%M) ssh did not answer ($fails/10), retrying"; sleep 30; continue
+    fi
+    break
+  done
   echo "  $(date +%H:%M) $(count) — finished"
   
   mkdir -p "$DEST"
@@ -171,7 +223,9 @@ elif [ "${STAGED:-0}" = 1 ]; then
   first=$(echo "$@" | cut -d' ' -f1-$n); rest=$(echo "$@" | cut -d' ' -f$((n + 1))-)
   run_pool "$first"
   if python3 scripts/lab/summarize.py --verdict "${VERDICT:-3}" "$DEST" $cfgs; then
-    echo "stage 1 verdict clear for every config after $n batches; skipping: $rest"
+    echo "stage 1 verdict clear for every config after $n batches; skipping: ${rest:-nothing}"
+  elif [ -z "$rest" ]; then
+    echo "stage 2: no batches left (BATCHES has only $n)"   # an empty BATCHES='' would make sweep.sh play its whole default grid
   else
     echo "stage 2: $rest"
     run_pool "$rest"

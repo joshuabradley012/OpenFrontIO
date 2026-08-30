@@ -387,7 +387,7 @@ def run_sweep(args, gen, configs, results_dir, batches):
         # after a failed sweep with the box still up: pass REUSE=1 in the env.
         if gen > 0:
             env["REUSE"] = "1"
-        env.setdefault("SERVER_TYPE", "cpx51")
+        env.setdefault("SERVER_TYPE", "cpx62")
         cmd = [os.path.join(HERE, "remote.sh")]
     log = os.path.join(results_dir, "runner.log")
     print(f"  sweep: {' '.join(cmd)} ({len(configs)} configs, {len(batches) * len(SPAWNS)} games each, {args.minutes} min) -> {results_dir}; log {log}")
@@ -559,9 +559,11 @@ def main():
     ap.add_argument("--race-delta", type=float, default=0.10, help="score-unit margin of the race test (default 0.10)")
     args = ap.parse_args()
     if args.rescore:
+        args.rescore = os.path.abspath(args.rescore)
         return rescore(args)
     if not args.out:
         ap.error("--out is required")
+    args.out = os.path.abspath(args.out)  # the sweeps run with cwd=ROOT: a relative --out must not move with them
 
     spec = parse_spec(args)
     check_spec(spec)
