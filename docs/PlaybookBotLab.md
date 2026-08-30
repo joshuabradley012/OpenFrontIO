@@ -612,3 +612,5 @@ click is ≤ `botEarlyShare` of spendable troops. A 6-game 10-min test favoured
 results and verdict live next to the parameter in `PlaybookBotExecution.ts`.
 
 **Empty mirrored slots (2026-08-29):** with `MIRROR=1`/the EXTRA batches, australia has no spawn from med3 on, africa at med8, and north-russia / south-america / east-asia(b) at med9 (`pickSpawn` throws "no spawn near"). The failures are identical across configs, so the pairing survives; budget ~25 % fewer pairs for batches 6–9, or move the region centres for those shifts.
+
+**Account limits and IPv6-only pools (2026-08-30):** the Hetzner account allows 5 servers, 4 primary IPv4s and 8 dedicated vCPUs (that is why CCX types were refused). `IPV6=1` makes remote.sh create boxes with `--without-ipv4` (not counted against the IPv4 limit) and reach them over IPv6 (this machine needs IPv6; macOS rsync 2.6.9 cannot parse `[addr]`, so the box is addressed as the dummy host `lab6` with `ssh -o HostName=<addr>`). A limit increase (servers 20, primary IPs 20, dedicated vCPUs 96) was requested on 2026-08-30.

@@ -26,6 +26,14 @@ SERVER_TYPE=${SERVER_TYPE:-cpx51}
 LOCATION=${LOCATION:-ash}
 NAME=${NAME:-openfront-lab}
 IMAGE=${IMAGE:-auto}
+# IPV6=1: boxes without a public IPv4 (Hetzner caps the account at 4 primary IPv4s; IPv6-only boxes are not counted),
+# reached over IPv6 from this machine (needs IPv6 here: curl -6 https://ifconfig.co). rsync needs the [addr] form.
+IPV6=${IPV6:-0}
+IPV6_FLAG=$([ "$IPV6" = 1 ] && echo --without-ipv4)
+IPFLAG=$([ "$IPV6" = 1 ] && echo -6)
+# macOS rsync (2.6.9) cannot parse user@[v6]:path, so an IPv6 box is addressed as the dummy host "lab6" with ssh -o HostName=<addr>
+rh() { case "$1" in *:*) echo "lab6";; *) echo "$1";; esac; }
+rso() { case "$1" in *:*) echo "-o HostName=$1";; esac; }
 DEST=${DEST:-$PWD/lab-out}
 KEY_NAME=${KEY_NAME:-$(whoami)-lab}
 # Throwaway boxes get recycled IPs, so host keys are neither pinned nor remembered.
@@ -48,7 +56,7 @@ fi
 
 declare -a ips
 if [ "${REUSE:-0}" = 1 ]; then
-  for n in "${names[@]}"; do ips+=("$(hcloud server ip "$n")"); done
+  for n in "${names[@]}"; do ips+=("$(hcloud server ip $IPFLAG "$n")"); done
   echo "reusing ${names[*]} (${ips[*]})"
 else
   cat > /tmp/lab-cloud-init.yml <<'CI'
@@ -64,19 +72,19 @@ CI
     echo "creating $WORKERS x $SERVER_TYPE in $LOCATION from ubuntu-24.04 (cloud-init installs Node; ~3 min) ..."
     for n in "${names[@]}"; do
       hcloud server create --name "$n" --type "$SERVER_TYPE" --image ubuntu-24.04 --location "$LOCATION" \
-        --ssh-key "$KEY_NAME" --label lab=1 --label "pool=$NAME" --user-data-from-file /tmp/lab-cloud-init.yml >/dev/null &
+        --ssh-key "$KEY_NAME" --label lab=1 --label "pool=$NAME" $IPV6_FLAG --user-data-from-file /tmp/lab-cloud-init.yml >/dev/null &
     done
   else
     echo "creating $WORKERS x $SERVER_TYPE in $LOCATION from snapshot $IMAGE (~1 min) ..."
     for n in "${names[@]}"; do
       hcloud server create --name "$n" --type "$SERVER_TYPE" --image "$IMAGE" --location "$LOCATION" \
-        --ssh-key "$KEY_NAME" --label lab=1 --label "pool=$NAME" >/dev/null &
+        --ssh-key "$KEY_NAME" --label lab=1 --label "pool=$NAME" $IPV6_FLAG >/dev/null &
     done
   fi
   wait
   for n in "${names[@]}"; do
     hcloud server describe "$n" >/dev/null 2>&1 || { echo "server $n was not created (see errors above; cpx51 exists only in ash/hil, cpx62/cx53 in the EU) — deleting the rest"; for m in "${names[@]}"; do hcloud server delete "$m" >/dev/null 2>&1 || true; done; exit 1; }
-    ips+=("$(hcloud server ip "$n")")
+    ips+=("$(hcloud server ip $IPFLAG "$n")")
   done
   echo "servers: ${names[*]} at ${ips[*]}; waiting for ssh/cloud-init ..."
   for ip in "${ips[@]}"; do until $SSH@"$ip" test -f /root/.lab-ready 2>/dev/null; do sleep 5; done; done
@@ -87,13 +95,13 @@ sync_one() {
   # Only what the lab needs: sources, tests, package files, and the World map manifest (the .bin maps come
   # from tests/testdata). Everything else is 2 GB. .claude holds other agents' worktrees — full copies of the
   # tree that vitest's path filter would also run.
-  rsync -az --delete -e "$RSYNC_SSH" \
+  rsync -az --delete -e "$RSYNC_SSH $(rso "$1")" \
     --include 'resources/' --include 'resources/maps/' --include 'resources/maps/world/' \
     --include 'resources/maps/world/manifest.json' --include 'resources/lang/' --include 'resources/lang/**' \
     --include 'resources/*.json' --exclude 'resources/**' \
     --exclude node_modules --exclude .git --exclude .claude --exclude static --exclude lab-out --exclude dist \
     --exclude map-generator --exclude proprietary --exclude docs --exclude '*.log' \
-    ./ root@"$1":/root/openfront/
+    ./ root@"$(rh "$1")":/root/openfront/
   # npm run inst when node_modules is missing or the lock file changed since the last install on this box
   $SSH@"$1" 'cd /root/openfront && { [ -d node_modules ] && cmp -s package-lock.json node_modules/.lab-lock; } || { npm run inst >/tmp/inst.log 2>&1 && cp package-lock.json node_modules/.lab-lock; }'
 }
@@ -131,8 +139,8 @@ run_pool() {
   mkdir -p "$DEST"
   i=0
   for ip in "${ips[@]}"; do
-    rsync -az -e "$RSYNC_SSH" --exclude sweep.log root@"$ip":/root/lab-out/ "$DEST"/
-    rsync -az -e "$RSYNC_SSH" root@"$ip":/root/lab-out/sweep.log "$DEST"/sweep.$slug.$i.log
+    rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log root@"$(rh "$ip")":/root/lab-out/ "$DEST"/
+    rsync -az -e "$RSYNC_SSH $(rso "$ip")" root@"$(rh "$ip")":/root/lab-out/sweep.log "$DEST"/sweep.$slug.$i.log
     i=$((i + 1))
   done
   cat "$DEST"/sweep.*.log > "$DEST"/sweep.log
