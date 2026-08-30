@@ -435,14 +435,20 @@ H0: d ≤ 0 vs H1: d ≥ δ (δ = `--delta`, default **0.10** score units ≈ on
 rank step out of ten or 10k → 16k tiles), α = β = 0.05:
 
 ```
-LLR_n = n · (mean_n − δ/2) · δ / var_n            # running sample variance, floor 1e-4
+LLR_n = n · (mean_n − δ/2) · δ / var_n            # running sample variance, floor δ²; no decision before n = 10
 ACCEPT  when LLR ≥ ln((1−β)/α) = +2.94             # H1: the candidate is better by ≥ δ
 REJECT  when LLR ≤ ln(β/(1−α)) = −2.94             # H0: it is not
 CONTINUE otherwise; the report says how many more pairs the current mean/variance would need
 ```
 
-The decision is the first crossing walking the pairs in order (later pairs
-cannot undo it). With `--verdict` the exit code is 0 only when every config
+The decision is the first crossing at n ≥ 10 walking the pairs in order
+(later pairs cannot undo it). The minimum n and the sd floor of δ were added
+2026-08-30 after `lab-out/final` showed m4 "REJECT at n=2, mean −0.378":
+the first two pairs were −0.48 and −0.28, the sample variance of two points
+made the LLR −4, and the report printed the mean of that two-pair window
+while the 18-pair series averaged +0.20 (the plain paired report of the same
+dir said 18W/18L, dScore +0.09). The report now shows the mean / sd over the
+whole series, the LLR at the end, and the n and LLR at the crossing. With `--verdict` the exit code is 0 only when every config
 has decided, which is what the runners loop on.
 
 **Common random numbers** (already true, now documented): a lab game is
@@ -506,6 +512,48 @@ where x beats y, y beats z and z beats x by paired wins. The Bradley–Terry
 strength is one axis; a candidate that beats its parent but loses to the
 grandparent is a rock-paper-scissors the ladder cannot show. None found in
 the dry-run data; check it on every real ladder.
+
+## Full games and win scoring (2026-08-30)
+
+Josh's objective is winning full games, not the 20-minute land/rank/crown
+score. `MINUTES=full` plays until `game.getWinner()` (170-minute ceiling —
+WinCheckExecution's limit) and the FINAL line carries `winner=us|other|none`.
+`remote.sh` and `sweep.sh` pass `MINUTES` straight through as `MIN=$MINUTES`
+(no arithmetic on it), and `tests/lab/playbook.lab.ts` maps `MIN=full` to
+170 minutes; `cmaes.py --minutes full` does the same.
+
+Cost: a full game runs up to 170 sim-minutes ≈ 8× a 20-minute game. A
+30-pair mirrored A/B of two configs (`MIRROR=1`, 5 batches × 6 regions × 2
+slots × 2 configs = 120 games) is about 25 min on 4× cpx62.
+
+```bash
+CONFIGS='{"base":{},"x":{"<flag>":true}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh
+python3 scripts/lab/summarize.py --sprt $DEST base x                       # wscore is picked automatically
+python3 scripts/lab/summarize.py --objective winrate --sprt $DEST base x   # SPRT on the paired win difference, δ = 0.15
+```
+
+`summarize.py` (see its docstring) parses `winner=`, adds `wins` / `winrate`
+/ `wscore` columns and scores full-game dirs with
+
+    wscore = score + 1.0 · (winner == us)
+
+A win is worth more than the whole 0.4–2.25 range of the 20-minute score, so
+wins dominate whenever they exist and land/rank only orders the non-wins.
+The objective is chosen per results dir — `wscore` when any game has
+`winner=us|other`, else `score` (20-minute sweeps are unchanged); a dir that
+mixes decided games with games lacking the field warns and uses `wscore`;
+`--objective score|wscore|winrate` overrides. The live-game pairing,
+bootstrap CI, sign test, SPRT, `--verdict` and `--fitness` ("fitness", plus
+`wins`, `winrate`, `wscore`, `per_game_wins`, `per_game_wscore` for
+`cmaes.py`) all run on the chosen objective, and the paired report adds a
+WIN line per config: wins of each, pairs won by A only / B only / both /
+neither, and an exact McNemar-style sign test on the discordant pairs.
+`remote.sh SPRT=1` calls `summarize.py --sprt --verdict 0` unchanged.
+
+Note that a 20-minute game can also end with `winner=us` (the bot reached the
+win threshold early), so a 20-minute dir with a few early wins selects
+`wscore` too (`lab-out/final` 6/108, `cma-confirm` 11/272, `ab1` 1/1287);
+`--objective score` reproduces the old numbers exactly.
 
 ## Bot strength over time: `history.sh` / `history.py`
 

@@ -19,6 +19,7 @@ identical pairs, the biggest swings, and the live-game statistics below.
   python3 scripts/lab/summarize.py --sprt DIR base cand  # + sequential test (GSPRT) per config: ACCEPT / REJECT / CONTINUE (n more pairs)
   python3 scripts/lab/summarize.py --sprt --verdict 3 DIR base cand   # exit 0 when every config's SPRT has decided (remote.sh SPRT=1 loop)
   python3 scripts/lab/summarize.py --cycles DIR cand v-current v3 v2   # non-transitive triples (a beats b beats c beats a)
+  python3 scripts/lab/summarize.py --objective wscore DIR …   # objective for the paired stats / SPRT / --fitness: score | wscore | winrate
   python3 scripts/lab/summarize.py --selftest          # inline fixture, exit 0 iff the scoring is as documented here
 
 Score of one game (2026-08-30, replaces the old fitness as the objective):
@@ -44,18 +45,41 @@ and a two-sided sign test are over live games only, and the verdict is
 "decisive win" / "decisive loss" when the sign test has p < 0.05, else
 "undecided (n_live=…)".
 
+Full games and win scoring (2026-08-30). With MIN=full the lab plays until
+someone wins (170-minute ceiling) and the FINAL line carries `winner=us|other|none`
+(absent on older / fixed-length sweeps). Per config the table adds `wins`
+(winner=us) and `winrate`, and there is a second objective
+
+    wscore = score + WIN_BONUS · (winner == us)       WIN_BONUS = 1.0
+
+A win outweighs the whole 0.4–2.25 range of the 20-minute score, so wins
+dominate whenever they exist and land/rank only orders the non-wins. The
+objective used by the paired statistics, the sequential test, --verdict and
+--fitness ("fitness") is chosen per results dir: `wscore` when any game in it
+has winner=us|other (a full-game sweep), else `score`; --objective
+score|wscore|winrate overrides. A dir that mixes decided games with games that
+have no winner= field at all gets a warning and uses wscore. The paired report
+adds a WIN line per config (wins of each, pairs won by A only / B only / both
+/ neither, and an exact McNemar-style sign test on the discordant pairs). For
+--objective winrate the observations are the paired win differences (+1/0/−1)
+and the SPRT's δ defaults to 0.15 (a 15-point win-rate change).
+
 Sequential test (--sprt, 2026-08-29; the Stockfish/fishtest GSPRT applied to
 the paired score difference). Observations are the per-pair differences
-d_i = score(cand) − score(base) over live games in batch order (with mirrored
+d_i = obj(cand) − obj(base) (obj = the chosen objective, see above) over live games in batch order (with mirrored
 slots, see below, the two slots of one (batch, region) are averaged into one
 observation). H0: mean d ≤ 0 against H1: mean d ≥ δ (--delta, default 0.10
 score units ≈ one rank step out of ten, or 10k→16k tiles), α = β = 0.05:
 
-    LLR_n = n · (mean_n − δ/2) · δ / var_n          (var_n = sample variance, floor 1e-4)
+    LLR_n = n · (mean_n − δ/2) · δ / var_n          (var_n = sample variance, floor δ²)
     ACCEPT when LLR ≥ ln((1−β)/α) = +2.944, REJECT when LLR ≤ ln(β/(1−α)) = −2.944, else CONTINUE
 
-The decision is the *first* crossing walking the observations in order (a
-true sequential test — later pairs cannot undo it); CONTINUE also reports how
+The decision is the *first* crossing at n ≥ SPRT_MIN_N = 10 walking the
+observations in order (a true sequential test — later pairs cannot undo it;
+the minimum n and the sd floor of δ are there because a sample variance from
+two or three pairs is meaningless — lab-out/final's m4 REJECTed at n=2 on
+two pairs of −0.38 while its 18 pairs averaged +0.20). The report shows the
+mean / sd over the whole series and the LLR at the crossing; CONTINUE also reports how
 many more pairs the current mean and variance would need to reach a bound
 (∞ when the mean sits at δ/2). --verdict with --sprt exits 0 only when every
 config has decided, which is what remote.sh/sweep.sh SPRT=1 loop on.
@@ -88,6 +112,12 @@ FIRED_RE = re.compile(r"\bfired=(\S+)")
 # one per-30-s row of a transcript:  "  600s bots=… tiles=  12345 troops=… rank=3/41 share=0.62"
 ROW_RE = re.compile(r"^\s*(?P<t>\d+)s .*?tiles=\s*(?P<tiles>\d+).*?rank=(?P<rank>\d+)/(?P<players>\d+)(?: share=(?P<share>[\d.]+))?")
 AT = None  # --at SECONDS: score games from the row at that time instead of FINAL
+WINNER_RE = re.compile(r"\bwinner=(\w+)")
+WIN_BONUS = 1.0
+OBJECTIVE = None  # --objective score|wscore|winrate; None = auto (wscore when the dir has decided games, else score)
+OBJECTIVE_NOTE = None  # printed once: which objective was chosen and why
+DELTA_SET = False  # --delta given (else winrate uses WINRATE_DELTA)
+WINRATE_DELTA = 0.15
 SPRT = False  # --sprt: add the sequential test to the table / ladder / verdict
 ASSUMED_PLAYERS = 40
 ASSUMED = {}  # config -> games whose player count had to be assumed (reported once)
@@ -115,6 +145,7 @@ def parse_line(line):
     dead = DEAD_RE.search(line)
     players = PLAYERS_RE.search(line)
     fired = FIRED_RE.search(line)
+    winner = WINNER_RE.search(line)
     return {
         "region": m.group("region"),
         "diff": m.group("diff"),
@@ -125,6 +156,7 @@ def parse_line(line):
         "deadAt": int(dead.group(1)) if dead else None,
         "players": int(players.group(1)) if players else None,
         "fired": parse_fired(fired.group(1)) if fired else {},
+        "winner": winner.group(1) if winner else None,  # "us" | "other" | "none" | None (no winner= field)
     }
 
 
@@ -151,6 +183,50 @@ def score(g):
     return land_score(g["tiles"]) + rank_score(g) + crown
 
 
+def won(g):
+    return g.get("winner") == "us"
+
+
+def wscore(g):
+    """Win-aware objective: the 20-minute score plus WIN_BONUS for winning the game outright."""
+    return score(g) + (WIN_BONUS if won(g) else 0.0)
+
+
+def winrate_obj(g):
+    return 1.0 if won(g) else 0.0
+
+
+OBJECTIVES = {"score": score, "wscore": wscore, "winrate": winrate_obj}
+
+
+def obj(g):
+    """The chosen objective of one game (see resolve_objective)."""
+    return OBJECTIVES[OBJECTIVE or "score"](g)
+
+
+def resolve_objective(data):
+    """Pick the objective for a results dir: wscore when any game was decided (winner=us|other), else score;
+    --objective overrides. Sets the SPRT δ for winrate unless --delta was given. `data` = {config: games}."""
+    global OBJECTIVE, OBJECTIVE_NOTE, SPRT_DELTA
+    games = [g for gs in data.values() for g in gs.values()]
+    decided = sum(1 for g in games if g.get("winner") in ("us", "other"))
+    nofield = sum(1 for g in games if g.get("winner") is None)
+    chosen = OBJECTIVE
+    if chosen is None:
+        chosen = "wscore" if decided else "score"
+        OBJECTIVE_NOTE = (f"objective: {chosen} (auto — {decided} of {len(games)} games have a winner)" if decided
+                          else "objective: score (auto — no game has winner=us|other)")
+    else:
+        OBJECTIVE_NOTE = f"objective: {chosen} (--objective)"
+    if decided and nofield:
+        OBJECTIVE_NOTE += (f"\nwarning: mixed results dir — {decided} decided games but {nofield} games have no winner= field"
+                           f" (fixed-length or older sweep); those count as no win")
+    OBJECTIVE = chosen
+    if chosen == "winrate" and not DELTA_SET:
+        SPRT_DELTA = WINRATE_DELTA
+    return chosen
+
+
 def parse_at(text, seconds):
     """Game state at `seconds` from a transcript: the last row at or before that time (dead = no row and a
     DEAD line before it). share needs the row's share= field (transcripts from 2026-08-30 on)."""
@@ -166,7 +242,7 @@ def parse_at(text, seconds):
     dead = DEAD_RE.search(text)
     dead_at = int(dead.group(1)) if dead else None
     alive = not (dead_at is not None and dead_at <= seconds)
-    base = {"region": hm.group("region"), "diff": hm.group("diff"), "alive": alive, "deadAt": dead_at, "fired": {}}
+    base = {"region": hm.group("region"), "diff": hm.group("diff"), "alive": alive, "deadAt": dead_at, "fired": {}, "winner": None}
     if row is None:
         return {**base, "rank": None, "share": 0.0, "tiles": 0, "players": None}
     return {
@@ -264,12 +340,15 @@ def summary(games):
         "median": statistics.median(tiles) if tiles else 0,
         "fitness": statistics.fmean(fitness(g) for g in vals) if vals else 0.0,
         "score": statistics.fmean(score(g) for g in vals) if vals else 0.0,
+        "wins": sum(1 for g in vals if won(g)),
+        "winrate": (sum(1 for g in vals if won(g)) / len(vals)) if vals else 0.0,
+        "wscore": statistics.fmean(wscore(g) for g in vals) if vals else 0.0,
     }
 
 
 def outcome(g):
-    """Ordering key for a paired comparison: alive first, then land."""
-    return (1 if g["alive"] else 0, g["tiles"])
+    """Ordering key for a paired comparison: won the game first, then alive, then land."""
+    return (1 if won(g) else 0, 1 if g["alive"] else 0, g["tiles"])
 
 
 def paired(a, b):
@@ -317,7 +396,7 @@ def live_stats(a, b):
         live = bool(a[k].get("fired")) or outcome(a[k]) != outcome(b[k])
         if not live:
             continue
-        d = score(a[k]) - score(b[k])
+        d = obj(a[k]) - obj(b[k])
         diffs.append(d)
         if d > 1e-12:
             w += 1
@@ -336,6 +415,30 @@ def live_stats(a, b):
         verdict = f"undecided (n_live={len(diffs)})"
     return {"n": len(keys), "n_live": len(diffs), "wins": w, "losses": l, "ties": t,
             "mean_diff": mean, "ci": (lo, hi), "p": p, "verdict": verdict}
+
+
+def win_stats(a, b):
+    """Paired wins of config a vs baseline b over shared (batch, region) keys: pairs won by a only, b only,
+    both, neither, and the exact two-sided McNemar-style sign test on the discordant pairs."""
+    keys = sorted(set(a) & set(b))
+    a_only = b_only = both = neither = 0
+    for k in keys:
+        wa, wb = won(a[k]), won(b[k])
+        if wa and wb:
+            both += 1
+        elif wa:
+            a_only += 1
+        elif wb:
+            b_only += 1
+        else:
+            neither += 1
+    return {"n": len(keys), "wins_a": a_only + both, "wins_b": b_only + both, "a_only": a_only, "b_only": b_only,
+            "both": both, "neither": neither, "p": sign_test(a_only, b_only)}
+
+
+def format_win(n, base, s):
+    return (f"  {n:16s} wins {n} vs {base}: {s['wins_a']:2d} {s['wins_b']:2d}  pairs {n}-only {s['a_only']:2d} / {base}-only {s['b_only']:2d}"
+            f" / both {s['both']:2d} / neither {s['neither']:2d}  McNemar p={s['p']:.3f}")
 
 
 def split_slot(batch):
@@ -361,7 +464,7 @@ def paired_diffs(a, b, live_only=True):
         live = any(is_live(a, b, k) for k in keys)
         if live_only and not live:
             continue
-        out.append((scen, statistics.fmean(score(a[k]) - score(b[k]) for k in keys)))
+        out.append((scen, statistics.fmean(obj(a[k]) - obj(b[k]) for k in keys)))
     return out
 
 
@@ -380,7 +483,7 @@ def pentanomial(a, b):
         n += 1
         pts = 0
         for k in slots.values():
-            d = score(a[k]) - score(b[k])
+            d = obj(a[k]) - obj(b[k])
             pts += 2 if d > 1e-12 else (0 if d < -1e-12 else 1)
         counts[["LL", "LT", "TT", "WT", "WW"][pts]] += 1
     return counts if n else None
@@ -389,38 +492,42 @@ def pentanomial(a, b):
 SPRT_DELTA = 0.10
 SPRT_ALPHA = 0.05
 SPRT_BETA = 0.05
-SPRT_VAR_FLOOR = 1e-4
+SPRT_MIN_N = 10  # no decision before this many observations (2026-08-30: lab-out/final m4 REJECTed at n=2 on two pairs)
 
 
-def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None):
+def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None, min_n=None):
     """Generalised SPRT on the mean of `diffs` (in order), H0: mean = d0 vs H1: mean = d1, normal approximation
     with the running sample variance: LLR_n = n (mean − (d0+d1)/2)(d1 − d0) / var_n.
-    Returns {decision: ACCEPT|REJECT|CONTINUE, n, llr, mean, var, n_at, more, bounds}. `n_at` is the observation
-    count at the first crossing; `more` is the number of extra observations the current mean/variance would need
-    (None when the mean sits on the indifference point)."""
+    The running variance is floored at (d1 − d0)² (sd floor = δ: two equal early pairs must not decide the test)
+    and no decision is taken before SPRT_MIN_N observations — before the fix (2026-08-30) lab-out/final's m4
+    REJECTed at n=2 from its first two pairs (−0.38 ± 0.15) while the full series of 18 was +0.20.
+    Returns {decision: ACCEPT|REJECT|CONTINUE, n, llr, mean, var, n_at, llr_at, more, bounds}. `mean`/`var` are
+    over the whole series, `llr` at the end of it; `n_at`/`llr_at` describe the first crossing; `more` is the
+    number of extra observations the current mean/variance would need (None when the mean sits on the
+    indifference point)."""
     d1 = SPRT_DELTA if d1 is None else d1
     alpha = SPRT_ALPHA if alpha is None else alpha
     beta = SPRT_BETA if beta is None else beta
+    min_n = SPRT_MIN_N if min_n is None else min_n
     upper, lower = math.log((1 - beta) / alpha), math.log(beta / (1 - alpha))
     mid, width = (d0 + d1) / 2, d1 - d0
-    res = {"decision": "CONTINUE", "n": len(diffs), "llr": 0.0, "mean": 0.0, "var": 0.0, "n_at": None, "more": None,
-           "bounds": (lower, upper), "d0": d0, "d1": d1}
+    var_floor = width * width
+    res = {"decision": "CONTINUE", "n": len(diffs), "llr": 0.0, "mean": 0.0, "var": var_floor, "n_at": None, "llr_at": None,
+           "more": None, "bounds": (lower, upper), "d0": d0, "d1": d1}
     if len(diffs) < 2:
-        res["more"] = 2 - len(diffs)
+        res["more"] = max(2, min_n) - len(diffs)
         res["mean"] = statistics.fmean(diffs) if diffs else 0.0
         return res
-    llr = mean = var = 0.0
     for n in range(2, len(diffs) + 1):
         window = diffs[:n]
         mean = statistics.fmean(window)
-        var = max(statistics.variance(window), SPRT_VAR_FLOOR)
+        var = max(statistics.variance(window), var_floor)
         llr = n * (mean - mid) * width / var
-        if llr >= upper:
-            res.update(decision="ACCEPT", n_at=n)
-            break
-        if llr <= lower:
-            res.update(decision="REJECT", n_at=n)
-            break
+        if n >= min_n and res["n_at"] is None:
+            if llr >= upper:
+                res.update(decision="ACCEPT", n_at=n, llr_at=llr)
+            elif llr <= lower:
+                res.update(decision="REJECT", n_at=n, llr_at=llr)
     res.update(llr=llr, mean=mean, var=var)
     if res["decision"] == "CONTINUE":
         drift = (mean - mid) * width / var  # LLR per observation at the current estimate
@@ -428,7 +535,7 @@ def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None):
             res["more"] = None
         else:
             target = upper if drift > 0 else lower
-            res["more"] = max(1, math.ceil(target / drift) - len(diffs))
+            res["more"] = max(1, math.ceil(target / drift) - len(diffs), min_n - len(diffs))
     return res
 
 
@@ -438,11 +545,11 @@ def format_sprt(name, r, penta=None):
         more = "∞ at the current estimate" if r["more"] is None else f"~{r['more']} more pair{'s' if r['more'] != 1 else ''} needed"
         tail = f"CONTINUE ({more})"
     else:
-        tail = f"{r['decision']} at n={r['n_at']}"
+        tail = f"{r['decision']} at n={r['n_at']} (LLR {r['llr_at']:+.2f})"
     pent = ""
     if penta:
         pent = "  pentanomial LL/LT/TT/WT/WW " + "/".join(str(penta[k]) for k in ("LL", "LT", "TT", "WT", "WW"))
-    return (f"  {name:16s} SPRT n {n:3d}  mean {r['mean']:+.3f}  sd {math.sqrt(r['var']):.3f}  LLR {r['llr']:+.2f}"
+    return (f"  {name:16s} SPRT n {n:3d}  mean {r['mean']:+.3f}  sd {math.sqrt(r['var']):.3f}  LLR(end) {r['llr']:+.2f}"
             f" [{r['bounds'][0]:+.2f}, {r['bounds'][1]:+.2f}]  H0 d<={r['d0']:g} vs H1 d>={r['d1']:g}  {tail}{pent}")
 
 
@@ -454,15 +561,18 @@ def sprt_report(a, b, name):
 
 def format_live(n, s):
     return (f"  {n:16s} n_live {s['n_live']:2d}/{s['n']:2d}  W {s['wins']:2d} L {s['losses']:2d} T {s['ties']:2d}"
-            f"  dScore {s['mean_diff']:+.3f} [{s['ci'][0]:+.3f}, {s['ci'][1]:+.3f}]  p={s['p']:.3f}  {s['verdict']}")
+            f"  d{OBJECTIVE or 'score'} {s['mean_diff']:+.3f} [{s['ci'][0]:+.3f}, {s['ci'][1]:+.3f}]  p={s['p']:.3f}  {s['verdict']}")
 
 
 def print_table(d, names):
     data = {n: load(d, n) for n in names}
-    print(f"{'config':16s} {'games':>5s} {'alive':>5s} {'crown':>5s} {'top3':>4s} {'tiles':>9s} {'median':>7s} {'fit_old':>7s} {'score':>6s}")
+    resolve_objective(data)
+    print(f"{'config':16s} {'games':>5s} {'alive':>5s} {'crown':>5s} {'top3':>4s} {'tiles':>9s} {'median':>7s} {'fit_old':>7s} {'score':>6s} {'wins':>4s} {'winrate':>7s} {'wscore':>6s}")
     for n in names:
         s = summary(data[n])
-        print(f"{n:16s} {s['games']:5d} {s['alive']:5d} {s['crowns']:5d} {s['top3']:4d} {s['tiles']:9d} {int(s['median']):7d} {s['fitness']:7.3f} {s['score']:6.3f}")
+        print(f"{n:16s} {s['games']:5d} {s['alive']:5d} {s['crowns']:5d} {s['top3']:4d} {s['tiles']:9d} {int(s['median']):7d} {s['fitness']:7.3f} {s['score']:6.3f}"
+              f" {s['wins']:4d} {s['winrate']:7.2f} {s['wscore']:6.3f}")
+    print(OBJECTIVE_NOTE)
     base = names[0]
     if len(names) > 1:
         print(f"\npaired vs {base} (by batch+region; identical = the change never triggered):")
@@ -470,11 +580,14 @@ def print_table(d, names):
             w, l, same, swings = paired(data[n], data[base])
             top = ", ".join(f"{k[1]}/{k[0]} {dt:+d}" for dt, k in swings[:3])
             print(f"  {n:16s} wins {w:2d}  loses {l:2d}  identical {same:2d}   swings: {top}")
-        print(f"\nlive games vs {base} (fired non-empty or outcome differs; score = land+rank+crown; sign test, bootstrap 95% CI):")
+        print(f"\nlive games vs {base} (fired non-empty or outcome differs; d = paired {OBJECTIVE} difference; sign test, bootstrap 95% CI):")
         for n in names[1:]:
             print(format_live(n, live_stats(data[n], data[base])))
+        print(f"\npaired wins vs {base} (winner=us; McNemar-style exact sign test on the discordant pairs):")
+        for n in names[1:]:
+            print(format_win(n, base, win_stats(data[n], data[base])))
         if SPRT:
-            print(f"\nsequential test vs {base} (GSPRT on the paired score difference, live pairs in batch order; see --sprt):")
+            print(f"\nsequential test vs {base} (GSPRT on the paired {OBJECTIVE} difference, live pairs in batch order; see --sprt):")
             for n in names[1:]:
                 print(sprt_report(data[n], data[base], n)[1])
     missing = {n: 30 - len(data[n]) for n in names if len(data[n]) < 30}
@@ -503,6 +616,7 @@ def bradley_terry(names, wins, iters=500):
 
 def print_ladder(d, names):
     data = {n: load(d, n) for n in names}
+    resolve_objective(data)
     n = len(names)
     wins = {}
     for i in range(n):
@@ -514,7 +628,7 @@ def print_ladder(d, names):
     p = bradley_terry(names, wins)
     order = sorted(range(n), key=lambda i: -p[i])
     head = "".join(f"{names[j][:10]:>11s}" for j in order)
-    print(f"{'config':16s} {'strength':>8s} {'fit_old':>7s} {'score':>6s} {'alive':>5s} {'crown':>5s} |{head}")
+    print(f"{'config':16s} {'strength':>8s} {'fit_old':>7s} {'score':>6s} {'alive':>5s} {'crown':>5s} {'wins':>4s} |{head}")
     for i in order:
         s = summary(data[names[i]])
         row = ""
@@ -524,8 +638,9 @@ def print_ladder(d, names):
             else:
                 w, l, same, _ = paired(data[names[i]], data[names[j]])
                 row += f"{f'{w}-{l}-{same}':>11s}"
-        print(f"{names[i]:16s} {math.log(p[i]):8.3f} {s['fitness']:7.3f} {s['score']:6.3f} {s['alive']:5d} {s['crowns']:5d} |{row}")
-    print("\nstrength = log Bradley–Terry score (0 = average); cells = wins-losses-identical of row vs column")
+        print(f"{names[i]:16s} {math.log(p[i]):8.3f} {s['fitness']:7.3f} {s['score']:6.3f} {s['alive']:5d} {s['crowns']:5d} {s['wins']:4d} |{row}")
+    print("\nstrength = log Bradley–Terry score (0 = average); cells = wins-losses-identical of row vs column (pairs by won, alive, tiles)")
+    print(OBJECTIVE_NOTE)
     print("P(row beats column) = 1 / (1 + exp(strength_col - strength_row))")
     cand = names[0]
     ci = 0
@@ -535,6 +650,9 @@ def print_ladder(d, names):
     print(f"\nlive games of {cand} vs each version:")
     for j in range(1, n):
         print(format_live(names[j], live_stats(data[cand], data[names[j]])))
+    print(f"\npaired wins of {cand} vs each version:")
+    for j in range(1, n):
+        print(format_win(cand, names[j], win_stats(data[cand], data[names[j]])))
     if SPRT:
         print(f"\nsequential test of {cand} vs each version:")
         for j in range(1, n):
@@ -570,7 +688,9 @@ def cycles(data, names):
 
 
 def print_cycles(d, names, data=None):
-    data = data or {n: load(d, n) for n in names}
+    if data is None:
+        data = {n: load(d, n) for n in names}
+        resolve_objective(data)
     cyc = cycles(data, names)
     if not cyc:
         print(f"no non-transitive triples among {len(names)} configs (every triple orders consistently by paired wins)")
@@ -584,6 +704,8 @@ def verdict(d, names, thresh):
     """Staged A/B helper: 'clear' when |wins - losses| >= thresh vs the baseline. Exit code 0 iff all clear.
     With --sprt: 'clear' = the sequential test has decided (ACCEPT / REJECT), 'unclear' = CONTINUE."""
     data = {n: load(d, n) for n in names}
+    resolve_objective(data)
+    print(OBJECTIVE_NOTE)
     base = names[0]
     all_clear = True
     if SPRT:
@@ -604,16 +726,26 @@ def verdict(d, names, thresh):
 
 def fitness_json(d, names, old):
     out = {}
+    data = {n: load(d, n) for n in names}
+    objective = resolve_objective(data)
+    print(OBJECTIVE_NOTE, file=sys.stderr)
     for n in names:
-        games = load(d, n)
+        games = data[n]
         s = summary(games)
-        per = {f"{b}/{r}": round(score(g), 6) for (b, r), g in sorted(games.items())}
-        per_old = {f"{b}/{r}": round(fitness(g), 6) for (b, r), g in sorted(games.items())}
+        items = sorted(games.items())
+        per = {f"{b}/{r}": round(score(g), 6) for (b, r), g in items}
+        per_old = {f"{b}/{r}": round(fitness(g), 6) for (b, r), g in items}
+        per_w = {f"{b}/{r}": round(wscore(g), 6) for (b, r), g in items}
+        per_wins = {f"{b}/{r}": int(won(g)) for (b, r), g in items}
+        per_obj = {f"{b}/{r}": round(obj(g), 6) for (b, r), g in items}
+        mean_obj = statistics.fmean(obj(g) for _, g in items) if items else 0.0
         out[n] = {
-            "fitness": s["fitness"] if old else s["score"],
-            "score": s["score"], "fit_old": s["fitness"],
+            "fitness": s["fitness"] if old else mean_obj,
+            "objective": "fit_old" if old else objective,
+            "score": s["score"], "fit_old": s["fitness"], "wscore": s["wscore"], "wins": s["wins"], "winrate": s["winrate"],
             "games": s["games"], "alive": s["alive"], "crowns": s["crowns"], "top3": s["top3"], "tiles": s["tiles"],
-            "per_game": per_old if old else per, "per_game_score": per, "per_game_old": per_old,
+            "per_game": per_old if old else per_obj, "per_game_score": per, "per_game_old": per_old,
+            "per_game_wscore": per_w, "per_game_wins": per_wins,
         }
     print(json.dumps(out, indent=1))
     note = assumed_note()
@@ -689,7 +821,14 @@ def selftest():
     r = sprt(und2)
     check(r["decision"] == "CONTINUE" and isinstance(r["more"], int) and r["more"] >= 1, f"SPRT small noisy sample: {r['decision']}, ~{r['more']} more")
     r = sprt([0.3])
-    check(r["decision"] == "CONTINUE" and r["more"] == 1, "SPRT with one observation continues")
+    check(r["decision"] == "CONTINUE" and r["more"] == SPRT_MIN_N - 1, "SPRT with one observation continues")
+    # lab-out/final shape (2026-08-30): the first two pairs strongly negative and nearly equal, the other 16 positive.
+    early = [-0.48, -0.28] + [0.25 + rng.gauss(0, 0.3) for _ in range(16)]
+    r = sprt(early)
+    check(r["decision"] != "REJECT" and (r["n_at"] is None or r["n_at"] >= SPRT_MIN_N) and r["mean"] > 0,
+          f"SPRT does not decide on two early pairs: {r['decision']} at n={r['n_at']}, series mean {r['mean']:+.3f}")
+    r = sprt([0.2, 0.2, 0.2])
+    check(r["decision"] == "CONTINUE" and r["more"] == SPRT_MIN_N - 3, f"three identical pairs do not decide (var floor δ², min n): {r['decision']}, more={r['more']}")
     r = sprt([-0.3 + rng.gauss(0, 0.05) for _ in range(30)], d0=-0.1, d1=0.0)
     check(r["decision"] == "REJECT", f"SPRT racing form (d0=-δ, d1=0) rejects a member 0.3 below the parent: {r['decision']}")
     r = sprt([0.0 + rng.gauss(0, 0.05) for _ in range(30)], d0=-0.1, d1=0.0)
@@ -712,6 +851,13 @@ def selftest():
     check(abs(obs[1][1] - (d_aus + d_b) / 2) < 1e-9, f"mirrored australia observation = mean of the slots ({obs[1][1]:+.4f})")
     pent = pentanomial(cand2, base2)
     check(pent == {"LL": 0, "LT": 0, "TT": 3, "WT": 0, "WW": 0}, f"pentanomial (africa TT, australia WL=TT, east-asia TT): {pent}")
+    # a slot missing for one config (the shifted game failed): the scenario falls back to the slot both played
+    cand3 = dict(cand2); del cand3[("med0b", "australia")]
+    obs3 = paired_diffs(cand3, base2)
+    check(len(obs3) == 2 and abs(obs3[1][1] - d_aus) < 1e-9, f"missing slot b: australia observation = slot a alone ({obs3[1][1]:+.4f})")
+    check(pentanomial(cand3, base2) == {"LL": 0, "LT": 0, "TT": 2, "WT": 0, "WW": 0}, "missing slot b: pentanomial skips that scenario")
+    st3 = live_stats(cand3, base2)
+    check(st3["n"] == 5 and st3["n_live"] == 3, f"missing slot b: live_stats pairs {st3['n']} games, {st3['n_live']} live (per game, not per scenario)")
     check(pentanomial(cand, base) is None, "pentanomial is None without mirrored slots")
 
     # --- cycles: rock-paper-scissors between three configs on three scenarios
@@ -721,12 +867,105 @@ def selftest():
     cyc = cycles(trio, ["x", "y", "z"])
     check(cyc == [("x", "z", "y")], f"cycle x>z>y>x found: {cyc}")
     check(cycles({"x": trio["x"], "y": trio["x"], "z": trio["x"]}, ["x", "y", "z"]) == [], "no cycle among identical configs")
+
+    # --- full games: three results dirs on disk, run through the real load/objective path
+    import contextlib
+    import io
+    import tempfile
+
+    def reset_objective(name=None):
+        global OBJECTIVE, OBJECTIVE_NOTE, SPRT_DELTA, DELTA_SET
+        OBJECTIVE, OBJECTIVE_NOTE, SPRT_DELTA, DELTA_SET = name, None, 0.10, False
+
+    def final(region, win, fired="-", winner_field=True):
+        w = "us" if win else "other"
+        tail = f" players=40 winner={w} fired={fired}" if winner_field else f" players=40 fired={fired}"
+        if win:
+            return f"== {region} | spawn 1,1 (bot picker rank 0) | Medium == FINAL rank=1 share=1.00 alive=true tiles=200000 troops=1k{tail}"
+        return f"== {region} | spawn 1,1 (bot picker rank 0) | Medium == FINAL rank=5 share=0.40 alive=true tiles=50000 troops=1k{tail}"
+
+    def write_dir(d, cfg, batches, line_fn):
+        for b in batches:
+            with open(os.path.join(d, f"ab30_{cfg}_{b}.txt"), "w") as fh:
+                for i in range(10):
+                    fh.write(line_fn(f"r{i}", i) + "\n")
+
+    def run(args):
+        reset_objective()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = main(args)
+        return rc, buf.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # candidate wins 6/10 per batch (r1 r3 r5 r7 r9 alone, r0 with base), base 2/10 (r0, r2); r4 r6 r8 nobody
+        full = os.path.join(tmp, "full"); os.makedirs(full)
+        cand_wins = {0, 1, 3, 5, 7, 9}; base_wins = {0, 2}
+        BATCHES6 = [f"med{i}" for i in range(6)]  # 60 games: 6/10 vs 2/10 per batch
+        write_dir(full, "base", BATCHES6, lambda r, i: final(r, i in base_wins))
+        write_dir(full, "cand", BATCHES6, lambda r, i: final(r, i in cand_wins, fired="x:1"))
+        reset_objective()
+        data = {n: load(full, n) for n in ("base", "cand")}
+        check(resolve_objective(data) == "wscore" and "auto" in OBJECTIVE_NOTE and "warning" not in OBJECTIVE_NOTE,
+              f"full-game dir auto-selects wscore: {OBJECTIVE_NOTE}")
+        sb, sc = summary(data["base"]), summary(data["cand"])
+        check((sb["wins"], sc["wins"]) == (12, 36) and abs(sc["winrate"] - 0.6) < 1e-9, f"wins base/cand = {sb['wins']}/{sc['wins']}, cand winrate {sc['winrate']:.2f}")
+        check(abs(wscore(data["cand"][("med0", "r1")]) - score(data["cand"][("med0", "r1")]) - 1.0) < 1e-9 and abs(wscore(data["base"][("med0", "r1")]) - score(data["base"][("med0", "r1")])) < 1e-9,
+              "wscore = score + 1.0 for a win, = score otherwise")
+        ws = win_stats(data["cand"], data["base"])
+        check((ws["wins_a"], ws["wins_b"], ws["a_only"], ws["b_only"], ws["both"], ws["neither"]) == (36, 12, 30, 6, 6, 18),
+              f"paired wins: {ws['wins_a']} vs {ws['wins_b']}, A-only {ws['a_only']} / B-only {ws['b_only']} / both {ws['both']} / neither {ws['neither']}")
+        check(abs(ws["p"] - sign_test(30, 6)) < 1e-12 and ws["p"] < 0.05, f"McNemar p = {ws['p']:.4f}")
+        for name, want_delta in (("wscore", 0.10), ("winrate", 0.15)):
+            reset_objective(name); resolve_objective(data)
+            check(abs(SPRT_DELTA - want_delta) < 1e-12, f"--objective {name}: δ = {SPRT_DELTA}")
+            r = sprt([dd for _, dd in paired_diffs(data["cand"], data["base"])])
+            check(r["decision"] == "ACCEPT", f"--objective {name}: SPRT {r['decision']} at n={r['n_at']} (mean {r['mean']:+.3f})")
+        reset_objective("score"); resolve_objective(data)
+        st = live_stats(data["cand"], data["base"])
+        check(st["n_live"] == 60 and st["wins"] == 30 and st["losses"] == 6, f"--objective score on the same dir: W/L {st['wins']}/{st['losses']} of {st['n_live']} live")
+        rc, out = run(["--sprt", "--verdict", "0", full, "base", "cand"])
+        check(rc == 0 and "cand clear ACCEPT" in out, f"--sprt --verdict 0 (remote.sh SPRT=1 call) exits {rc}: {out.strip().splitlines()[-1]}")
+        rc, out = run(["--objective", "winrate", "--sprt", "--verdict", "0", full, "base", "cand"])
+        check(rc == 0 and "cand clear ACCEPT" in out, f"--objective winrate --sprt --verdict 0 exits {rc}")
+        rc, out = run(["--fitness", full, "base", "cand"])
+        fit = json.loads(out)
+        check(fit["cand"]["objective"] == "wscore" and abs(fit["cand"]["fitness"] - fit["cand"]["wscore"]) < 1e-9
+              and fit["cand"]["wins"] == 36 and fit["cand"]["per_game_wins"]["med0/r1"] == 1 and fit["base"]["per_game_wins"]["med0/r1"] == 0,
+              f"--fitness: objective {fit['cand']['objective']}, fitness {fit['cand']['fitness']:.3f} = wscore, wins/per_game_wins present")
+        rc, out = run([full, "base", "cand"])
+        check(rc == 0 and "wins cand vs base: 36 12" in out and "objective: wscore (auto" in out, "table prints the WIN line and the objective note")
+
+        # a 20-minute dir without winner= : objective score, same numbers as the in-memory fixture above
+        short = os.path.join(tmp, "short"); os.makedirs(short)
+        for cfg, lines in (("base", SELFTEST_BASE), ("cand", SELFTEST_CAND)):
+            with open(os.path.join(short, f"ab30_{cfg}_med0.txt"), "w") as fh:
+                fh.write("\n".join(lines) + "\n")
+        reset_objective()
+        data = {n: load(short, n) for n in ("base", "cand")}
+        check(resolve_objective(data) == "score" and all(g["winner"] is None for g in data["cand"].values()), f"20-min dir: {OBJECTIVE_NOTE}")
+        st = live_stats(data["cand"], data["base"])
+        check(st["n_live"] == 2 and abs(st["mean_diff"] - d_aus / 2) < 1e-9, f"20-min dir: n_live {st['n_live']}, mean diff {st['mean_diff']:+.4f} (unchanged)")
+        check(summary(data["cand"])["wins"] == 0 and abs(summary(data["cand"])["wscore"] - summary(data["cand"])["score"]) < 1e-12, "20-min dir: wins 0, wscore = score")
+        rc, out = run(["--fitness", short, "base", "cand"])
+        fit = json.loads(out)
+        check(fit["cand"]["objective"] == "score" and abs(fit["cand"]["fitness"] - fit["cand"]["score"]) < 1e-9, "20-min dir: --fitness reports score")
+
+        # mixed: the base has winner=, the candidate's files do not -> warn, use wscore
+        mixed = os.path.join(tmp, "mixed"); os.makedirs(mixed)
+        write_dir(mixed, "base", ["med0"], lambda r, i: final(r, i in base_wins))
+        write_dir(mixed, "cand", ["med0"], lambda r, i: final(r, i in cand_wins, winner_field=False))
+        reset_objective()
+        data = {n: load(mixed, n) for n in ("base", "cand")}
+        check(resolve_objective(data) == "wscore" and "warning: mixed" in OBJECTIVE_NOTE, f"mixed dir: {OBJECTIVE_NOTE.splitlines()[-1]}")
+        check(summary(data["cand"])["wins"] == 0, "mixed dir: games without winner= count as no win")
+    reset_objective()
     print("selftest " + ("passed" if ok else "FAILED"))
     return 0 if ok else 1
 
 
 def main(argv):
-    global AT, SPRT, SPRT_DELTA, SPRT_ALPHA, SPRT_BETA
+    global AT, SPRT, SPRT_DELTA, SPRT_ALPHA, SPRT_BETA, OBJECTIVE, DELTA_SET
     mode = "table"
     thresh = 3
     old = False
@@ -740,7 +979,11 @@ def main(argv):
         elif argv[0] == "--sprt":
             SPRT = True; argv = argv[1:]
         elif argv[0] == "--delta":
-            SPRT_DELTA = float(argv[1]); argv = argv[2:]
+            SPRT_DELTA = float(argv[1]); DELTA_SET = True; argv = argv[2:]
+        elif argv[0] == "--objective":
+            if argv[1] not in OBJECTIVES:
+                print(f"--objective must be one of {', '.join(OBJECTIVES)}"); return 2
+            OBJECTIVE = argv[1]; argv = argv[2:]
         elif argv[0] == "--alpha":
             SPRT_ALPHA = float(argv[1]); argv = argv[2:]
         elif argv[0] == "--beta":
