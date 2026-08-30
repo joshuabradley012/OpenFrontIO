@@ -538,3 +538,88 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 **Next lab session:** `ladder.sh` on the two provisional flags (60 games,
 30 min, SHIFT=150) → fold or revert; then `cmaes.py --pop 10 --gens 12
 --games-growth`; then Hard.
+
+## Review packages (2026-08-29, "PlaybookBot vs the field")
+
+### #7 — Fast-forward build search (`buildSearch`) and a value function from records
+
+**What the flag does.** `Economy.build()` with `buildSearch` on keeps its hard
+overrides (a post where a non-bot attack lands / facing a threat, the first SAM
+under an enemy silo, `mirvFund`, the silo escrow) and then asks
+`src/core/execution/playbook/BuildSearch.ts` — a pure BOSS-style planner
+(Churchill & Buro, AIIDE 2011) — what to buy. State = tick, gold, observed
+income, troops, cap, city/port units and levels, factories, posts, silos, SAMs,
+ships on the map, partner, threat. Actions = city, city level, port, port level,
+factory (a rail step), post, silo, SAM, plus two macros (city×3 in the opening;
+the first port levelled to 3). Every action is *fast-forwarded* to the tick it
+is affordable (no idle actions); costs come from the real `Config.unitInfo`
+(with `extraUnits` for the later steps of a plan), build times from
+`constructionDuration`, effects from Spend.ts's models (port income with sea
+saturation, partner share and the own-levels curve; rail income per stop; cap
+filled by the engine's regen curve in closed form; silo / SAM / post as
+threat-gated gold-equivalents). Search: iterative-deepening DFS with
+branch-and-bound, children ordered by their idle value, 2000-node budget
+(measured 0.7 ms per search on an M-series laptop, `buildSearch.test.ts` prints
+it), horizon 6000 ticks in opening/consolidate, 4000 in war, what is left of the
+25:00 clock in the endgame (capped at 6000). Objective at the horizon: gold +
+troops × `CAP_GOLD_PER_TROOP` + defensive worth; gold counts 1:1, so a port pays
+only through what it buys inside the tree (compounding is in the search, not
+the leaf) and cap only as far as regen fills it. The first step of the best plan
+is executed through the existing tile pickers; when it is not affordable yet the
+bot saves ("save" = nothing bought). Re-plan every 100 ticks, on a gold jump
+(≥ 1.5× the planning gold + 100k) and after every purchase; a kind whose picker
+finds no tile is off the menu for 30 s (10 s for a level). `PLAN …` lines every
+300 ticks. The flag fires when the planner's purchase family differs from a
+coarse mirror of the chain's (`Economy.chainKind`), at most once per 100 ticks.
+
+**Where it differs from the chain** (seen in tests and the smoke): the first port
+before city 2 when both are affordable (the chain finishes three city levels
+first); a port level before a 1M city level when troops cannot use the cap yet;
+saving for a 1M item instead of a cheaper one the chain would take. It does not
+buy posts/silos/SAMs on its own while cap or ports are available — at
+`CAP_GOLD_PER_TROOP = 20` those dominate — so the chain's threat posts and
+first SAM stay as overrides.
+
+**Tests.** `tests/playbook/buildSearch.test.ts`: planner on plain numbers (a
+drained empire saves for the port level; a full army on a full sea buys the city
+now; port before city 2; node budget and timing; horizon shrink; posts only under
+a threat) and a game on the world test map (a hand-placed first city, 400k gold:
+off buys City then Port, on buys Port first, `fired.buildSearch > 0`). Golden
+hash unchanged with the flag off.
+
+**Smoke** (africa, Medium, 6 min, one game each): off 44.4k tiles, 7 city
+levels, 2 ports, 279k gold, rank 2/50, botMs 404; on 34.0k tiles, 4 city levels,
+3 ports, 741k gold (saving for a 1M level), rank 3/53, botMs 473,
+`fired=buildSearch:6`. One game — the A/B decides:
+
+```
+CONFIGS='{"base":{},"x":{"buildSearch":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh
+```
+
+**Value function** (`scripts/lab/valuefit.py`, stdlib). The lab has no
+`RECORD=1` output (no `rec_*.json` writer in `tests/lab/playbook.lab.ts`), so
+it reads the transcript rows (`  600s … tiles= troops= cap= gold= cities= ports=
+dp= allies= rank=r/N`). One row per game at 5/8/10/12/15 min, features
+log tiles / log troops / troops÷cap / log gold / cities / ports / dp / allies /
+rank score / share / log cap, target = summarize.py's final score. Ridge
+(closed form, standardised features, λ = 1), in-sample R², 5-fold out-of-sample
+Spearman of predicted-vs-final next to the two raw baselines (rank@t vs final
+rank — the early-stop analysis's 0.58 at 12:00 — and score@t vs final score).
+`--out value.json` writes the models (`apply_model` shows how to use one);
+`--selftest` runs on a synthetic fixture. On the 395 twenty-minute Medium games
+in the scratchpad (`--diff Medium --min-length 1200`):
+
+| t | n | R² | ρ pred (cv) | ρ rank@t | ρ score@t |
+|---|---|---|---|---|---|
+| 5 | 395 | 0.40 | **0.56** | 0.51 | 0.52 |
+| 8 | 395 | 0.52 | **0.65** | 0.54 | 0.55 |
+| 10 | 395 | 0.50 | **0.58** | 0.55 | 0.56 |
+| 12 | 395 | 0.50 | 0.55 | **0.57** | 0.57 |
+| 15 | 395 | 0.60 | **0.68** | 0.65 | 0.65 |
+
+The predictor beats raw rank at 5/8/10/15 min and ties it at 12 (0.55 vs 0.57);
+gold, ports and posts carry weight the rank cannot see at 8–10 min. Early
+stopping stays off (item 6 above); the fit is a proxy metric and a leaf
+evaluator, not a graduation criterion. Mixed-length dirs must be filtered
+(`--min-length`): a 10-minute game's FINAL is its 10-minute row and inflates
+every early ρ.

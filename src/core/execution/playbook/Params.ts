@@ -47,6 +47,7 @@ export interface PlaybookParams {
   portWithoutPartnerTick: number; // first port on any ocean coast from this tick even with no partner (1e9 = never)
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
+  buildSearch: boolean; // #7: Economy.build() takes its purchase from BuildSearch.ts (BOSS-style fast-forward search to a phase horizon; "save" when the best plan's first buy is not affordable yet) instead of the ordered chain; posts under attack, the first SAM under an enemy silo, mirvFund and the silo escrow stay. Default off until the 30-game Medium A/B
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
 }
 
@@ -90,4 +91,5 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
   trustWars: true, // PROVISIONAL (re-scored: 10W-9L over 19 live games, dScore +0.19 [+0.02, +0.36], sign test undecided — confirm with ladder.sh before folding). Original A/B: 30-game Medium A/B on the realRetreats base 11W-8L (11 identical), 8 crowns vs 5, 21 top-3 vs 17, +19 % land
   nationAware: true, // PROVISIONAL, see trustWars; alone 9W-6L, 15 identical
+  buildSearch: false, // default off until the 30-game Medium A/B
 };
