@@ -15,3 +15,14 @@
   ```
 
   (`cmaes.py` has no `--workers`: the remote runner reads `WORKERS` from the environment, see its docstring.)
+
+- `wins.json` — the full-game (wins-objective) spec, per docs/PlaybookBotPlan.md "Why we lose full games": the
+  loss analysis found wins and losses identical at minute 10, so the opening params (`expandContested`,
+  `expandFree`, `botRatio`, `botClickCap`, `railSpacing`) are EXCLUDED and only the mid/endgame behaviour params
+  (`fightAbove`, `fightMaxShare`, `reserveShare`, `capFullShare`, `bombReserve`) plus the mid/late neutral-flag
+  constants (`threat*`, `build*`, `retal*`, `drain*`, `hyst*`) are tuned — 17 dims, bounds as in
+  `neutral-flags.json`, init = `DEFAULT_PLAYBOOK`. Run it on full games (`--minutes full`, wscore) with the
+  gating flags on via `--fixed` (`threatMap`, `buildSearch`, `retaliateAware`, `drainedNations`, `hystRetreats` —
+  their constants are read only while the flag is on). The graduated fix flags' constants
+  (`contestLeader`/`plateauBreak`/`warRoiCap`/`webDefense`/`samOnRisk`) get appended to this spec after their
+  A/Bs decide which flags stay.

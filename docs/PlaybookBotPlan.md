@@ -1723,6 +1723,8 @@ Lessons: (1) a 20-minute score is a screen, never a graduation — the same conf
 
 Base wins 50 % of full games on this grid. Actions (pending Josh): revert the boatsWaterPath default; consider pruning annexWars/takeFallout/steamrollLevels/lapseToAttack for simplicity or re-testing at tuned constants.
 
+Caveat (2026-08-30): 13 (batch, region) slot groups of this grid collapsed onto one spawn tile — 17 of the 96 base games were replicates (96 files = 79 unique games; `loss_analysis.py` REPLICATES over `lab-out/rm1`). Cross-region: the picker's staged 250→400-tile search re-found the same best tile from different shifted centres (med5b/med8b africa == australia at 1569,681; med2b east-asia == north-russia at 1611,261; med6 north-america == south-america at 522,267; …). Same-region: the rank walk's restart-with-smaller-radius re-found a lower rank's tile (med5/med9 africa at 903,480; med2/med7 australia at 1458,396). The rm1 numbers above stand as measured (both sides of every A/B played the same collapsed grid, so the pairing is intact — the effective sample is 79 scenarios, not 96). Fixed for later sweeps in `src/core/lab/LabReplay.ts` `pickLabSpawn`: each region is vetoed outside its own Voronoi cell (closest shifted centre wins) and the rank walk is one canonical sequence per region — verify with `node --import tsx tests/lab/spawn_dedupe.lab.ts`.
+
 ## Why we lose full games (2026-08-30, loss_analysis.py over rm1's 96 base games)
 
 Outcomes: 48 won · 37 alive-but-lost · 4 died · 7 hit the cap (6 as rank 1). Caveat: 13 file groups share one spawn (region labels collapsed onto the same spot) — 96 files = 79 unique games; dedupe the spawn slots before the next sweep.
