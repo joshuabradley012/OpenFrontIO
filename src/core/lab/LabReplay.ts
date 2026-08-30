@@ -112,22 +112,53 @@ export function parseReplayRecipe(recipe: string): LabSpec {
 }
 
 /** The spawn walk: SPAWNRANK=k takes the k-th best spot in the region (each pick excludes a 120-tile circle
- *  around the earlier ones); GLOBAL=1 walks the whole map at k = SPAWNRANK*6 + region index. The 120-tile
- *  exclusion exhausts a small region (australia rank ≥ 3) before the rank is reached: restart the whole walk
- *  with a smaller radius — ranks that resolve at 120 are untouched, and the relaxation is deterministic. */
+ *  around the earlier ones); GLOBAL=1 walks the whole map at k = SPAWNRANK*6 + region index.
+ *
+ *  Two lab-only guarantees (2026-08-30, after rm1's spawn collapses — loss_analysis.py REPLICATES):
+ *  1. Voronoi veto (prefer-mode only, never the bot's real no-prefer pickSpawn): a pick that lands closer
+ *     (Euclidean) to a DIFFERENT region's shifted centre than to its own is vetoed — excluded like a rank pick
+ *     but consuming no rank — so each region keeps its own Voronoi cell and two regions of one slot (same
+ *     SHIFT/SEED world, games that cannot see each other) can never collapse onto one tile. In rm1 the picker's
+ *     staged 250→400-tile search radius re-found the same best tile from different centres (med5b/med8b
+ *     africa == australia at 1569,681).
+ *  2. One canonical walk per region: when the exclusion radius exhausts the region (australia at high ranks)
+ *     the walk CONTINUES with the next smaller radius (120→60→30→15) keeping every earlier pick and veto
+ *     excluded, instead of restarting from rank 0 — so rank i is always the i-th tile of one deterministic
+ *     sequence and two ranks of one region can never coincide either (in rm1 a restarted 60-tile walk re-found
+ *     a 120-tile walk's tile: med5/med9 africa at 903,480). Ranks that resolve at 120 pick the same tile as before. */
 export function pickLabSpawn(game: Game, spec: LabSpec, picker: LabSpawnPicker): { tile: TileRef; rank: number; excludeRadius: number } {
   const regionIdx = LAB_REGIONS.findIndex(([n]) => n === spec.region);
   const rank = spec.global ? spec.spawnRank * 6 + Math.max(0, regionIdx) : spec.spawnRank;
+  let vetoed: ((t: TileRef) => boolean) | null = null;
+  if (!spec.global && regionIdx >= 0) {
+    // every centre shifted by the same offset as spec.prefer (= own centre + SHIFT)
+    const sx = spec.prefer[0] - LAB_REGIONS[regionIdx][1][0], sy = spec.prefer[1] - LAB_REGIONS[regionIdx][1][1];
+    const centres: [number, number][] = LAB_REGIONS.map(([, [cx, cy]]) => [cx + sx, cy + sy]);
+    vetoed = (t: TileRef) => {
+      const x = game.x(t), y = game.y(t);
+      const own = Math.hypot(x - centres[regionIdx][0], y - centres[regionIdx][1]);
+      return centres.some(([cx, cy], i) => i !== regionIdx && Math.hypot(x - cx, y - cy) < own);
+    };
+  }
+  const stages = [120, 60, 30, 15];
   const exclude: [number, number][] = [];
+  let stage = 0;
   let t: TileRef | null = null;
-  let excludeRadius = 120;
-  for (const r of [120, 60, 30, 15]) {
-    excludeRadius = r; exclude.length = 0; t = null;
-    for (let i = 0; i <= rank; i++) { t = picker.pickSpawn(game, spec.global ? undefined : spec.prefer, exclude, r); if (t === null) break; exclude.push([game.x(t), game.y(t)]); }
-    if (t !== null) break;
+  for (let i = 0; i <= rank; i++) {
+    for (;;) {
+      t = picker.pickSpawn(game, spec.global ? undefined : spec.prefer, exclude, stages[stage]);
+      if (t === null) {
+        if (stage < stages.length - 1) { stage++; continue; } // region exhausted: relax, keeping the walk so far
+        break;
+      }
+      exclude.push([game.x(t), game.y(t)]);
+      if (vetoed !== null && vetoed(t)) continue; // another region's cell: excluded, no rank consumed
+      break;
+    }
+    if (t === null) break;
   }
   if (t === null) throw new Error("no spawn near " + spec.prefer);
-  return { tile: t, rank, excludeRadius };
+  return { tile: t, rank, excludeRadius: stages[stage] };
 }
 
 /** The bootstrap as steps around ticks the CALLER drives, so the client's GameRunner can run every tick
