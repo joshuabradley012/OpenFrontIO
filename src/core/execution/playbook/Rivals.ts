@@ -7,6 +7,7 @@
 import { Difficulty, GameMode, Player, PlayerType, Relation } from "../../game/Game";
 import { BotContext } from "./Context";
 import type { Situation } from "./Situation";
+import { Bucket, CELL, ThreatMap } from "./ThreatMap";
 
 export interface RivalView {
   /** Troop change per 100 ticks over the ring buffer (up to 8 samples, one every 50 ticks). */
@@ -60,8 +61,12 @@ export class Rivals {
   private pendingRequests = new Set<Player>(); // outgoing alliance requests still open last tick
   private expiry = new Map<Player, number>(); // expiresAt of each current alliance, to tell a break from a lapse
   private nationCache = new Map<Player, { tick: number; can: boolean; send: number }>();
+  /** `threatMap`: the per-segment influence map, rebuilt in the same border pass (empty while the flag is off). */
+  readonly threat: ThreatMap;
 
-  constructor(private ctx: BotContext) {}
+  constructor(private ctx: BotContext) {
+    this.threat = new ThreatMap(ctx);
+  }
 
   trust(p: Player): number {
     return this.trustOf.get(p) ?? 0.5;
@@ -159,19 +164,30 @@ export class Rivals {
       r.head = (r.head + 1) % SAMPLES; r.n = Math.min(SAMPLES, r.n + 1);
     }
     for (const p of this.ring.keys()) if (!watched.includes(p)) { this.ring.delete(p); this.nationCache.delete(p); }
-    // one pass over our border: how many of our border tiles touch each neighbour
+    // one pass over our border: how many of our border tiles touch each neighbour. With `threatMap` on the same
+    // pass buckets the tiles into CELL × CELL cells per owner (a segment) for ThreatMap.compute.
     const mg = this.ctx.mg, counts = new Map<number, number>();
+    const tm = this.ctx.p.threatMap, cellsW = Math.ceil(mg.width() / CELL), buckets = new Map<number, Bucket>();
+    let ourBorder = 0;
     for (const tile of this.ctx.me.borderTiles()) {
+      ourBorder++;
       const owners: number[] = []; // a tile counts once per neighbouring owner
       for (const nb of mg.neighbors(tile)) {
         const id = mg.ownerID(nb);
-        if (id === 0 || owners.includes(id)) continue;
+        if (id === 0) continue;
+        if (owners.includes(id)) { if (tm) { const b = buckets.get(id * 1048576 + ((mg.y(tile) >> 4) * cellsW + (mg.x(tile) >> 4))); if (b) b.theirTiles++; } continue; }
         owners.push(id);
         counts.set(id, (counts.get(id) ?? 0) + 1);
+        if (!tm) continue;
+        const x = mg.x(tile), y = mg.y(tile), cell = (y >> 4) * cellsW + (x >> 4), key = id * 1048576 + cell;
+        let b = buckets.get(key);
+        if (!b) { b = { cell, ownerID: id, tiles: 0, theirTiles: 0, sx: 0, sy: 0, members: [] }; buckets.set(key, b); }
+        b.tiles++; b.theirTiles++; b.sx += x; b.sy += y; b.members.push(tile);
       }
     }
     this.border.clear();
     for (const p of watched) this.border.set(p, counts.get(p.smallID()) ?? 0);
+    if (tm) this.threat.compute(buckets.values(), watched, ourBorder, this.ctx.me.troops());
   }
 
   private deltas(r: Ring): [number, number] {

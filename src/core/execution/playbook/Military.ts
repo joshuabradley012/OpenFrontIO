@@ -237,9 +237,20 @@ export class Military {
     }
   }
 
+  private threatFired = -1e9;
+  /** review #5 (`threatMap`): the unfriendly rival massing on one of our segments (theirs > 1.5 × ours) without attacking
+   *  yet; Economy's threat-post rule takes it first. No troops move pre-emptively. */
+  prePosition: Player | null = null;
   /** Opposing attacks cancel troop-for-troop: answer a non-bot attack with a counter of the same size. */
   counterAttack(): void {
     const me = this.ctx.me;
+    if (this.ctx.p.threatMap) {
+      const tm = this.q.rivals.threat, attacking = new Set(me.incomingAttacks().map((a) => a.attacker()));
+      let pre: Player | null = null;
+      for (const r of this.ctx.sit.rivals) { if (attacking.has(r) || this.q.postFacing(r)) continue; const s = tm.exposedTo(r, 1.5, Math.max(2000, this.ctx.sit.troops * 0.03)); if (s && (pre === null || tm.maxThreat(r) > tm.maxThreat(pre))) pre = r; }
+      if (pre !== this.prePosition && pre !== null) this.ctx.log(`t${this.ctx.mg.ticks()} PRE-POSITION post vs ${pre.name()}: ${Math.round(tm.maxThreat(pre) / 1000)}k unanswered on our border`);
+      this.prePosition = pre;
+    }
     for (const inc of me.incomingAttacks()) {
       const a = inc.attacker();
       if (a.type() === PlayerType.Bot || me.isFriendly(a)) continue;
@@ -313,6 +324,9 @@ export class Military {
     if (candidates.length === 0) return;
     const atCap = me.troops() >= cap * 0.95;
     const endgame = this.ctx.mg.ticks() >= 15000 || this.ctx.sit.mode === "push"; // 25:00 or the push — land now is worth more than troops later
+    // review #5 (`threatMap`): prefer a rival whose army is committed on its other borders (+3 × busyElsewhere) and
+    // avoid opening a war on a border where we are already contested (−2 × Σ vulnerability / troops)
+    const threatBonus = (r: Player) => { if (!this.ctx.p.threatMap) return 0; const tm = this.q.rivals.threat; const b = 3 * tm.busyElsewhere(r) - (2 * tm.vulnerability(r)) / Math.max(1, this.ctx.sit.troops); if (b !== 0 && this.ctx.mg.ticks() - this.threatFired >= 100) { this.threatFired = this.ctx.mg.ticks(); this.ctx.fire("threatMap"); } return b; };
     const trustBonus = (r: Player) => { const b = this.ctx.p.trustWars ? 2 * (1 - (this.ctx.sit.rival.get(r)?.trust ?? 0.5)) : 0; if (b !== 0 && b !== 1) this.ctx.fire("trustWars"); return b; }; // C1: a rival that broke faith is the better target
     // At cap every troop above the line is wasted growth, so commit more and accept a thinner edge.
     const maxSend = Math.floor(me.troops() * (atCap || endgame ? 0.7 : this.ctx.p.fightMaxShare));
@@ -335,7 +349,7 @@ export class Military {
       // Playbook: hit players who are already being hit, traitors (half defence), and the ally we let lapse.
       const underFire = r.incomingAttacks().reduce((acc, a) => acc + a.troops(), 0) / Math.max(1, r.troops());
       const bonus = Math.min(underFire, 1) * 4 + (r.isTraitor() ? 2 : 0) + (r === this.plannedTarget() ? 4 : 0);
-      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r);
+      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r);
     };
     let best: Player | null = null, bestS = 0;
     for (const r of candidates) { const sc = score(r); if (sc > bestS) { bestS = sc; best = r; } }

@@ -193,8 +193,10 @@ export class Economy {
     if (cityUnits.length >= 1 && ticks >= 900 && gold >= cost(UnitType.DefensePost) && me.unitsOwned(UnitType.DefensePost) < 6) { // a threat post never waits for city 2 (30-game lab: +8 % land, same survival)
       // an ally whose alliance ends within 45 s counts as a threat: Hard nations attack the moment it lapses
       const expiring = me.alliances().filter((al) => al.expiresAt() - ticks < 450).map((al) => al.other(me)).filter((o) => friends.includes(o) && o.troops() >= me.troops() * 0.4);
-      const threat = [...expiring, ...rivals].find((r) => ticks - (this.postFailed_.get(r) ?? -1e9) > 600 && (r.troops() >= me.troops() * 0.5 || expiring.includes(r) || (r.type() === PlayerType.Nation && me.troops() > r.troops() * 3)) && !this.q.postFacing(r));
-      if (threat) { const tile = this.defensePostTile(threat); if (tile !== null && this.tryBuild(UnitType.DefensePost, tile)) return; this.postFailed_.set(threat, ticks); this.ctx.log(`t${ticks} post vs ${threat.name()} FAILED (${tile === null ? "no tile" : "canBuild"})`); }
+      // review #5 (`threatMap`): a rival massing on a segment (Military.prePosition) gets its post before the troop-count threats
+      const pre = this.ctx.p.threatMap && this.military.prePosition && rivals.includes(this.military.prePosition) ? [this.military.prePosition] : [];
+      const threat = [...expiring, ...pre, ...rivals].find((r) => ticks - (this.postFailed_.get(r) ?? -1e9) > 600 && (r.troops() >= me.troops() * 0.5 || expiring.includes(r) || (r.type() === PlayerType.Nation && me.troops() > r.troops() * 3)) && !this.q.postFacing(r));
+      if (threat) { if (pre.length > 0 && threat === pre[0] && !expiring.includes(threat) && !(threat.troops() >= me.troops() * 0.5 || (threat.type() === PlayerType.Nation && me.troops() > threat.troops() * 3))) this.ctx.fire("threatMap"); const tile = this.defensePostTile(threat); if (tile !== null && this.tryBuild(UnitType.DefensePost, tile)) return; this.postFailed_.set(threat, ticks); this.ctx.log(`t${ticks} post vs ${threat.name()} FAILED (${tile === null ? "no tile" : "canBuild"})`); }
       else if (ticks % 600 === 0) this.ctx.log(`t${ticks} no threat: rivals=${rivals.map((r) => r.name() + ":" + Math.round(r.troops() / 1000) + "k").join(",")} friends=${friends.length}`);
     }
     // 2. SAM once anyone unfriendly on the map has a silo, or once we are top three after 15:00 (the crown gets MIRVed);
@@ -371,7 +373,12 @@ export class Economy {
     }
     if (candidates.length === 0) return null;
     // contact midpoint, then step 6–12 tiles away from the attacker's side of the border
-    const mid = candidates[Math.floor(candidates.length / 2)];
+    let mid = candidates[Math.floor(candidates.length / 2)];
+    if (this.ctx.p.threatMap) {
+      // review #5: the post goes where the enemy is thick — the centre of the attacker's hottest segment
+      const hot = this.q.rivals.threat.postTileFor(attacker);
+      if (hot !== null && hot !== mid) { this.ctx.fire("threatMap"); mid = hot; }
+    }
     const mx = this.ctx.mg.x(mid), my = this.ctx.mg.y(mid);
     let ax = 0, ay = 0, n = 0;
     for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {

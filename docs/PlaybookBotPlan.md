@@ -538,6 +538,7 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 30 min, SHIFT=150) → fold or revert; then `cmaes.py --pop 10 --gens 12
 --games-growth`; then Hard.
 
+<<<<<<< HEAD
 ## Ladder (2026-08-29 late; `lab-out/ladder1`)
 
 Shifted grid (`SHIFT=150`, `med0–med9`), 30-minute games, 45 paired games
@@ -562,3 +563,52 @@ times, always naming one giant neighbour (e.g. Japan 260k tiles / 6.3M).
 
 Lab can now run to a real win: `MIN=full` (170-minute ceiling), the loop
 stops on `game.getWinner()`, FINAL carries `winner=us|other|none`.
+=======
+## Border threat map (`threatMap`, review opportunity #5, 2026-08-29)
+
+`src/core/execution/playbook/ThreatMap.ts`, built inside the 50-tick border
+pass in `Rivals.sample()` (one extra bucket per (16 × 16 cell, rival) while the
+flag is on; nothing is allocated when it is off). Per segment: `theirs` =
+rival troops × (their tiles touching the segment / their border) × (1 −
+(d / 150)^4) with d the distance from the rival's bounding-box centre;
+`ours` = our troops × (segment tiles / our border) × (1 + 1 per covering
+post, capped at 2); influence / tension / vulnerability as in the review.
+Per rival: `maxThreat`, Σ `vulnerability`, `busyElsewhere` (share of its
+border facing a third party it is fighting), `postTileFor` (centre of its
+hottest segment). `undefended` = Σ max(0, theirs − ours) over unfriendly
+segments. A `THREAT` log line every 600 ticks lists the top 3 segments.
+
+Consumers (each fires `threatMap` when its decision differs from off):
+
+1. **Reserve** — `reserve × clamp(1 + threatReserveGain × undefended /
+   troops, 1, 2)` (gain 2) in `readSituation()` after the rival view. The
+   spatial successor of `bsrReserve` (which scaled by the max bsr and lost).
+   The brief's `clamp(0.5 + 0.5 × undefended / troops, 0.5, 2)` was tried
+   first: on a calm border it is a 15 % reserve, and the sea-expansion rule
+   (gated on `want ≤ spendable / 2`) shipped the army to collapsed players
+   on other continents every 100 ticks — africa 6-min smoke rank 29 / 8.8k
+   tiles vs rank 2 / 44k off. The reserve now never drops below the flat
+   share and doubles once the unanswered pressure reaches half our army.
+2. **fight() scorer** — `+ 3 × busyElsewhere(r) − 2 × vulnerability(r) /
+   troops`: prefer a rival committed on its other borders (the Civ IV
+   dogpile), avoid a war on a border where we are already contested.
+3. **Threat posts** — `Economy.defensePostTile()` starts from
+   `postTileFor(rival)` instead of the contact midpoint; the 8–14-tile step
+   inland is unchanged.
+4. **Pre-position** — `Military.counterAttack()` marks the unfriendly rival
+   with a segment where theirs > 1.5 × ours by at least max(2k, 3 % of our
+   troops), not attacking yet and not yet
+   faced by a post, as `prePosition`; Economy's threat-post rule takes it
+   before the troop-count threats. No troops move (logged `PRE-POSITION`).
+5. **expand()** — skipped: a TerraNullius attack has no direction (the
+   engine picks the tiles), so there is nothing for the map to steer.
+
+Tests: `tests/playbook/threatMap.test.ts` (hottest segment on the massed
+rival's border, busyElsewhere from a third party's wave, empty map with the
+flag off, reserve calm < massed < swamped, post tile on the hottest segment,
+pre-position without troops). Golden unchanged with the flag off.
+
+A/B: `CONFIGS='{"base":{},"threat":{"threatMap":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
+Cost: the `busyElsewhere` pass walks each unfriendly neighbour's border every
+50 ticks; see the smoke `botMs` in the package report.
+>>>>>>> bot/threat-map

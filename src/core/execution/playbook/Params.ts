@@ -47,6 +47,8 @@ export interface PlaybookParams {
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
+  threatReserveGain: number; // threatMap: reserve × clamp(1 + gain × undefended / troops, 1, 2) — how fast unanswered border pressure raises the reserve (the brief's 0.5 floor halved the reserve in every calm minute and the army sailed off in boats: africa smoke rank 29 vs 2)
+  threatMap: boolean; // review #5: a per-border-segment influence map (ThreatMap.ts) drives the reserve (undefended pressure, not max bsr), the war scorer (busy-elsewhere bonus, thin-border penalty), threat-post placement (hottest segment, not the border midpoint) and a pre-positioned post where a rival masses; default off until the 30-game Medium A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -88,4 +90,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
   trustWars: true, // kept 2026-08-29: ladder1 (45 paired 30-min games, shifted grid) trustWars+nationAware off = 11W-17L-17T vs on, dScore −0.06 [−0.19, +0.05], undecided; small positive mean, rarely fires — see PlaybookBotPlan.md Ladder
   nationAware: true, // kept with trustWars (see above)
+  threatMap: false,
+  threatReserveGain: 2,
 };
