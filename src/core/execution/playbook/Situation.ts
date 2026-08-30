@@ -35,7 +35,7 @@ export class SituationQueries {
     this.enrichRivals(sit);
     this.enrichPhase(sit);
   }
-  /** Fills `sit.rival` (readSituation calls this first so `bsrReserve` can scale the reserve before the phase reads spendable). */
+  /** Fills `sit.rival` (readSituation calls this before the phase, which reads spendable). */
   enrichRivals(sit: Situation): void {
     sit.rival = this.rivals.update(sit);
   }
@@ -46,22 +46,6 @@ export class SituationQueries {
       if (this.lastPhase !== null) this.ctx.log(`t${sit.tick} phase ${this.lastPhase} → ${sit.phase}`);
       this.lastPhase = sit.phase;
     }
-  }
-  /** C1 (`phaseGates`): a tick literal that stands for a phase. Off: `ticks >= atLeast`, the literal as written.
-   *  On: "endgame" reads sit.phase === "endgame" (25:00 / 20:00 / 15:00 literals), "pastOpening" reads
-   *  sit.phase !== "opening" (the 2:30–5:00 literals: wars, silos, rail). */
-  phaseOr(atLeast: number, phase: "endgame" | "pastOpening"): boolean {
-    if (!this.ctx.p.phaseGates) return this.ctx.mg.ticks() >= atLeast;
-    const byPhase = phase === "endgame" ? this.ctx.sit.phase === "endgame" : this.ctx.sit.phase !== "opening";
-    if (byPhase !== this.ctx.mg.ticks() >= atLeast) this.ctx.fire("phaseGates");
-    return byPhase;
-  }
-  /** C1 (`bsrReserve`): reserveShare × clamp(0.5 + 0.5 · maxBsr, 0.5, 2.0) over the unfriendly neighbours in
-   *  `sit.rival` — 0.5× with nobody on the border, 1× (reserveShare itself) at bsr 1, 2× from bsr 3 up. */
-  static reserveFactor(sit: Situation): number {
-    let maxBsr = 0;
-    for (const r of sit.rivals) { const v = sit.rival.get(r); if (v && v.bsr > maxBsr) maxBsr = v.bsr; }
-    return Math.min(2.0, Math.max(0.5, 0.5 + 0.5 * maxBsr));
   }
   /** opening while free land is reachable; endgame from 15000 or when top-3 and an unfriendly silo exists; war when a
    *  war is affordable (Military.fight's test) or troops ≥ fightAbove·cap (fight() proceeds from there); else consolidate. */

@@ -51,6 +51,6 @@ describe("expand", () => {
   });
 
   // The A1 finding that PlaybookParams.homeFloor was declared but read nowhere led to its removal in C2: the only
-  // floor on expansion is reserveShare of current troops (bsrReserve scales it), and the cap floor is the
+  // floor on expansion is reserveShare of current troops, and the cap floor is the
   // `capFloor` argument of send() that only wars pass.
 });

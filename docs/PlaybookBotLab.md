@@ -216,8 +216,8 @@ CONFIGS='{"base":{}}' MINUTES=20 JOBS=10 OUT=/tmp/lab scripts/lab/sweep.sh      
 - **Shorter games when the flag can't matter later.** ≥20 min for anything
   touching cities, ports, rail, wars or the endgame (the rule stands); a
   10-min grid (`MINUTES=10`, half the cost) is fine for opening-only knobs
-  — spawn picker, `expand*`, `botRatio`/`botClickCap`, `botsAfterWild`,
-  `phaseGates`' opening→consolidate edge — and for any flag whose effect
+  — spawn picker, `expand*`, `botRatio`/`botClickCap`, `botsAfterWild`
+  — and for any flag whose effect
   shows at `--at 600` on an existing 20-min sweep.
 - Tried and rejected: `--max-semi-space-size=64` (V8 young-gen size) made no
   difference (29.8 s vs 30.1 s); running six spawns in one warmed process

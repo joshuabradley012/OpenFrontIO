@@ -6,6 +6,7 @@
 // retreatOnAllianceEnd (tribe waves come home when a stronger ally lapses), spawnBasin (spawn candidates refined by
 // reachable free land). Dropped: openingAllIn/openingKeep (30-game lab: 20 %/10 % clicks beat the all-in, 24 vs 22
 // alive, 800k vs 705k tiles) and homeFloor (declared and defaulted but read nowhere — A1 finding).
+// Removed after losing their 30-game A/Bs (PlaybookBotPlan.md C3): simWars (Estimate.ts), scoredSpend (Spend.ts), bsrReserve, phaseGates — the first two live in git history.
 
 export interface PlaybookParams {
   expandContested: number; // share of home troops per click into empty land while a rival borders us
@@ -42,15 +43,11 @@ export interface PlaybookParams {
   spawnInland: number; // tiles walked inland from the chosen shore
   finishRule: boolean; // hold under the nations' victory-denial line while a MIRV-capable rival exists; remove them; then push all-out
   endgameV2: boolean; // 15:00+: hydrogen bombs instead of hoarding, weak allies lapse, short boat jumps at 2×
-  simWars: boolean; // B1: pick war targets and sizes with Estimate.ts (a replay of attackLogic over the shared border) and retreat when the re-estimate no longer wins; off = fightRatio heuristics
   realRetreats: boolean; // schedule a RetreatExecution when retreating (A1 finding: Player.orderRetreat() only flags the wave; without the execution it never comes home, stays in outgoingAttacks() and blocks that target)
   portWithoutPartnerTick: number; // first port on any ocean coast from this tick even with no partner (1e9 = never)
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
-  scoredSpend: boolean; // B3: Economy.build() scores every purchase (return over the phase horizon / cost, Spend.ts) and buys the best affordable one after one escrow list; off = the hand-ordered steps
-  bsrReserve: boolean; // C1: the troop reserve scales with the largest border-security ratio among unfriendly neighbours — reserveShare × clamp(0.5 + 0.5·maxBsr, 0.5, 2.0), so reserveShare is the value at bsr 1; off = flat reserveShare
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
-  phaseGates: boolean; // C1: the tick literals in the rules (25:00 endgame, 15:00 late game, 5:00 wars/silos, 2:30–3:00 rail) read sit.phase instead; Spend.horizon comes from the phase
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -88,13 +85,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   spawnInland: 0, // 30-game lab: 8 tiles inland = 18/30 alive vs 27/30 on the shore (an inland circle can be surrounded; the coast cannot)
   finishRule: true,
   endgameV2: true,
-  simWars: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md B1)
   realRetreats: true, // PROVISIONAL (re-scored: 17W-12L over 29 live games, dScore +0.13 [−0.04, +0.29], undecided; kept because it is a bug fix with a positive mean — confirm with ladder.sh on a shifted 60-game grid). Original A/B: 30-game Medium A/B 18W-11L vs off, 30/30 alive, 5 crowns (2), +70 % land (3.53M vs 2.08M tiles); on = frozen waves finally return (see the interface comment)
   portWithoutPartnerTick: 1500,
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
-  scoredSpend: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md B3)
-  bsrReserve: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md C1)
   trustWars: true, // PROVISIONAL (re-scored: 10W-9L over 19 live games, dScore +0.19 [+0.02, +0.36], sign test undecided — confirm with ladder.sh before folding). Original A/B: 30-game Medium A/B on the realRetreats base 11W-8L (11 identical), 8 crowns vs 5, 21 top-3 vs 17, +19 % land
   nationAware: true, // PROVISIONAL, see trustWars; alone 9W-6L, 15 identical
-  phaseGates: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md C1)
 };
