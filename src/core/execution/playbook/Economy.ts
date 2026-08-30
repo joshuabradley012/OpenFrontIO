@@ -175,6 +175,7 @@ export class Economy {
     return Math.max(minLeader, Math.floor(second * mult * 0.9));
   }
   private lastCapFire = -1e9;
+  private lastRiskLog = -1e9;
   rank(): number {
     const me = this.ctx.me;
     return this.ctx.mg.players().filter((p) => p.isAlive() && p.type() !== PlayerType.Bot && p.numTilesOwned() > me.numTilesOwned()).length + 1;
@@ -210,6 +211,17 @@ export class Economy {
       }
     }
     const samFund = samBuy !== null ? samBuy.need : 0n;
+    // `samOnRisk`: the steamroll rule is TRUE against us while a nation is armed — rm1's loss analysis
+    // (docs/PlaybookBotPlan.md): 19 of 41 base full-game losses were steamroll MIRVs landing minutes after our
+    // own `MIRV RISK steamroll` warning, with ~3 SAMs standing. The answer the log was asking for: a SAM wall
+    // (a launcher per 4 city units, at least 2, every launcher to level 3, 300-tick spacing) and a second silo
+    // (the counter MIRV), the next launcher/silo price escrowed out of every discretionary buy like the bomb fund.
+    const onRisk = this.ctx.p.samOnRisk && this.risk.view().steamroll.over && this.risk.armed();
+    const riskSamTarget = onRisk ? Math.max(2, Math.ceil(cityUnits.length / 4)) : 0;
+    const siloCount = me.units(UnitType.MissileSilo).length;
+    const riskFund = !onRisk ? 0n
+      : (sams.length < riskSamTarget || sams.some((sm) => sm.level() < 3) ? cost(UnitType.SAMLauncher) : 0n) + (siloCount < 2 ? cost(UnitType.MissileSilo) : 0n);
+    if (onRisk && ticks - this.lastRiskLog >= 600) { this.lastRiskLog = ticks; this.ctx.log(`t${ticks} SAM ON RISK: ${sams.length}/${riskSamTarget} launchers, ${siloCount}/2 silos, fund ${Math.round(Number(riskFund) / 1000)}k`); }
     const levelCapHit = this.ctx.p.steamrollLevels && this.levelLineHit(ticks); // `steamrollLevels`: the rule counts levels
     const holdLevels = nearLine || levelCapHit;
     const cityCapHit = cityUnits.length >= this.cityUnitCap() || holdLevels;
@@ -228,8 +240,8 @@ export class Economy {
     // held out of every discretionary buy below; `spare(site, avail, need)` is the affordability test with the fund
     // taken out, and fires when the fund alone is what defers the buy
     const bombFund = this.ctx.p.bombBudget ? this.military.bombFund(ticks) : 0n;
-    const fund = bombFund + samFund; // `nationMirvAware`: the SAM cover's price is escrowed the same way
-    const deferredBy = (avail: bigint, need: bigint) => avail - bombFund >= need ? "nationMirvAware" : "bombBudget"; // which fund alone defers the buy
+    const fund = bombFund + samFund + riskFund; // `nationMirvAware` / `samOnRisk`: the SAM cover / wall prices are escrowed the same way
+    const deferredBy = (avail: bigint, need: bigint) => avail - bombFund < need ? "bombBudget" : avail - bombFund - samFund < need ? "nationMirvAware" : "samOnRisk"; // which fund alone defers the buy
     const spare = (site: string, avail: bigint, need: bigint): boolean => { const ok = avail - fund >= need; if (!ok && avail >= need) this.lim.fire(deferredBy(avail, need), site); return ok; };
 
     // 1. defence: a post where a non-bot attack lands, or facing a threat / a boxed-in nation about to betray
@@ -250,17 +262,23 @@ export class Economy {
     // 2. SAM once anyone unfriendly on the map has a silo, or once we are top three after 15:00 (the crown gets MIRVed);
     //    level 3 when leading; a second launcher when the city stack outgrows one umbrella
     const enemySilos = this.ctx.mg.players().some((o) => o !== me && !me.isFriendly(o) && o.type() !== PlayerType.Bot && o.units(UnitType.MissileSilo).length > 0);
-    const samTarget = enemySilos || this.ctx.mg.ticks() >= 7200 || myRank <= 3 ? Math.max(1, Math.ceil(cityUnits.length / 8)) : 0; // nations: 0.25 per city on Hard; the bot can afford 1 per 8
-    const wantSam = sams.length < samTarget || myRank <= 3;
-    if (wantSam && gold >= cost(UnitType.SAMLauncher) && ticks - this.lastSamTick >= 400 && (!this.ctx.p.buildSearch || (enemySilos && sams.length === 0))) { // buildSearch: only the first SAM under an enemy silo is a hard override; the rest is the planner's // a launcher takes 30 s to build; don't order another meanwhile
+    const baseSamTarget = enemySilos || this.ctx.mg.ticks() >= 7200 || myRank <= 3 ? Math.max(1, Math.ceil(cityUnits.length / 8)) : 0; // nations: 0.25 per city on Hard; the bot can afford 1 per 8
+    const samTarget = Math.max(baseSamTarget, riskSamTarget); // `samOnRisk`: the wall
+    // `samOnRisk`: an unlevelled launcher keeps the block live after the count target is met (myRank opens it
+    // only from 20:00) — the wall is levels as much as launchers
+    const wantSam = sams.length < samTarget || myRank <= 3 || (onRisk && sams.some((sm) => sm.level() < 3));
+    // `samOnRisk`: the wall's own buys are not gated by the fund that saves for them (nor by the 500k pad), and
+    // buildSearch's planner does not own them
+    const samAfford = (need: bigint) => (onRisk ? gold >= need : spare("sam", gold, need));
+    if (wantSam && gold >= cost(UnitType.SAMLauncher) && ticks - this.lastSamTick >= (onRisk ? 300 : 400) && (!this.ctx.p.buildSearch || onRisk || (enemySilos && sams.length === 0))) { // buildSearch: only the first SAM under an enemy silo is a hard override; the rest is the planner's // a launcher takes 30 s to build; don't order another meanwhile
       if (sams.length === 0) { const tile = this.interiorTile(UnitType.SAMLauncher); if (tile !== null && this.tryBuild(UnitType.SAMLauncher, tile)) { this.lastSamTick = ticks; return; } }
       else {
-        const targetLevel = myRank === 1 ? 3 : 2;
+        const targetLevel = onRisk ? 3 : myRank === 1 ? 3 : 2;
         const low = sams.find((sm) => sm.level() < targetLevel && me.canUpgradeUnit(sm));
-        if (low && (capFull || gold >= cost(UnitType.SAMLauncher) * 2n) && spare("sam", gold, cost(UnitType.SAMLauncher))) { upgrade(low); return; }
-        if (sams.length < samTarget && spare("sam", gold, cost(UnitType.SAMLauncher) + 500_000n)) {
+        if (low && (onRisk || capFull || gold >= cost(UnitType.SAMLauncher) * 2n) && samAfford(cost(UnitType.SAMLauncher))) { if (onRisk && low.level() >= (myRank === 1 ? 3 : 2)) this.lim.fire("samOnRisk", "level"); upgrade(low); return; }
+        if (sams.length < samTarget && samAfford(cost(UnitType.SAMLauncher) + (onRisk ? 0n : 500_000n))) {
           const far = this.sampleTerritory(30).find((t) => sams.every((sm) => this.ctx.mg.euclideanDistSquared(sm.tile(), t) > 60 * 60) && me.canBuild(UnitType.SAMLauncher, t) !== false);
-          if (far !== undefined && this.tryBuild(UnitType.SAMLauncher, far)) { this.lastSamTick = ticks; return; }
+          if (far !== undefined && this.tryBuild(UnitType.SAMLauncher, far)) { if (onRisk && sams.length >= baseSamTarget) this.lim.fire("samOnRisk", "sam"); this.lastSamTick = ticks; return; }
         }
       }
     }
@@ -301,9 +319,11 @@ export class Economy {
     //    a second at twelve, a third at twenty; a level when a bomb target sat out of range
     const idleAtCap = capFull && me.troops() > this.q.cap() * 0.9 && me.outgoingAttacks().length === 0;
     const silos = me.units(UnitType.MissileSilo);
-    const siloTarget = cityUnits.length >= 25 ? 3 : cityUnits.length >= 14 ? 2 : (ticks >= this.ctx.p.siloAtTick || idleAtCap) && (portLevels >= 1 || me.unitsOwned(UnitType.Factory) > 0 || idleAtCap) ? 1 : 0; // v8 (silo at 4 cities, SAM per 5, warships early) cost 36 % of land: the ratios wait for the economy
+    const baseSiloTarget = cityUnits.length >= 25 ? 3 : cityUnits.length >= 14 ? 2 : (ticks >= this.ctx.p.siloAtTick || idleAtCap) && (portLevels >= 1 || me.unitsOwned(UnitType.Factory) > 0 || idleAtCap) ? 1 : 0; // v8 (silo at 4 cities, SAM per 5, warships early) cost 36 % of land: the ratios wait for the economy
+    const siloTarget = onRisk ? Math.max(baseSiloTarget, 2) : baseSiloTarget; // `samOnRisk`: the counter silo
     const wantSilo = silos.length < siloTarget && this.ctx.mg.ticks() >= 3000;
-    if (wantSilo && gold >= cost(UnitType.MissileSilo) + 400_000n) {
+    if (wantSilo && gold >= cost(UnitType.MissileSilo) + (onRisk ? 0n : 400_000n)) {
+      if (onRisk && silos.length >= baseSiloTarget) this.lim.fire("samOnRisk", "silo", 300);
       const tile = silos.length === 0 ? this.interiorTile(UnitType.MissileSilo) : this.sampleTerritory(30).find((t) => silos.every((sl) => this.ctx.mg.euclideanDistSquared(sl.tile(), t) > 50 * 50) && me.canBuild(UnitType.MissileSilo, t) !== false) ?? null;
       if (tile !== null && this.tryBuild(UnitType.MissileSilo, tile)) return;
     }
