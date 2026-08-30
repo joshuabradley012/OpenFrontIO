@@ -1529,3 +1529,11 @@ wall-clock under parallel runs.
 **A/B** (both flags, then each alone; the removal form once on by default):
 `CONFIGS='{"base":{},"bb":{"bombBudget":true},"wy":{"warYield":true},"wy250":{"warYield":true,"yieldMaxTroopsPerTile":250},"both":{"bombBudget":true,"warYield":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 — removal form: `CONFIGS='{"base":{},"nobb":{"bombBudget":false},"nowy":{"warYield":false}}'`.
+
+## CMA-ES race over the neutral flags' constants (2026-08-30, `lab-out/cma-neutral`, `lab-out/cma-confirm`)
+
+`cmaes.py --spec scripts/lab/specs/neutral-flags.json --fixed '{utility, threatMap, buildSearch, retaliateAware, drainedNations, relationAware, hystRetreats on; est scales 0.868/0.719/1.285}' --pop 14 --gens 8 --race`, 4× cpx62, ~11 min per generation, ~2,900 games. The tuned flags-on mean beat base in 6 of 8 generations (30 mirrored games each: +0.10, +0.17 (p=0.016), +0.14, −0.02, +0.08, +0.20, −0.11, +0.09); the base changed at generation 4 when ac86780e6 flipped the five boat/annex/multiwar flags on.
+
+Confirmation (SPRT + MIRROR, 20-min Medium, 68 mirrored pairs vs the ac86780e6 base): m4 (mean after gen 4) **45W/23L, dScore +0.209 [+0.069, +0.348], p=0.010, decisive win**; m8 (final mean) 42W/26L, +0.195 [+0.039, +0.359], p=0.068; m5 (mean after gen 5) 34/34, +0.04 — a cliff between neighbouring constants (fightMaxShare 0.79 with fightAbove 0.49 over-commits). Crowns 41 vs 26, median tiles 246k vs 110k. m4 constants: {"expandContested": 0.1057, "expandFree": 0.0826, "botRatio": 1.8723, "botClickCap": 0.2966, "fightAbove": 0.4927, "fightMaxShare": 0.7314, "reserveShare": 0.3525, "capFullShare": 0.599, "bombReserve": 356782, "railSpacing": 18, "utilCapMid": 0.9458, "utilCapSteep": 13.3553, "utilCommit": 1.6947, "utilFreeLandCost": 18.2376, "utilScoreFull": 15.2896, "threatReserveGain": 3.531, "threatBusyWeight": 2.6165, "threatVulnWeight": 2.1101, "threatPreRatio": 1.3274, "buildCapGoldPerTroop": 13.7695, "buildHorizon": 7549, "retalRatio": 1.2063, "drainRatio": 1.65, "drainBelow": 0.3805, "hystMargin": 0.1814, "hystSlope": 0.2642, "hystStrikes": 2}
+
+Lesson (restating ab1): the same seven mechanisms were noise at hand-picked constants and +0.2 tuned together — tune flag-on before judging a flag. Final gate before flipping defaults: m4/m8 vs the d8b8c89cc defaults (`lab-out/final`).
