@@ -435,14 +435,20 @@ H0: d ≤ 0 vs H1: d ≥ δ (δ = `--delta`, default **0.10** score units ≈ on
 rank step out of ten or 10k → 16k tiles), α = β = 0.05:
 
 ```
-LLR_n = n · (mean_n − δ/2) · δ / var_n            # running sample variance, floor 1e-4
+LLR_n = n · (mean_n − δ/2) · δ / var_n            # running sample variance, floor δ²; no decision before n = 10
 ACCEPT  when LLR ≥ ln((1−β)/α) = +2.94             # H1: the candidate is better by ≥ δ
 REJECT  when LLR ≤ ln(β/(1−α)) = −2.94             # H0: it is not
 CONTINUE otherwise; the report says how many more pairs the current mean/variance would need
 ```
 
-The decision is the first crossing walking the pairs in order (later pairs
-cannot undo it). With `--verdict` the exit code is 0 only when every config
+The decision is the first crossing at n ≥ 10 walking the pairs in order
+(later pairs cannot undo it). The minimum n and the sd floor of δ were added
+2026-08-30 after `lab-out/final` showed m4 "REJECT at n=2, mean −0.378":
+the first two pairs were −0.48 and −0.28, the sample variance of two points
+made the LLR −4, and the report printed the mean of that two-pair window
+while the 18-pair series averaged +0.20 (the plain paired report of the same
+dir said 18W/18L, dScore +0.09). The report now shows the mean / sd over the
+whole series, the LLR at the end, and the n and LLR at the crossing. With `--verdict` the exit code is 0 only when every config
 has decided, which is what the runners loop on.
 
 **Common random numbers** (already true, now documented): a lab game is
@@ -543,6 +549,11 @@ bootstrap CI, sign test, SPRT, `--verdict` and `--fitness` ("fitness", plus
 WIN line per config: wins of each, pairs won by A only / B only / both /
 neither, and an exact McNemar-style sign test on the discordant pairs.
 `remote.sh SPRT=1` calls `summarize.py --sprt --verdict 0` unchanged.
+
+Note that a 20-minute game can also end with `winner=us` (the bot reached the
+win threshold early), so a 20-minute dir with a few early wins selects
+`wscore` too (`lab-out/final` 6/108, `cma-confirm` 11/272, `ab1` 1/1287);
+`--objective score` reproduces the old numbers exactly.
 
 ## Bot strength over time: `history.sh` / `history.py`
 

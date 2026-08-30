@@ -71,11 +71,15 @@ slots, see below, the two slots of one (batch, region) are averaged into one
 observation). H0: mean d ≤ 0 against H1: mean d ≥ δ (--delta, default 0.10
 score units ≈ one rank step out of ten, or 10k→16k tiles), α = β = 0.05:
 
-    LLR_n = n · (mean_n − δ/2) · δ / var_n          (var_n = sample variance, floor 1e-4)
+    LLR_n = n · (mean_n − δ/2) · δ / var_n          (var_n = sample variance, floor δ²)
     ACCEPT when LLR ≥ ln((1−β)/α) = +2.944, REJECT when LLR ≤ ln(β/(1−α)) = −2.944, else CONTINUE
 
-The decision is the *first* crossing walking the observations in order (a
-true sequential test — later pairs cannot undo it); CONTINUE also reports how
+The decision is the *first* crossing at n ≥ SPRT_MIN_N = 10 walking the
+observations in order (a true sequential test — later pairs cannot undo it;
+the minimum n and the sd floor of δ are there because a sample variance from
+two or three pairs is meaningless — lab-out/final's m4 REJECTed at n=2 on
+two pairs of −0.38 while its 18 pairs averaged +0.20). The report shows the
+mean / sd over the whole series and the LLR at the crossing; CONTINUE also reports how
 many more pairs the current mean and variance would need to reach a bound
 (∞ when the mean sits at δ/2). --verdict with --sprt exits 0 only when every
 config has decided, which is what remote.sh/sweep.sh SPRT=1 loop on.
@@ -488,38 +492,42 @@ def pentanomial(a, b):
 SPRT_DELTA = 0.10
 SPRT_ALPHA = 0.05
 SPRT_BETA = 0.05
-SPRT_VAR_FLOOR = 1e-4
+SPRT_MIN_N = 10  # no decision before this many observations (2026-08-30: lab-out/final m4 REJECTed at n=2 on two pairs)
 
 
-def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None):
+def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None, min_n=None):
     """Generalised SPRT on the mean of `diffs` (in order), H0: mean = d0 vs H1: mean = d1, normal approximation
     with the running sample variance: LLR_n = n (mean − (d0+d1)/2)(d1 − d0) / var_n.
-    Returns {decision: ACCEPT|REJECT|CONTINUE, n, llr, mean, var, n_at, more, bounds}. `n_at` is the observation
-    count at the first crossing; `more` is the number of extra observations the current mean/variance would need
-    (None when the mean sits on the indifference point)."""
+    The running variance is floored at (d1 − d0)² (sd floor = δ: two equal early pairs must not decide the test)
+    and no decision is taken before SPRT_MIN_N observations — before the fix (2026-08-30) lab-out/final's m4
+    REJECTed at n=2 from its first two pairs (−0.38 ± 0.15) while the full series of 18 was +0.20.
+    Returns {decision: ACCEPT|REJECT|CONTINUE, n, llr, mean, var, n_at, llr_at, more, bounds}. `mean`/`var` are
+    over the whole series, `llr` at the end of it; `n_at`/`llr_at` describe the first crossing; `more` is the
+    number of extra observations the current mean/variance would need (None when the mean sits on the
+    indifference point)."""
     d1 = SPRT_DELTA if d1 is None else d1
     alpha = SPRT_ALPHA if alpha is None else alpha
     beta = SPRT_BETA if beta is None else beta
+    min_n = SPRT_MIN_N if min_n is None else min_n
     upper, lower = math.log((1 - beta) / alpha), math.log(beta / (1 - alpha))
     mid, width = (d0 + d1) / 2, d1 - d0
-    res = {"decision": "CONTINUE", "n": len(diffs), "llr": 0.0, "mean": 0.0, "var": 0.0, "n_at": None, "more": None,
-           "bounds": (lower, upper), "d0": d0, "d1": d1}
+    var_floor = width * width
+    res = {"decision": "CONTINUE", "n": len(diffs), "llr": 0.0, "mean": 0.0, "var": var_floor, "n_at": None, "llr_at": None,
+           "more": None, "bounds": (lower, upper), "d0": d0, "d1": d1}
     if len(diffs) < 2:
-        res["more"] = 2 - len(diffs)
+        res["more"] = max(2, min_n) - len(diffs)
         res["mean"] = statistics.fmean(diffs) if diffs else 0.0
         return res
-    llr = mean = var = 0.0
     for n in range(2, len(diffs) + 1):
         window = diffs[:n]
         mean = statistics.fmean(window)
-        var = max(statistics.variance(window), SPRT_VAR_FLOOR)
+        var = max(statistics.variance(window), var_floor)
         llr = n * (mean - mid) * width / var
-        if llr >= upper:
-            res.update(decision="ACCEPT", n_at=n)
-            break
-        if llr <= lower:
-            res.update(decision="REJECT", n_at=n)
-            break
+        if n >= min_n and res["n_at"] is None:
+            if llr >= upper:
+                res.update(decision="ACCEPT", n_at=n, llr_at=llr)
+            elif llr <= lower:
+                res.update(decision="REJECT", n_at=n, llr_at=llr)
     res.update(llr=llr, mean=mean, var=var)
     if res["decision"] == "CONTINUE":
         drift = (mean - mid) * width / var  # LLR per observation at the current estimate
@@ -527,7 +535,7 @@ def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None):
             res["more"] = None
         else:
             target = upper if drift > 0 else lower
-            res["more"] = max(1, math.ceil(target / drift) - len(diffs))
+            res["more"] = max(1, math.ceil(target / drift) - len(diffs), min_n - len(diffs))
     return res
 
 
@@ -537,11 +545,11 @@ def format_sprt(name, r, penta=None):
         more = "∞ at the current estimate" if r["more"] is None else f"~{r['more']} more pair{'s' if r['more'] != 1 else ''} needed"
         tail = f"CONTINUE ({more})"
     else:
-        tail = f"{r['decision']} at n={r['n_at']}"
+        tail = f"{r['decision']} at n={r['n_at']} (LLR {r['llr_at']:+.2f})"
     pent = ""
     if penta:
         pent = "  pentanomial LL/LT/TT/WT/WW " + "/".join(str(penta[k]) for k in ("LL", "LT", "TT", "WT", "WW"))
-    return (f"  {name:16s} SPRT n {n:3d}  mean {r['mean']:+.3f}  sd {math.sqrt(r['var']):.3f}  LLR {r['llr']:+.2f}"
+    return (f"  {name:16s} SPRT n {n:3d}  mean {r['mean']:+.3f}  sd {math.sqrt(r['var']):.3f}  LLR(end) {r['llr']:+.2f}"
             f" [{r['bounds'][0]:+.2f}, {r['bounds'][1]:+.2f}]  H0 d<={r['d0']:g} vs H1 d>={r['d1']:g}  {tail}{pent}")
 
 
@@ -813,7 +821,14 @@ def selftest():
     r = sprt(und2)
     check(r["decision"] == "CONTINUE" and isinstance(r["more"], int) and r["more"] >= 1, f"SPRT small noisy sample: {r['decision']}, ~{r['more']} more")
     r = sprt([0.3])
-    check(r["decision"] == "CONTINUE" and r["more"] == 1, "SPRT with one observation continues")
+    check(r["decision"] == "CONTINUE" and r["more"] == SPRT_MIN_N - 1, "SPRT with one observation continues")
+    # lab-out/final shape (2026-08-30): the first two pairs strongly negative and nearly equal, the other 16 positive.
+    early = [-0.48, -0.28] + [0.25 + rng.gauss(0, 0.3) for _ in range(16)]
+    r = sprt(early)
+    check(r["decision"] != "REJECT" and (r["n_at"] is None or r["n_at"] >= SPRT_MIN_N) and r["mean"] > 0,
+          f"SPRT does not decide on two early pairs: {r['decision']} at n={r['n_at']}, series mean {r['mean']:+.3f}")
+    r = sprt([0.2, 0.2, 0.2])
+    check(r["decision"] == "CONTINUE" and r["more"] == SPRT_MIN_N - 3, f"three identical pairs do not decide (var floor δ², min n): {r['decision']}, more={r['more']}")
     r = sprt([-0.3 + rng.gauss(0, 0.05) for _ in range(30)], d0=-0.1, d1=0.0)
     check(r["decision"] == "REJECT", f"SPRT racing form (d0=-δ, d1=0) rejects a member 0.3 below the parent: {r['decision']}")
     r = sprt([0.0 + rng.gauss(0, 0.05) for _ in range(30)], d0=-0.1, d1=0.0)
@@ -836,6 +851,13 @@ def selftest():
     check(abs(obs[1][1] - (d_aus + d_b) / 2) < 1e-9, f"mirrored australia observation = mean of the slots ({obs[1][1]:+.4f})")
     pent = pentanomial(cand2, base2)
     check(pent == {"LL": 0, "LT": 0, "TT": 3, "WT": 0, "WW": 0}, f"pentanomial (africa TT, australia WL=TT, east-asia TT): {pent}")
+    # a slot missing for one config (the shifted game failed): the scenario falls back to the slot both played
+    cand3 = dict(cand2); del cand3[("med0b", "australia")]
+    obs3 = paired_diffs(cand3, base2)
+    check(len(obs3) == 2 and abs(obs3[1][1] - d_aus) < 1e-9, f"missing slot b: australia observation = slot a alone ({obs3[1][1]:+.4f})")
+    check(pentanomial(cand3, base2) == {"LL": 0, "LT": 0, "TT": 2, "WT": 0, "WW": 0}, "missing slot b: pentanomial skips that scenario")
+    st3 = live_stats(cand3, base2)
+    check(st3["n"] == 5 and st3["n_live"] == 3, f"missing slot b: live_stats pairs {st3['n']} games, {st3['n_live']} live (per game, not per scenario)")
     check(pentanomial(cand, base) is None, "pentanomial is None without mirrored slots")
 
     # --- cycles: rock-paper-scissors between three configs on three scenarios
