@@ -46,6 +46,7 @@ export interface PlaybookParams {
   portWithoutPartnerTick: number; // first port on any ocean coast from this tick even with no partner (1e9 = never)
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
+  buildSearch: boolean; // #7: Economy.build() takes its purchase from BuildSearch.ts (BOSS-style fast-forward search to a phase horizon; "save" when the best plan's first buy is not affordable yet) instead of the ordered chain; posts under attack, the first SAM under an enemy silo, mirvFund and the silo escrow stay. Default off until the 30-game Medium A/B
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
   threatReserveGain: number; // threatMap: reserve × clamp(1 + gain × undefended / troops, 1, 2) — how fast unanswered border pressure raises the reserve (the brief's 0.5 floor halved the reserve in every calm minute and the army sailed off in boats: africa smoke rank 29 vs 2)
   threatMap: boolean; // review #5: a per-border-segment influence map (ThreatMap.ts) drives the reserve (undefended pressure, not max bsr), the war scorer (busy-elsewhere bonus, thin-border penalty), threat-post placement (hottest segment, not the border midpoint) and a pre-positioned post where a rival masses; default off until the 30-game Medium A/B
@@ -118,4 +119,5 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   drainedNations: false, // default off until the 30-game Medium A/B
   retaliateAware: false, // default off until the 30-game Medium A/B
   relationAware: false, // default off until the 30-game Medium A/B
+  buildSearch: false, // default off until the 30-game Medium A/B
 };
