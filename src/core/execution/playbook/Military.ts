@@ -227,6 +227,7 @@ export class Military {
   private waterDist: Uint16Array | null = null; // one map-sized array, cleared per fill
   /** How many fills ran (tests: once per pass, then cached WATER_CACHE_TICKS). */
   waterPathRuns = 0;
+  private waterTouched: TileRef[] = [];
   /** `boatsWaterPath`: breadth-first over water from every water neighbour of our sampled shore (shoreSample — the
    *  same tiles boatsNearest measures from; without it, the same sample of the whole ocean shore), out to
    *  WATER_MAX_DIST tiles and at most WATER_BFS_TILES of them, cached WATER_CACHE_TICKS ticks. Every boat rule of a
@@ -236,14 +237,17 @@ export class Military {
     if (this.waterCache !== null && t - this.waterCache.tick < WATER_CACHE_TICKS) return this.waterCache.wp;
     this.waterDist ??= new Uint16Array(mg.width() * mg.height());
     const dist = this.waterDist;
-    dist.fill(0);
+    for (const t of this.waterTouched) dist[t] = 0; // only the tiles the last fill wrote — clearing the whole World-sized array cost more than the BFS
     const q: TileRef[] = [];
-    for (const s of this.shoreSample()) for (const n of mg.neighbors(s)) if (mg.isWater(n) && dist[n] === 0) { dist[n] = 2; q.push(n); } // length 1, stored + 1
+    this.waterTouched = q;
+    let d = 2; // length 1, stored + 1
+    const visit = (n: TileRef) => { if (mg.isWater(n) && dist[n] === 0) { dist[n] = d; q.push(n); } };
+    for (const s of this.shoreSample()) mg.forEachNeighbor(s, visit); // same N,S,W,E order as neighbors(), no per-tile array
     let i = 0;
     while (i < q.length && q.length < WATER_BFS_TILES) {
-      const c = q[i++], d = dist[c] + 1;
+      const c = q[i++]; d = dist[c] + 1;
       if (d > WATER_MAX_DIST + 1) break;
-      for (const n of mg.neighbors(c)) if (mg.isWater(n) && dist[n] === 0) { dist[n] = d; q.push(n); }
+      mg.forEachNeighbor(c, visit);
     }
     this.waterPathRuns++;
     const wp = new WaterPath(mg, dist);

@@ -729,16 +729,19 @@ export class Config {
         throw new Error(`terrain type ${type} not supported`);
     }
     if (defender.isPlayer()) {
-      for (const dp of gm.nearbyUnits(
-        tileToConquer,
-        gm.config().defensePostRange(),
-        UnitType.DefensePost,
-      )) {
-        if (dp.unit.owner() === defender) {
-          mag *= this.defensePostDefenseBonus();
-          speed *= this.defensePostSpeedBonus();
-          break;
-        }
+      // Same test as scanning nearbyUnits() for a post owned by the defender
+      // (active, not under construction, within range), without building a
+      // result array per conquered tile.
+      if (
+        gm.hasUnitNearby(
+          tileToConquer,
+          gm.config().defensePostRange(),
+          UnitType.DefensePost,
+          defender.id(),
+        )
+      ) {
+        mag *= this.defensePostDefenseBonus();
+        speed *= this.defensePostSpeedBonus();
       }
     }
 

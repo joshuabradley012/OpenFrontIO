@@ -562,7 +562,8 @@ export class Economy {
     const shared = this.ctx.mg.sharedWaterComponents(me);
     const foreignPorts = this.ctx.mg.players().filter((p) => p !== me && p.type() !== PlayerType.Bot).flatMap((p) => p.units(UnitType.Port));
     if (foreignPorts.length === 0) return null;
-    const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isShore(t));
+    const shore: TileRef[] = [];
+    me.borderTiles().forEach((t) => { if (this.ctx.mg.isShore(t)) shore.push(t); }); // one pass, no copy of the whole border
     if (shore.length === 0) return null;
     const step = Math.max(1, Math.floor(shore.length / 30));
     let best: TileRef | null = null, bestScore = 0;

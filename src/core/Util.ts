@@ -135,9 +135,10 @@ export function calculateBoundingBox(
     maxX = -Infinity,
     maxY = -Infinity;
 
+  const w = gm.width();
   const visit = (tile: TileRef) => {
-    const x = gm.x(tile);
-    const y = gm.y(tile);
+    const x = tile % w;
+    const y = (tile / w) | 0;
     minX = Math.min(minX, x);
     minY = Math.min(minY, y);
     maxX = Math.max(maxX, x);
