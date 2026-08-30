@@ -13,6 +13,7 @@ Bot: `src/core/execution/playbook/PlaybookBotExecution.ts` (1,457 lines).
 Read this first if you are picking the rebuild up.
 
 **Where things are**
+
 - Branch `playbook-bot`, HEAD `bb03d7cd8`, nothing pushed. All code packages
   A1–C2 are merged; only C3 (the lab campaign) remains.
 - Bot: `src/core/execution/playbook/` — `PlaybookBotExecution.ts` (loop,
@@ -32,7 +33,7 @@ Read this first if you are picking the rebuild up.
 `simWars`, `realRetreats`, `scoredSpend`, `bsrReserve`, `trustWars`,
 `nationAware`, `phaseGates`. `{}` is the exact pre-rebuild baseline (every
 flag-off transcript was proven byte-identical at merge time).
-*Update (C3 done):* `simWars`, `scoredSpend`, `bsrReserve` and `phaseGates`
+_Update (C3 done):_ `simWars`, `scoredSpend`, `bsrReserve` and `phaseGates`
 lost their A/Bs and were removed in 7cd2c9c56 (code, tests, `Estimate.ts`,
 `Spend.ts`; a default-config game was diff-identical before and after). The
 simWars/scoredSpend ideas live in git history — last commit with
@@ -40,6 +41,7 @@ simWars/scoredSpend ideas live in git history — last commit with
 `trustWars`, `nationAware` (all default on, PROVISIONAL).
 
 **What to do next (C3)**
+
 1. One sweep, MINUTES=20, all in the same CONFIGS so games pair:
    `{"base":{},"ret":{"realRetreats":true},"spend":{"scoredSpend":true},"c1":{"bsrReserve":true,"trustWars":true,"nationAware":true,"phaseGates":true},"sim":{"simWars":true}}`
    Keep `simWars` on its own: single-game smokes (africa, 8 min) gave baseline
@@ -57,6 +59,7 @@ simWars/scoredSpend ideas live in git history — last commit with
 5. Repeat on Hard.
 
 **Rules that still apply**
+
 - New behaviour goes behind a default-off `PlaybookParams` flag; refactors
   keep the golden hash; every change ships a `tests/playbook/` test.
 - One package = one worktree = one branch; `git checkout -b <branch> <sha>`
@@ -68,6 +71,7 @@ simWars/scoredSpend ideas live in git history — last commit with
   telling Josh. A box `openfront-lab-c3` may still exist from an aborted run.
 
 **Known loose ends**
+
 - `realRetreats` off keeps the old no-op retreat on purpose (baseline
   fidelity); once it graduates, delete the `orderRetreat` path.
 - `Spend.ts` value constants (`CAP_GOLD_PER_TROOP` = 20, port/rail curves)
@@ -90,7 +94,7 @@ simWars/scoredSpend ideas live in git history — last commit with
 4. **Every package ships tests** (`src/core` rule, CLAUDE.md). Rule-level
    tests live in `tests/playbook/`, on the `setup()` harness, not mocks.
 5. `src/core` stays dependency-free, integer-deterministic, no floating
-   point in game state (floats inside a bot *estimate* are fine; they never
+   point in game state (floats inside a bot _estimate_ are fine; they never
    touch state).
 
 ## Sequence
@@ -116,11 +120,20 @@ of them edit different files. C1/C2 are integration and belong to one agent.
 ```ts
 // src/core/execution/playbook/Context.ts
 export interface BotContext {
-  mg: Game; me: Player; p: PlaybookParams; sit: Situation;
+  mg: Game;
+  me: Player;
+  p: PlaybookParams;
+  sit: Situation;
   random: PseudoRandom;
-  send(targetID: string | null, n: number, why: string, min?: number, capFloor?: number): number;
+  send(
+    targetID: string | null,
+    n: number,
+    why: string,
+    min?: number,
+    capFloor?: number,
+  ): number;
   boat(tile: TileRef, n: number, why: string): number;
-  log(line: string): void;          // enforces the 2000 cap
+  log(line: string): void; // enforces the 2000 cap
 }
 ```
 
@@ -132,22 +145,37 @@ rule methods they own. `PlaybookBotExecution` keeps `init/tick/isActive`,
 
 ```ts
 export interface Situation {
-  tick: number; troops: number; cap: number; capShare: number; reserve: number; spendable: number;
-  gold: bigint; bots: Player[]; rivals: Player[]; friends: Player[]; wilderness: boolean;
-  incoming: Attack[]; incomingBots: number; outgoing: Attack[]; tribeAttacks: number; boats: number;
-  collapsed: Player[]; expiring: Player[]; hold: Player | null;
+  tick: number;
+  troops: number;
+  cap: number;
+  capShare: number;
+  reserve: number;
+  spendable: number;
+  gold: bigint;
+  bots: Player[];
+  rivals: Player[];
+  friends: Player[];
+  wilderness: boolean;
+  incoming: Attack[];
+  incomingBots: number;
+  outgoing: Attack[];
+  tribeAttacks: number;
+  boats: number;
+  collapsed: Player[];
+  expiring: Player[];
+  hold: Player | null;
   // B2 adds:
   phase: "opening" | "consolidate" | "war" | "endgame";
-  rival: Map<Player, RivalView>;    // trend, trust, border threat, nation predictions
+  rival: Map<Player, RivalView>; // trend, trust, border threat, nation predictions
 }
 export interface RivalView {
-  troopsDelta: number;      // per 100 ticks, from a ring buffer sampled every 50 ticks
+  troopsDelta: number; // per 100 ticks, from a ring buffer sampled every 50 ticks
   tilesDelta: number;
-  trust: number;            // 0–1; starts 0.5; − on broken alliance / attacked ally / refused request, + on renewal
-  borderTiles: number;      // our border tiles adjacent to them
-  bsr: number;              // their troops on our shared border / our troops (Risk border-security ratio)
+  trust: number; // 0–1; starts 0.5; − on broken alliance / attacked ally / refused request, + on renewal
+  borderTiles: number; // our border tiles adjacent to them
+  bsr: number; // their troops on our shared border / our troops (Risk border-security ratio)
   nationCanAttack: boolean; // from AiAttackBehavior rules; false for humans
-  nationWouldSend: number;  // troops their troopSendCap allows right now
+  nationWouldSend: number; // troops their troopSendCap allows right now
 }
 ```
 
@@ -156,11 +184,20 @@ export interface RivalView {
 ```ts
 // src/core/execution/playbook/Estimate.ts — pure, no state
 export interface AttackEstimate {
-  tilesTaken: number; attackerLoss: number; defenderLoss: number; ticks: number;
-  troopsLeft: number; wins: boolean;      // wins = target's troops exhausted before ours hit `stopBelow`
+  tilesTaken: number;
+  attackerLoss: number;
+  defenderLoss: number;
+  ticks: number;
+  troopsLeft: number;
+  wins: boolean; // wins = target's troops exhausted before ours hit `stopBelow`
 }
-export function estimateAttack(mg: Game, attacker: Player, defender: Player, troops: number,
-  opts?: { horizonTicks?: number; stopBelow?: number; reinforce?: boolean }): AttackEstimate;
+export function estimateAttack(
+  mg: Game,
+  attacker: Player,
+  defender: Player,
+  troops: number,
+  opts?: { horizonTicks?: number; stopBelow?: number; reinforce?: boolean },
+): AttackEstimate;
 ```
 
 Replays `Config.attackLogic` over the defender's border tiles nearest to the
@@ -172,9 +209,20 @@ horizon, at `stopBelow`, or when the defender has no troops.
 
 ```ts
 // src/core/execution/playbook/Spend.ts
-export interface Candidate { kind: "build" | "upgrade"; type: UnitType; tile?: TileRef; unit?: Unit;
-  cost: bigint; value: number; why: string }          // value = expected return over horizon / cost
-export interface Escrow { purpose: string; amount: bigint; until: number }
+export interface Candidate {
+  kind: "build" | "upgrade";
+  type: UnitType;
+  tile?: TileRef;
+  unit?: Unit;
+  cost: bigint;
+  value: number;
+  why: string;
+} // value = expected return over horizon / cost
+export interface Escrow {
+  purpose: string;
+  amount: bigint;
+  until: number;
+}
 ```
 
 `Economy.build()` becomes: hard overrides (post where an attack lands, SAM
@@ -250,7 +298,7 @@ Each card is a self-contained brief. Definition of done includes tests,
 ### B2 — Situation model: phase, rival trend/trust, border threat, nation rules
 
 - **Owner files:** `Situation.ts`, `Rivals.ts` (new), `tests/playbook/situation.test.ts`.
-- **Do not** change any consumer yet (that is C1); this package only *exposes*.
+- **Do not** change any consumer yet (that is C1); this package only _exposes_.
 - **Phase:** `opening` while free land is reachable; `consolidate` when it
   is gone and troops < `fightAbove`·cap; `war` when a war is affordable or
   troops ≥ 0.95·cap; `endgame` when rank ≤ 3 and an unfriendly silo exists,
@@ -351,13 +399,13 @@ unchanged). C3 runs the four A/Bs.
 
 **Round 1 (2026-08-29, dc3d1d6c3; 150 games, Medium 20 min, 3× cpx62):**
 
-| config | alive | crowns | top-3 | total tiles | median | paired vs base |
-|---|---|---|---|---|---|---|
-| base `{}` | 30 | 2 | 14 | 2.08M | 84k | — |
-| realRetreats | 30 | 5 | 17 | 3.53M | 101k | 18W 11L |
-| c1 (bsrReserve+trustWars+nationAware+phaseGates) | 30 | 6 | 12 | 3.20M | 63k | 18W 12L |
-| scoredSpend | 29 | 3 | 9 | 1.99M | 59k | 12W 17L |
-| simWars | 30 | 0 | 0 | 0.68M | 25k | 7W 23L |
+| config                                           | alive | crowns | top-3 | total tiles | median | paired vs base |
+| ------------------------------------------------ | ----- | ------ | ----- | ----------- | ------ | -------------- |
+| base `{}`                                        | 30    | 2      | 14    | 2.08M       | 84k    | —              |
+| realRetreats                                     | 30    | 5      | 17    | 3.53M       | 101k   | 18W 11L        |
+| c1 (bsrReserve+trustWars+nationAware+phaseGates) | 30    | 6      | 12    | 3.20M       | 63k    | 18W 12L        |
+| scoredSpend                                      | 29    | 3      | 9     | 1.99M       | 59k    | 12W 17L        |
+| simWars                                          | 30    | 0      | 0     | 0.68M       | 25k    | 7W 23L         |
 
 realRetreats graduated (default true). scoredSpend dropped as is (buys fewer
 ports than the ladder; `Spend.ts` constants unswept). simWars dropped as
@@ -366,14 +414,14 @@ another A/B. Round 2 unbundles c1 on top of realRetreats.
 
 **Round 2 (216f4ddaf; 180 games; base = realRetreats on):**
 
-| config | alive | crowns | top-3 | total tiles | median | paired vs base |
-|---|---|---|---|---|---|---|
-| base (realRetreats) | 30 | 5 | 17 | 3.53M | 101k | — |
-| + c1 bundle | 30 | 4 | 14 | 2.99M | 66k | 17W 13L |
-| + bsrReserve | 30 | 7 | 13 | 3.21M | 63k | 14W 16L |
-| + trustWars | 30 | 7 | 19 | 3.91M | 108k | 6W 4L, 20 identical |
-| + nationAware | 30 | 4 | 18 | 3.34M | 98k | 9W 6L, 15 identical |
-| + phaseGates | 30 | 7 | 13 | 3.13M | 78k | 11W 18L |
+| config              | alive | crowns | top-3 | total tiles | median | paired vs base      |
+| ------------------- | ----- | ------ | ----- | ----------- | ------ | ------------------- |
+| base (realRetreats) | 30    | 5      | 17    | 3.53M       | 101k   | —                   |
+| + c1 bundle         | 30    | 4      | 14    | 2.99M       | 66k    | 17W 13L             |
+| + bsrReserve        | 30    | 7      | 13    | 3.21M       | 63k    | 14W 16L             |
+| + trustWars         | 30    | 7      | 19    | 3.91M       | 108k   | 6W 4L, 20 identical |
+| + nationAware       | 30    | 4      | 18    | 3.34M       | 98k    | 9W 6L, 15 identical |
+| + phaseGates        | 30    | 7      | 13    | 3.13M       | 78k    | 11W 18L             |
 
 The c1 bundle's round-1 gain was realRetreats' gain in disguise. bsrReserve
 and phaseGates dropped (phaseGates delays silos/SAMs to the endgame phase and
@@ -390,8 +438,8 @@ bsrReserve, phaseGates — each needs a rework before another A/B.
 
 1. Each B-flag: 30-game Medium A/B, graduate or drop.
 2. CMA-ES over: `expandContested expandFree botRatio botClickCap
-   fightAbove fightMaxShare reserveShare retreatBelowRatio capFullShare
-   bombReserve railSpacing` (11 params; `homeFloor` was removed in C2), population 10, 12 generations
+fightAbove fightMaxShare reserveShare retreatBelowRatio capFullShare
+bombReserve railSpacing` (11 params; `homeFloor` was removed in C2), population 10, 12 generations
    ≈ 3.6k games ≈ €1.5 on cpx51.
 3. Ladder run of the result vs v-current; if it wins, it becomes the next
    version and the guide's "Pressure-tested" table is updated.
@@ -422,7 +470,7 @@ The optional FINAL field `fired=flag:count,…` (`-` = none) marks which
 flagged branches ran.
 
 **Paired report** (per config vs the first config named): the old table,
-then over *live* games only (config's `fired` non-empty, or (alive, tiles)
+then over _live_ games only (config's `fired` non-empty, or (alive, tiles)
 differ from the baseline): `n_live`, W/L/T by score, mean paired score
 difference with a bootstrap 95% CI (1000 resamples, seed 0), a two-sided
 exact sign test on W vs L, and a verdict — `decisive win` / `decisive loss`
@@ -462,31 +510,31 @@ p = sign test:
 
 Round 1 (`lab-out/c3`, base = `{}`):
 
-| config | fit_old | score | n_live | W-L-T | dScore | p | verdict | recorded in C3 |
-|---|---|---|---|---|---|---|---|---|
-| base | 1.846 | 1.672 | — | — | — | — | — | — |
-| realRetreats | 2.091 | 1.793 | 29/30 | 17-12-0 | +0.126 [−0.036, +0.293] | 0.458 | undecided | **graduated** (18W 11L) |
-| c1 bundle | 1.907 | 1.802 | 30/30 | 18-12-0 | +0.131 [−0.062, +0.318] | 0.362 | undecided | 18W 12L, unbundled |
-| scoredSpend | 1.652 | 1.604 | 29/30 | 14-15-0 | −0.070 [−0.240, +0.086] | 1.000 | undecided | dropped (12W 17L) |
-| simWars | 1.126 | 1.394 | 30/30 | 8-22-0 | −0.277 [−0.430, −0.102] | 0.016 | **decisive loss** | dropped (7W 23L) |
+| config       | fit_old | score | n_live | W-L-T   | dScore                  | p     | verdict           | recorded in C3          |
+| ------------ | ------- | ----- | ------ | ------- | ----------------------- | ----- | ----------------- | ----------------------- |
+| base         | 1.846   | 1.672 | —      | —       | —                       | —     | —                 | —                       |
+| realRetreats | 2.091   | 1.793 | 29/30  | 17-12-0 | +0.126 [−0.036, +0.293] | 0.458 | undecided         | **graduated** (18W 11L) |
+| c1 bundle    | 1.907   | 1.802 | 30/30  | 18-12-0 | +0.131 [−0.062, +0.318] | 0.362 | undecided         | 18W 12L, unbundled      |
+| scoredSpend  | 1.652   | 1.604 | 29/30  | 14-15-0 | −0.070 [−0.240, +0.086] | 1.000 | undecided         | dropped (12W 17L)       |
+| simWars      | 1.126   | 1.394 | 30/30  | 8-22-0  | −0.277 [−0.430, −0.102] | 0.016 | **decisive loss** | dropped (7W 23L)        |
 
 Round 2 (`lab-out/c3b`, base = realRetreats):
 
-| config | fit_old | score | n_live | W-L-T | dScore | p | verdict | recorded in C3 |
-|---|---|---|---|---|---|---|---|---|
-| base | 2.091 | 1.793 | — | — | — | — | — | — |
-| + c1 bundle | 1.936 | 1.736 | 30/30 | 18-12-0 | −0.058 [−0.294, +0.172] | 0.362 | undecided | 17W 13L, "gain was realRetreats" |
-| + bsrReserve | 1.893 | 1.819 | 30/30 | 14-16-0 | +0.025 [−0.162, +0.212] | 0.856 | undecided | dropped (14W 16L) |
-| + trustWars | 2.200 | 1.845 | 10/30 | 6-4-0 | +0.155 [−0.199, +0.501] | 0.754 | undecided | mild positive, 20 identical |
-| + nationAware | 2.148 | 1.853 | 15/30 | 9-6-0 | +0.119 [−0.047, +0.283] | 0.607 | undecided | mild positive, 15 identical |
-| + phaseGates | 1.919 | 1.768 | 29/30 | 11-18-0 | −0.027 [−0.216, +0.156] | 0.265 | undecided | dropped (11W 18L) |
+| config        | fit_old | score | n_live | W-L-T   | dScore                  | p     | verdict   | recorded in C3                   |
+| ------------- | ------- | ----- | ------ | ------- | ----------------------- | ----- | --------- | -------------------------------- |
+| base          | 2.091   | 1.793 | —      | —       | —                       | —     | —         | —                                |
+| + c1 bundle   | 1.936   | 1.736 | 30/30  | 18-12-0 | −0.058 [−0.294, +0.172] | 0.362 | undecided | 17W 13L, "gain was realRetreats" |
+| + bsrReserve  | 1.893   | 1.819 | 30/30  | 14-16-0 | +0.025 [−0.162, +0.212] | 0.856 | undecided | dropped (14W 16L)                |
+| + trustWars   | 2.200   | 1.845 | 10/30  | 6-4-0   | +0.155 [−0.199, +0.501] | 0.754 | undecided | mild positive, 20 identical      |
+| + nationAware | 2.148   | 1.853 | 15/30  | 9-6-0   | +0.119 [−0.047, +0.283] | 0.607 | undecided | mild positive, 15 identical      |
+| + phaseGates  | 1.919   | 1.768 | 29/30  | 11-18-0 | −0.027 [−0.216, +0.156] | 0.265 | undecided | dropped (11W 18L)                |
 
 Round 3 (`lab-out/c3c`, base = realRetreats):
 
-| config | fit_old | score | n_live | W-L-T | dScore | p | verdict | recorded in C3 |
-|---|---|---|---|---|---|---|---|---|
-| base | 2.091 | 1.793 | — | — | — | — | — | — |
-| + trustWars + nationAware | 2.336 | 1.917 | 19/30 | 10-9-0 | +0.194 [+0.018, +0.363] | 1.000 | undecided | **graduated** (11W 8L, 11 identical) |
+| config                    | fit_old | score | n_live | W-L-T  | dScore                  | p     | verdict   | recorded in C3                       |
+| ------------------------- | ------- | ----- | ------ | ------ | ----------------------- | ----- | --------- | ------------------------------------ |
+| base                      | 2.091   | 1.793 | —      | —      | —                       | —     | —         | —                                    |
+| + trustWars + nationAware | 2.336   | 1.917 | 19/30  | 10-9-0 | +0.194 [+0.018, +0.363] | 1.000 | undecided | **graduated** (11W 8L, 11 identical) |
 
 Where the verdicts differ from the C3 record: **realRetreats** and
 **trustWars+nationAware** were graduated on raw W/L counts; under the new
@@ -520,7 +568,7 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 4. **Shifted confirmation grid** — `ladder.sh` runs 30-minute games with
    `SHIFT=150`; `remote.sh` must forward `SHIFT` (peer's file; requested).
 5. **Graduations re-examined** — under the new score `realRetreats` and
-   `trustWars`+`nationAware` are *undecided*; their defaults stay on as
+   `trustWars`+`nationAware` are _undecided_; their defaults stay on as
    PROVISIONAL (bug fix with positive mean; positive mean with CI just
    above zero) until a ladder confirmation. `simWars` is a decisive loss.
    The four losers (`simWars`, `scoredSpend`, `bsrReserve`, `phaseGates`)
@@ -538,3 +586,74 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 **Next lab session:** `ladder.sh` on the two provisional flags (60 games,
 30 min, SHIFT=150) → fold or revert; then `cmaes.py --pop 10 --gens 12
 --games-growth`; then Hard.
+
+## Opportunity #2 — the nation AI as a perfect-information opponent (2026-08-29)
+
+Branch `bot/nation-exploit`. The opponent pool is a deterministic script whose
+source is in the repo (`AiAttackBehavior.ts`, `NationAllianceBehavior.ts`,
+`NationNukeBehavior.ts`); these flags evaluate that script on the current state
+instead of modelling it. Five default-off `PlaybookParams` flags, one per edge
+(the brief's sixth, `secondAttacker`, is folded into `retaliateAware`: "join an
+ally's marked target as the smaller attacker" is the same rule with the mark as
+a second trigger). All nation-only; humans keep the existing handling. The rule
+constants are in `Rivals.NATION_RULES` with file:line references.
+
+- `markTargets` — `Military.mark()`: `TargetPlayerExecution` (the human
+  'target' button) on the war target when `fight()` commits, on a non-bot
+  attacker when a counter starts, and again from `fight()` whenever
+  `canTarget()` allows (targetCooldown 150; a mark lives 100 ticks). Every
+  allied nation with relation ≥ Friendly answers with `assist` (an attack of
+  its own, `AiAttackBehavior.ts:487-514`) and points its nukes at the mark
+  (`NationNukeBehavior.ts:220-231`). Costs: −40 relation from the target (it is
+  at −70 from the attack already), −20 from each assisting ally. No ally: no
+  mark. Note the relation window: an alliance starts at +100 and decays 0.05 a
+  tick, so an ally assists only inside ~1000 ticks of the alliance (or a gift).
+- `wildernessAware` — `Rivals.wildernessBound(p)`: every 4th border tile of a
+  nation is checked for an unowned, fallout-free, passable land neighbour
+  (cached 50 ticks). `maybeAttack` (`AiAttackBehavior.ts:60-95`) sends such a
+  nation's whole surplus at TerraNullius and returns, so `nationCanAttack` reads
+  false and `nationWouldSend` 0 (RivalView and `couldAttackAtExpiry`): the
+  trustWars pile-in veto and the nationAware expiry hold stand down. While every
+  unfriendly neighbour is a wilderness-bound nation, `sit.reserve` is halved.
+- `drainedNations` — `RivalView.drainedUntil`: a nation under 0.3 × max cannot
+  attack anyone (`attackBestTarget` line 244); the tick it is back at 0.5 × max
+  is estimated from `Config.troopIncreaseRate` (capped 3000). `fight()` accepts
+  a drained nation at 1.5× in the affordable gate, scores it like `collapsed`
+  (18 + ratio at ≥ 1.5×) and lets it through the sticky-target filter; the wave
+  is 1.5×. `counterAttack` never sizes the counter below the incoming wave + 1
+  (the reserve permitting) so the wave is cancelled, not trimmed.
+- `retaliateAware` — `RivalView.largestAttacker/largestAttack`
+  (`findIncomingAttackPlayer`, lines 405-426: `retaliate` and the nuke target
+  answer only the largest non-bot unfriendly wave). `Military.shadowWave(r)`:
+  if someone else's wave on r is larger than 1.2 × r + 1000, or an ally of ours
+  has r in `targets()`, r is scored +2 and gated at 1.2× instead of fightRatio,
+  with a 1.2× wave (below the bigger one). A wave that would become the largest
+  gets the normal gate.
+- `relationAware` — `Rivals.wouldAcceptAlliance(p)` replays
+  `getAllianceDecision` (lines 88-148) dice aside: traitor, too-many-alliances
+  (Hard/Impossible), threat (Medium 2.5× troops; Hard/Impossible per rules),
+  relation < Neutral, Friendly, enough-alliances, early window, similarly
+  strong (lowest dice values). `requestAlliances` skips a nation that would
+  refuse (logged once per 1800 ticks), so no trust is docked for a refusal we
+  asked for. `Diplomacy.preyPick`: among neighbours within 1.15× of the
+  weakest, the nation whose relation to us is highest is the prey (a lapsed
+  ally is still Friendly/Neutral: a hit leaves it Distrustful, not Hostile, so
+  no `hated` hunt at 3× and no embargo). The war scorer adds +2 (Friendly) /
+  +0.5 (Neutral). Only the enum is visible, not the raw value.
+
+Each flag fires `ctx.fire()` through `FireLimiter` (Context.ts, one count per
+100 ticks per site). Tests: `tests/playbook/{markTargets,wildernessAware,
+drainedNations,retaliateAware,relationAware}.test.ts`. Golden unchanged with
+all five off.
+
+Local smoke (africa, Medium, 6 min, one game each): base rank 2 / 44.4k tiles
+(fired realRetreats:3, trustWars:3); all five on rank 3 / 33.7k tiles (fired
+wildernessAware:1, relationAware:7, markTargets:7, drainedNations:4,
+retaliateAware:0). A 12-minute africa game with `retaliateAware` alone: rank 1,
+197.9k tiles, seven "as the smaller attacker" waves (fired retaliateAware:2,
+rate-limited). One game is not evidence either way.
+
+A/B, one flag at a time:
+`CONFIGS='{"base":{},"x":{"drainedNations":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+(and the same for `markTargets`, `wildernessAware`, `retaliateAware`,
+`relationAware`); then the combination of whichever win.

@@ -103,8 +103,14 @@ export class PlaybookBotExecution implements Execution {
     const nb = this.q.neighbours();
     const incoming = me.incomingAttacks().filter((a) => a.attacker().type() !== PlayerType.Bot);
     const outgoing = me.outgoingAttacks();
-    const reserve = troops * this.p.reserveShare;
+    let reserve = troops * this.p.reserveShare;
     const t = this.mg.ticks();
+    // `wildernessAware`: while every unfriendly neighbour is a nation with free land on its border, none of them can
+    // attack us this tick (their script spends the surplus on the wilderness first) — half the reserve is enough
+    if (this.p.wildernessAware && nb.rivals.length > 0 && nb.rivals.every((r) => r.type() === PlayerType.Nation && this.q.rivals.wildernessBound(r))) {
+      reserve *= 0.5;
+      if (t % 100 === 0) this.ctx.fire("wildernessAware");
+    }
     this.sit = {
       tick: t, troops, cap, capShare: cap > 0 ? troops / cap : 0, reserve, spendable: Math.max(0, troops - reserve),
       gold: me.gold(), ...nb,

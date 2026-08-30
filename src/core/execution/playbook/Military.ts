@@ -1,12 +1,13 @@
 // Military: expansion, tribe harvesting, counter-attacks, wars and retreats, boats, bombs, MIRV, split watch.
 
-import { Attack, Player, PlayerType, UnitType } from "../../game/Game";
+import { Attack, Player, PlayerType, Relation, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { MirvExecution } from "../MIRVExecution";
 import { RetreatExecution } from "../RetreatExecution";
+import { TargetPlayerExecution } from "../TargetPlayerExecution";
 import { calculateTerritoryCenter } from "../Util";
-import { BotContext } from "./Context";
+import { BotContext, FireLimiter } from "./Context";
 import { SituationQueries } from "./Situation";
 
 
@@ -21,12 +22,48 @@ export class Military {
   private embargoedAt_ = new Map<Player, number>();
   private bombed = new Map<TileRef, number>();
   private lastInvasionTick = -1e9;
+  private lim: FireLimiter;
 
   constructor(
     private ctx: BotContext,
     private q: SituationQueries,
     private plannedTarget: () => Player | null, // Diplomacy.plannedTarget
-  ) {}
+  ) {
+    this.lim = new FireLimiter(ctx);
+  }
+
+  // ---------------------------------------------------------------- opportunity #2: the nation script on the current state
+  /** `markTargets`: the human 'target' button. Every allied nation whose relation to us is still Friendly answers a
+   *  mark with an attack of its own (AiAttackBehavior.assistAllies) and points its nukes at the mark
+   *  (NationNukeBehavior.findBestNukeTarget); the mark lives targetDuration (100) ticks and canTarget() allows one per
+   *  targetCooldown (150), so a running war is re-marked from fight(). Costs: the target docks us −40 relation (it is
+   *  at −70 from the attack already) and each assisting ally docks us −20. Nothing to recruit without an ally. */
+  private lastMarkLog = -1e9;
+  mark(target: Player, why: string): void {
+    if (!this.ctx.p.markTargets) return;
+    const me = this.ctx.me;
+    if (!target.isAlive() || !me.canTarget(target) || me.allies().length === 0) return;
+    this.ctx.mg.addExecution(new TargetPlayerExecution(me, target.id()));
+    this.lim.fire("markTargets", "mark");
+    if (this.ctx.mg.ticks() - this.lastMarkLog >= 600) { this.lastMarkLog = this.ctx.mg.ticks(); this.ctx.log(`t${this.ctx.mg.ticks()} MARK ${target.name()} for ${me.allies().length} allies (${why})`); }
+  }
+  /** `drainedNations`: a nation under its reserve ratio, not yet expected back at its trigger ratio (RivalView.drainedUntil). */
+  drained(r: Player): boolean {
+    if (!this.ctx.p.drainedNations || r.type() !== PlayerType.Nation) return false;
+    const v = this.ctx.sit.rival.get(r);
+    return v !== undefined && v.drainedUntil > this.ctx.sit.tick;
+  }
+  /** `retaliateAware` (with the brief's `secondAttacker` folded in): a nation retaliates only against its largest
+   *  attacker, so a target already under a bigger wave than ours would be — or marked by one of our allies, whose
+   *  other allies are about to hit it — can be taken as the smaller attacker at 1.2×. Returns the wave we may send
+   *  without becoming the largest (Infinity for a mark with no wave yet), or 0 when the rule does not apply. */
+  shadowWave(r: Player): number {
+    if (!this.ctx.p.retaliateAware || r.type() !== PlayerType.Nation) return 0;
+    const v = this.ctx.sit.rival.get(r);
+    if (v && v.largestAttacker !== null && v.largestAttacker !== this.ctx.me) return v.largestAttack - 1;
+    for (const a of this.ctx.me.allies()) if (a.isAlive() && a.targets().includes(r)) return Infinity;
+    return 0;
+  }
 
   /** The player we are at war with (read by Diplomacy and Economy). */
   get currentTarget(): Player | null {
@@ -250,11 +287,18 @@ export class Military {
       const last = this.lastCounter.get(a) ?? -1e9;
       if (!big || this.ctx.mg.ticks() - last < 300) continue;
       this.lastCounter.set(a, this.ctx.mg.ticks());
-      const send = this.ctx.send(a.id(), Math.min(Math.ceil(inc.troops() * 1.05), Math.floor(this.ctx.sit.troops * 0.5)), "counter", 1000);
+      // `drainedNations`: the counter cancels troop-for-troop (AttackExecution.init), so a counter under the wave leaves
+      // the rest of it standing — never below what cancels it, the reserve permitting (a Medium nation's wave is its
+      // whole surplus; cancelled, it sits under its reserve ratio and cannot attack again until it regrows)
+      const half = Math.floor(this.ctx.sit.troops * 0.5);
+      let want = Math.min(Math.ceil(inc.troops() * 1.05), half);
+      if (this.ctx.p.drainedNations && half < inc.troops() + 1) { want = Math.min(Math.ceil(inc.troops() * 1.05), inc.troops() + 1); this.lim.fire("drainedNations", "counter"); }
+      const send = this.ctx.send(a.id(), want, "counter", 1000);
       if (send === 0) continue;
       this.noteSent(a);
       this.counters.add(a);
       this.ctx.log(`t${this.ctx.mg.ticks()} COUNTER ${a.name()} (${Math.round(inc.troops() / 1000)}k incoming) with ${Math.round(send / 1000)}k`);
+      if (a.type() !== PlayerType.Bot) this.mark(a, "counter");
     }
   }
 
@@ -277,12 +321,17 @@ export class Military {
     const cap = this.q.cap();
     const nb = this.q.neighbours();
     for (const r of nb.rivals) this.collapsed(r);
+    // `markTargets`: a running war is re-marked as soon as the cooldown allows (canTarget), so the allies keep piling on
+    if (this.currentTarget_ && this.currentTarget_.isAlive() && this.q.outgoingTo(this.currentTarget_) && !me.isFriendly(this.currentTarget_)) this.mark(this.currentTarget_, "war");
     const gapOwner = this.splitOwner && this.splitOwner.isAlive() && nb.rivals.includes(this.splitOwner) ? this.splitOwner : null;
     const threatHere = this.ctx.sit.mode === "hold" ? nb.rivals.find((r) => this.ctx.sit.threats.includes(r)) ?? null : null;
     const opportunity = (this.ctx.mg.ticks() >= 3000 && nb.rivals.some((r) => this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5)) || gapOwner !== null || threatHere !== null;
     // crown, not survival: a war is on when we can afford 2× someone's whole army out of the spendable troops,
     // not only when troops reach 70 % of a cap that cities keep raising
-    const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare);
+    // `drainedNations`: a drained nation is affordable at 1.5× — it cannot answer until it regrows past its reserve ratio
+    const affordableAt = (r: Player) => r.troops() * (this.drained(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio) + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare;
+    const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
+    if (affordable && !nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) this.lim.fire("drainedNations", "affordable");
     if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return; // a 1.67× push that keeps home healthy is always taken
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
@@ -298,7 +347,7 @@ export class Military {
     // one enemy at a time, to the end: nations nuke whoever attacks them, and eight half-wars make eight nuclear enemies.
     // The current target stays the only candidate while it lives, borders us, and was hit within the last three minutes.
     if (this.currentTarget_ && this.currentTarget_.isAlive() && rivals.includes(this.currentTarget_) && this.ctx.mg.ticks() - this.lastWarTick < 1800) {
-      candidates = candidates.filter((r) => r === this.currentTarget_ || this.collapsed(r) || r === gapOwner || r === threatHere);
+      candidates = candidates.filter((r) => r === this.currentTarget_ || this.collapsed(r) || this.drained(r) || r === gapOwner || r === threatHere);
     }
     if (this.ctx.sit.mode === "hold") candidates = candidates.filter((r) => this.ctx.sit.threats.includes(r)); // the hold is spent removing whoever can fire
     if (this.ctx.p.trustWars) {
@@ -319,13 +368,21 @@ export class Military {
     const minRatio = atCap || endgame ? 1.2 : this.ctx.p.fightRatio;
     const richer = (r: Player) => this.q.cap() >= this.ctx.mg.config().maxTroops(r) * 2 && this.ctx.sit.gold >= 1_000_000n; // we replace losses, they cannot
     const attackingUs = new Set(me.incomingAttacks().map((a) => a.attacker()));
+    // `retaliateAware`: the smaller attacker is invisible to `retaliate`; a 1.2× wave that stays under the bigger one
+    const shadow = (r: Player) => { const w = this.shadowWave(r); return w >= Math.ceil(r.troops() * 1.2) + 1000; };
+    // `relationAware`: a nation still Friendly to us (a lapsed ally, a gift) drops to Distrustful on the first hit, not
+    // Hostile — no `hated` hunt at 3× our troops, no embargo; Neutral is a coin toss (its raw value is not visible)
+    const relationBonus = (r: Player) => { if (!this.ctx.p.relationAware) return 0; const rel = this.ctx.sit.rival.get(r)?.relation ?? null; const b = rel === Relation.Friendly ? 2 : rel === Relation.Neutral ? 0.5 : 0; if (b !== 0) this.lim.fire("relationAware", "score"); return b; };
     const score = (r: Player) => {
       const ratio = maxSend / Math.max(1, r.troops());
       if (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) return ratio >= 1.5 ? 20 + ratio : -1; // bombed: go now at 1.5×, posts are gone
       if (r === gapOwner) return ratio >= 1.2 ? 30 + ratio : -1; // they are cutting our land in two: reconnect before the piece is handed over
       if (r === threatHere) return ratio >= 1.5 ? 25 + ratio : -1; // a MIRV-capable rival next door during the hold
+      if (this.drained(r)) { this.lim.fire("drainedNations", "score"); return ratio >= 1.5 ? 18 + ratio : -1; } // under its reserve ratio: it cannot answer until it regrows
+      const shadowed = shadow(r);
+      if (shadowed && ratio >= 1.2 && ratio < minRatio) this.lim.fire("retaliateAware", "gate");
       // at cap, a neighbour already attacking us is a fair fight at 1:1 — the counter-attack cancels its wave anyway
-      if (ratio < (atCap && attackingUs.has(r) ? 1.0 : richer(r) ? Math.min(minRatio, 1.5) : minRatio)) return -1;
+      if (ratio < (atCap && attackingUs.has(r) ? 1.0 : shadowed ? Math.min(minRatio, 1.2) : richer(r) ? Math.min(minRatio, 1.5) : minRatio)) return -1;
       // Playbook: never attack a big, thinly held empire — that is a troop sink. Prefer small and dense.
       if (ratio < 3 && r.numTilesOwned() > me.numTilesOwned() * 1.5 && this.q.density(r) < 40) return -1;
       const buildings = r.units(UnitType.City).length * 3 + r.units(UnitType.Port).length * 2 + r.units(UnitType.MissileSilo).length * 3;
@@ -335,7 +392,8 @@ export class Military {
       // Playbook: hit players who are already being hit, traitors (half defence), and the ally we let lapse.
       const underFire = r.incomingAttacks().reduce((acc, a) => acc + a.troops(), 0) / Math.max(1, r.troops());
       const bonus = Math.min(underFire, 1) * 4 + (r.isTraitor() ? 2 : 0) + (r === this.plannedTarget() ? 4 : 0);
-      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r);
+      if (shadowed) this.lim.fire("retaliateAware", "score");
+      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + (shadowed ? 2 : 0) + relationBonus(r);
     };
     let best: Player | null = null, bestS = 0;
     for (const r of candidates) { const sc = score(r); if (sc > bestS) { bestS = sc; best = r; } }
@@ -343,7 +401,10 @@ export class Military {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
       return;
     }
-    const wantRaw = Math.min(Math.ceil(best.troops() * (richer(best) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio)) + 1000, maxSend);
+    // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
+    // shadowWave's test above), else fightRatio
+    const mult = this.drained(best) ? Math.min(this.ctx.p.fightRatio, 1.5) : shadow(best) ? Math.min(this.ctx.p.fightRatio, 1.2) : richer(best) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio;
+    const wantRaw = Math.min(Math.ceil(best.troops() * mult) + 1000, maxSend);
     if (richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100) { this.currentTarget_ = best; this.maybeBomb(this.ctx.mg.ticks()); } // open the war with a bomb on their cluster
     if (wantRaw < 1000) return;
     this.currentTarget_ = best;
@@ -352,7 +413,8 @@ export class Military {
     if (want === 0) return;
     this.lastWarTick = this.ctx.mg.ticks();
     this.noteSent(best);
-    this.ctx.log(`t${this.ctx.mg.ticks()} ATTACK ${best.name()} ${best.numTilesOwned()}t/${Math.round(best.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, best.troops())).toFixed(2)}×)`);
+    this.ctx.log(`t${this.ctx.mg.ticks()} ATTACK ${best.name()} ${best.numTilesOwned()}t/${Math.round(best.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, best.troops())).toFixed(2)}×)${this.drained(best) ? " drained" : shadow(best) ? " as the smaller attacker" : ""}`);
+    this.mark(best, "war");
   }
 
   // ---------------------------------------------------------------- allies that can pile in (trustWars)
