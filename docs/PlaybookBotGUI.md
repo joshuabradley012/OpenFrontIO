@@ -18,6 +18,24 @@ A reloaded single-player game is lost, so editing the bot while watching it
 kills the game within seconds. The worktree has its own module graph and only
 changes when you deliberately sync it.
 
+## Flags and parameters in the GUI
+
+The GUI bot plays `DEFAULT_PLAYBOOK`. To watch a default-off flag (or any
+parameter) before its A/B, set `localStorage.playbookParams` to a JSON object
+of overrides in the browser console **before** starting the game, then open
+`?bot=1` as usual:
+
+```js
+localStorage.playbookParams = JSON.stringify({ boatsNearest: true, finishByBoat: true, annexWars: true, lapseToAttack: true, multiWar: true });
+// back to defaults:
+localStorage.removeItem("playbookParams");
+```
+
+The JSON travels `WorkerClient` → `InitMessage.playbookParams` →
+`createGameRunner()` and is merged over `DEFAULT_PLAYBOOK` when the bot is
+created. Dev builds only; invalid JSON falls back to the defaults with a
+console warning.
+
 ## How the hook works
 
 - `src/client/ClientGameRunner.ts` — `playbookBotEnabled()`: true when the page

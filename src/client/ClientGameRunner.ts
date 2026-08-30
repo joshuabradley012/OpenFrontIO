@@ -120,6 +120,15 @@ export interface JoinLobbyResult {
 const botFlagInUrl =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).has("bot");
+// Dev-only: `localStorage.playbookParams = JSON.stringify({ multiWar: true })` overrides PlaybookParams for the ?bot=1 bot.
+function playbookParamsJSON(): string | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  try {
+    return localStorage.getItem("playbookParams") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 function playbookBotEnabled(): boolean {
   if (import.meta.env.VITE_PLAYBOOK_BOT === "1") return true;
   if (!import.meta.env.DEV) return false;
@@ -655,6 +664,7 @@ async function createClientGame(
     lobbyConfig.gameStartInfo,
     clientID,
     playbookBotEnabled(),
+    playbookParamsJSON(),
   );
   await worker.initialize();
   await atlasDataLoad;

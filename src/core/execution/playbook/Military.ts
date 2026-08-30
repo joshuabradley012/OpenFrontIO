@@ -25,16 +25,10 @@ interface WarPick {
   opportunity: boolean; // collapsed / gap owner / MIRV threat / drained / annexable: goes at once (utility ranks it first)
   annex: boolean; // `annexWars`: an encircled neighbour taken from most of its border (logged ANNEX WAR)
   /** Every candidate the scorer accepted, for the utility layer (`best` first). */
-  alts: { r: Player; want: number; score: number; opportunity: boolean; annex: boolean; bite: Bite | null }[];
-  /** `borderRatio`: the target passed only against the troops it can bring to our border (null = the whole-army gate). */
-  bite: Bite | null;
+  alts: { r: Player; want: number; score: number; opportunity: boolean; annex: boolean }[];
   /** `multiWar`: a war beside the running ones (the second or third slot). */
   extra: boolean;
 }
-/** `borderRatio`: what a target too big for a whole-army war can bring to our shared border inside BITE_HORIZON. */
-interface Bite { share: number; defenders: number }
-const BITE_HORIZON = 100; // borderRatio: the target's regen over the 10 s a wave takes to bite in counts as defenders too (a minute of regen exceeds the army itself at midgame troop counts)
-const BITE_MIN_SHARE = 0.25; // borderRatio: a target facing us on less of its border still brings a quarter of its army
 const MULTI_WAR_SLOTS = 3; // multiWar: wars plus counters running at once
 const UTIL_EST_EVERY = 50; // utility: ticks an option's estimate is cached
 /** One war or tribe wave under calibration bookkeeping (EST at the send, ACT when the attack is gone). */
@@ -567,14 +561,6 @@ export class Military {
     for (const w of this.pending.values()) sum += w;
     return sum;
   }
-  /** `borderRatio`: the troops `r` can bring to our shared border inside BITE_HORIZON — its army plus its regen over the
-   *  horizon, spread over the share of its border that faces us (never under BITE_MIN_SHARE). */
-  private bite(r: Player): Bite {
-    const v = this.ctx.sit.rival.get(r);
-    const share = Math.max(BITE_MIN_SHARE, Math.min(1, v?.borderShare ?? 0));
-    const regen = Math.max(0, this.ctx.mg.config().troopIncreaseRate(r)) * BITE_HORIZON;
-    return { share, defenders: (r.troops() + regen) * share };
-  }
   /** The decision half of the war rule: gates, candidates, the scorer and the wave size.
    *  Returns the war fight() would open now, or null. Side effects are the log and the flag counters only. */
   private warPick(): WarPick | null {
@@ -595,10 +581,8 @@ export class Military {
     // not only when troops reach 70 % of a cap that cities keep raising
     // `drainedNations`: a drained nation is affordable at 1.5× — it cannot answer until it regrows past its reserve ratio
     const affordableAt = (r: Player) => r.troops() * (this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : this.ctx.p.fightRatio) + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare;
-    let affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
+    const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
     if (affordable && !nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) this.lim.fire("drainedNations", "affordable");
-    // `borderRatio`: a bite on a neighbour too big for a whole-army war is affordable when fightRatio × its border defenders fits
-    if (!affordable && this.ctx.p.borderRatio && this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some((r) => this.bite(r).defenders * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) { affordable = true; this.lim.fire("borderRatio", "affordable"); }
     if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return null; // a 1.67× push that keeps home healthy is always taken
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
@@ -649,10 +633,10 @@ export class Military {
       });
     }
     if (candidates.length === 0) return null;
-    const { score, isOpp, wantOrBite, richer, biteFor } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
+    const { score, isOpp, wantFor, richer } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
     let best: Player | null = null, bestS = 0;
     const alts: WarPick["alts"] = [];
-    for (const r of candidates) { const sc = score(r); if (sc > 0) { const b = biteFor(r); alts.push({ r, want: wantOrBite(r, b), score: sc, opportunity: isOpp(r), annex: annex.has(r), bite: b }); } if (sc > bestS) { bestS = sc; best = r; } }
+    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } }
     if (best === null) {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
       return null;
@@ -660,8 +644,7 @@ export class Military {
     const b = best;
     alts.sort((x, y) => (x.r === b ? -1 : y.r === b ? 1 : y.score - x.score));
     const bomb = richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100;
-    const bestBite = biteFor(best);
-    return { r: best, want: wantOrBite(best, bestBite), bomb, opportunity: isOpp(best), annex: annex.has(best), alts, bite: bestBite, extra };
+    return { r: best, want: wantFor(best), bomb, opportunity: isOpp(best), annex: annex.has(best), alts, extra };
   }
   /** The scorer half of warPick, shared with wouldTarget(): the gates on ratio / posts / density / size and every
    *  bonus. `quiet` skips the flag counters (a what-if question, not a decision). */
@@ -677,13 +660,6 @@ export class Military {
     // `multiWar`: an extra war is sized from what is left this pass, inside the army-wide share
     const maxSend = extra ? Math.min(extraRoom, Math.floor(this.ctx.sit.troops * (atCap || endgame ? 0.7 : this.ctx.p.fightMaxShare))) : Math.floor(me.troops() * (atCap || endgame ? 0.7 : this.ctx.p.fightMaxShare));
     const minRatio = atCap || endgame ? 1.2 : this.ctx.p.fightRatio;
-    // `borderRatio`: a target whose whole army is out of reach at minRatio is judged against its border defenders instead;
-    // the wave is a bite (fightRatio × defenders + 1000). Null when the whole-army gate would pass or the bite does not fit.
-    const biteOf = (r: Player): Bite | null => {
-      if (!this.ctx.p.borderRatio || maxSend / Math.max(1, r.troops()) >= minRatio) return null;
-      const b = this.bite(r);
-      return maxSend >= this.ctx.p.fightRatio * b.defenders + 1000 ? b : null;
-    };
     const richer = (r: Player) => this.q.cap() >= this.ctx.mg.config().maxTroops(r) * 2 && this.ctx.sit.gold >= 1_000_000n; // we replace losses, they cannot
     const attackingUs = new Set(me.incomingAttacks().map((a) => a.attacker()));
     // `retaliateAware`: the smaller attacker is invisible to `retaliate`; a 1.2× wave that stays under the bigger one
@@ -691,9 +667,8 @@ export class Military {
     // `relationAware`: a nation still Friendly to us (a lapsed ally, a gift) drops to Distrustful on the first hit, not
     // Hostile — no `hated` hunt at 3× our troops, no embargo; Neutral is a coin toss (its raw value is not visible)
     const relationBonus = (r: Player) => { if (!this.ctx.p.relationAware) return 0; const rel = this.ctx.sit.rival.get(r)?.relation ?? null; const b = rel === Relation.Friendly ? 2 : rel === Relation.Neutral ? 0.5 : 0; if (b !== 0 && !quiet) this.lim.fire("relationAware", "score"); return b; };
-    const bites = new Map<Player, Bite | null>(); // borderRatio: the bite each scored candidate passed on (null = whole army)
     const score = (r: Player) => {
-      let ratio = maxSend / Math.max(1, r.troops());
+      const ratio = maxSend / Math.max(1, r.troops());
       if (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) return ratio >= 1.5 ? 20 + ratio : -1; // bombed: go now at 1.5×, posts are gone
       if (r === gapOwner) return ratio >= 1.2 ? 30 + ratio : -1; // they are cutting our land in two: reconnect before the piece is handed over
       if (r === threatHere) return ratio >= 1.5 ? 25 + ratio : -1; // a MIRV-capable rival next door during the hold
@@ -703,14 +678,9 @@ export class Military {
       if (shadowed && ratio >= this.ctx.p.retalRatio && ratio < minRatio && !quiet) this.lim.fire("retaliateAware", "gate");
       // at cap, a neighbour already attacking us is a fair fight at 1:1 — the counter-attack cancels its wave anyway
       const need = atCap && attackingUs.has(r) ? 1.0 : shadowed ? Math.min(minRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(minRatio, 1.5) : minRatio;
-      // `borderRatio`: the whole army is out of reach — the ratio becomes wave / border defenders (≥ fightRatio by biteOf)
-      const bite = ratio < need ? biteOf(r) : null;
-      bites.set(r, bite);
-      if (bite !== null) { ratio = maxSend / Math.max(1, bite.defenders); if (!quiet) this.lim.fire("borderRatio", "gate"); }
-      else if (ratio < need) return -1;
+      if (ratio < need) return -1;
       // Playbook: never attack a big, thinly held empire — that is a troop sink. Prefer small and dense.
-      // (`borderRatio`: a bite takes the dense edge of a thin empire; the veto is skipped, the size penalty below stays)
-      if (bite === null && ratio < 3 && r.numTilesOwned() > me.numTilesOwned() * 1.5 && this.q.density(r) < 40) return -1;
+      if (ratio < 3 && r.numTilesOwned() > me.numTilesOwned() * 1.5 && this.q.density(r) < 40) return -1;
       const buildings = r.units(UnitType.City).length * 3 + r.units(UnitType.Port).length * 2 + r.units(UnitType.MissileSilo).length * 3;
       const posts = r.units(UnitType.DefensePost).length;
       if (posts > 0 && ratio < 1.5) return -1;
@@ -725,12 +695,7 @@ export class Military {
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
     // shadowWave's test above) or on an annexable one, else fightRatio
     const wantFor = (r: Player) => { const mult = annex.has(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
-    // `borderRatio`: the bite's wave — fightRatio × border defenders + 1000, never the whole-army size
-    const biteWant = (b: Bite) => Math.min(Math.ceil(b.defenders * this.ctx.p.fightRatio) + 1000, maxSend);
-    const wantOrBite = (r: Player, b: Bite | null) => (b === null ? wantFor(r) : biteWant(b));
-    // the bite a candidate passed on, if any (score() decided; the want and the BITE log follow it)
-    const biteFor = (r: Player): Bite | null => bites.get(r) ?? null;
-    return { score, isOpp, wantFor, richer, biteFor, wantOrBite };
+    return { score, isOpp, wantFor, richer };
   }
   /** `lapseToAttack`: would the war rule take `p` if it were an unfriendly neighbour right now? The same gates as
    *  warPick — affordable out of spendable × fightMaxShare (or an opportunity, or troops above fightAbove × cap),
@@ -766,7 +731,6 @@ export class Military {
     if (!pick.extra) this.lastWarTick = now;
     this.noteSent(r);
     this.pending.set(r, want);
-    if (pick.bite !== null) this.ctx.log(`t${now} BITE ${r.name()} border share ${pick.bite.share.toFixed(2)}, defenders ${Math.round(pick.bite.defenders / 1000)}k`);
     if (pick.extra) { this.ctx.fire("multiWar"); this.ctx.log(`t${now} WAR #${this.pending.size + this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot).length} beside the running ones`); }
     if (pick.annex) { this.ctx.log(`t${now} ANNEX WAR ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×): we hold most of its border`); this.lim.fire("annexWars", "war"); }
     this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×)${this.drained(r) ? " drained" : this.shadowWave(r) >= Math.ceil(r.troops() * this.ctx.p.retalRatio) + 1000 ? " as the smaller attacker" : ""}`);
@@ -859,13 +823,13 @@ export class Military {
           const again = this.warPick();
           const alt = again?.alts.find((a) => a.r === o.target);
           if (again === undefined || again === null || alt === undefined) continue;
-          ok = this.actWar(alt.r === again.r ? again : { ...again, r: alt.r, want: alt.want, bomb: false, opportunity: alt.opportunity, annex: alt.annex, bite: alt.bite });
+          ok = this.actWar(alt.r === again.r ? again : { ...again, r: alt.r, want: alt.want, bomb: false, opportunity: alt.opportunity, annex: alt.annex });
           if (ok && first === null) first = o;
           continue;
         }
         const alt = war.alts.find((a) => a.r === o.target);
         if (alt === undefined) continue;
-        ok = this.actWar(alt.r === war.r ? war : { ...war, r: alt.r, want: alt.want, bomb: false, opportunity: alt.opportunity, annex: alt.annex, bite: alt.bite });
+        ok = this.actWar(alt.r === war.r ? war : { ...war, r: alt.r, want: alt.want, bomb: false, opportunity: alt.opportunity, annex: alt.annex });
         if (ok) warDone = true;
       } else if (o.kind === "expand") ok = this.actExpand(o.troops) > 0;
       else if (o.kind === "tribe" && o.target !== null) {

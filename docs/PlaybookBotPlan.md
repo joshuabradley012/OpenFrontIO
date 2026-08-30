@@ -1281,3 +1281,10 @@ only bring what faces us") does not hold in OpenFront; the A/B is expected to
 confirm this. `multiWar` on its own is the part worth the A/B (its extra wars
 in the smoke were mostly bites, so the pair confounds it — run the four
 CONFIGS above, not just `both`).
+
+**borderRatio deleted (2026-08-30).** Built and smoked in the multiwar package; it
+loses by construction: `Config.attackLogic` prices the attacker's per-tile loss by
+`within(defender.troops() / attackTroops, 0.6, 2)` — the defender's whole army —
+so a "bite" at a thin border pays the full price (africa 12-min smoke: 36 bites,
+rank 13 vs 6 off). The flag, `Military.bite()` and its tests are gone; the
+`RivalView.borderShare` field it added stays (cheap, used by nothing yet).

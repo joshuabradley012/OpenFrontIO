@@ -2,7 +2,7 @@ import { placeName, placeSpawnName } from "../client/hud/NameBoxCalculator";
 import { Config } from "./configuration/Config";
 import { DoomsdayClockExecution } from "./execution/DoomsdayClockExecution";
 import { Executor } from "./execution/ExecutionManager";
-import { PlaybookBotExecution } from "./execution/playbook/PlaybookBotExecution";
+import { DEFAULT_PLAYBOOK, PlaybookBotExecution } from "./execution/playbook/PlaybookBotExecution";
 import { RecomputeRailClusterExecution } from "./execution/RecomputeRailClusterExecution";
 import { SpawnExecution } from "./execution/SpawnExecution";
 import { SpawnTimerExecution } from "./execution/SpawnTimerExecution";
@@ -40,6 +40,7 @@ export async function createGameRunner(
   mapLoader: GameMapLoader,
   callBack: (gu: GameUpdateViewData | ErrorUpdate) => void,
   playbookBot = false,
+  playbookParams: string | undefined = undefined,
 ): Promise<GameRunner> {
   const config = new Config(gameStart.config, null, false, gameStart.listed);
   const gameMap = await loadGameMap(
@@ -93,6 +94,7 @@ export async function createGameRunner(
       ? clientID
       : undefined,
     gameStart.gameID,
+    playbookParams,
   );
   gr.init();
   return gr;
@@ -113,6 +115,8 @@ export class GameRunner {
     // spawn phase ends. Dev/singleplayer only; the flag never leaves the client.
     private playbookBotClientID: ClientID | undefined = undefined,
     private gameID: GameID = "",
+    // Dev-only: JSON PlaybookParams overrides merged over DEFAULT_PLAYBOOK (localStorage.playbookParams).
+    private playbookParams: string | undefined = undefined,
   ) {}
   private botSpawnQueued = false;
 
@@ -230,7 +234,11 @@ export class GameRunner {
     if (this.playbookBotClientID !== undefined && !this.game.inSpawnPhase()) {
       const me = this.game.playerByClientID(this.playbookBotClientID);
       if (me !== null) {
-        this.game.addExecution(new PlaybookBotExecution(me));
+        let params = DEFAULT_PLAYBOOK;
+        if (this.playbookParams) {
+          try { params = { ...DEFAULT_PLAYBOOK, ...JSON.parse(this.playbookParams) }; } catch { console.warn("playbookParams is not valid JSON; using defaults"); }
+        }
+        this.game.addExecution(new PlaybookBotExecution(me, params));
       }
       this.playbookBotClientID = undefined; // only ever added once
     }

@@ -44,6 +44,8 @@ export interface InitMessage extends BaseWorkerMessage {
   cdnBase: string;
   // Dev-only: let PlaybookBotExecution play the local player (singleplayer).
   playbookBot?: boolean;
+  // Dev-only: JSON of PlaybookParams overrides for that bot (localStorage.playbookParams).
+  playbookParams?: string;
 }
 
 export interface TurnMessage extends BaseWorkerMessage {
