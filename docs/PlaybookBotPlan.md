@@ -1730,3 +1730,27 @@ Outcomes: 48 won · 37 alive-but-lost · 4 died · 7 hit the cap (6 as rank 1). 
 Loss clusters (41): **MIRVed down after leading — 19** (steamroll rule in 80 of 85 MIRVED-by lines; the bot's own `MIRV RISK steamroll` detector fires minutes earlier, then the game builds ~3 SAMs); **lost the endgame race at rank 2–3 — 13**; **plateaued behind a runaway — 5**; died 4. Losses peak at 33 min (wins at 61) holding 0.3 of peak; the 10-minute states of wins and losses are nearly identical — games are decided in the mid-game. Wins average 27 silos/97 SAMs vs 6.8/12 in losses. War efficiency is similar; the failure is growth stalling + MIRV exposure, plus no leader-contest behaviour (a rank-3 bot spends the last 5 minutes boating a 1,500-tile weakling while the leader closes to 80 %).
 
 Ranked proposals (each a default-off flag + full-game A/B): 1) `samOnRisk` — on `MIRV RISK steamroll`, divert gold to a SAM wall + counter-silos (touches ~half the losses); 2) `contestLeader` — rank ≤ 3 with a runaway leader → boats/nukes at the leader, not "weak X"; 3) `plateauBreak` — <5 % tile growth over 5 min while rank > 1 → forced cross-water expansion or war on the largest adjacent non-ally; 4) `warRoiCap` — abort wars beyond ~500 troops/tile realized; 5) `webDefense` — ally/post against a mutual-ally border web before 10:00. Script: scratchpad loss_analysis.py (re-run on every sweep).
+
+## Contest the leader (`contestLeader`, 2026-08-30, branch `bot/contest-leader`)
+
+Loss cluster 2 above (13/41 rm1 losses ended rank 2–3 while the winner ran away — p_base_med2b_australia.txt spends
+its last minutes boating 1,500-tile weaklings and finishes `rank=3 share=0.08 winner=other`). `Situation` now keeps,
+on the existing 100-tick rank cadence plus a 300-tick tile sample for the trend, the leader by tiles among non-bot
+players. The contest is on while our rank ≤ `contestRank` (3), the leader is not us / a friend / a teammate, its
+tiles exceed `contestLeadRatio` (1.5) × ours, and its last two samples rose — a leader that stopped growing is
+contained, not contested. While on (`sit.contest`; `CONTEST leader …` / `CONTEST over` logged on entry/exit):
+
+- `seaExpansion` re-aims the boat it was about to send at a "weak X" / tribe candidate at the leader's ocean shore
+  (its ports/cities coastline preferred — `Military.contestShore`), same wave and same distance / across-water
+  gates; a collapsed follow-up or a free-shore boat keeps its target. `huntBotsByBoat` does the same with its tribe
+  boat (900-tick per-leader cooldown through `boatedAt`).
+- `maybeBomb` puts the leader on the enemy list like a threat (the value search still does the prioritising, so
+  range and affordability keep their say); `maybeMIRV` takes the leader as a priority target with no 12000-tick /
+  0.8×-tiles gate beyond the contest state itself, and keeps `nationMirvAware`'s never-at-a-counterer rule when
+  that flag is on.
+- The war scorer adds +4 (the planned-target weight) on the leader when it borders us; every gate stays.
+
+No new troop spending: targets are redirected, sizes and budgets are the rules' own. Fires (`contestLeader`) on a
+redirected boat, on a bomb/MIRV pick only the flag put on the list, and on a war pick the +4 changed.
+Tests: `tests/playbook/contestLeader.test.ts`. A/B (full games — the cluster is an endgame failure):
+`CONFIGS='{"base":{},"cl":{"contestLeader":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.

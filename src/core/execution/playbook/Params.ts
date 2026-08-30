@@ -103,6 +103,9 @@ export interface PlaybookParams {
   yieldMaxTroopsPerTile: number; // warYield: the running cost (troops lost per tile taken over the last 200 ticks) above which a war is retreated, and the scorer's zero point; 120 = 6 × free land's ~20 a tile
   nationMirvAware: boolean; // exploit the nations' MIRV rules (MirvRisk.ts) instead of triggering them: the 25:00 crown MIRV goes only at a target that cannot counter (no silo, or neither the live MIRV price nor a built MIRV); near the steamroll line (city LEVELS — the rule sums them — ≥ 0.9 × mult × the runner-up and > minLeader − 1) while a nation is armed (can fire, or a silo and half the price: it fires the tick it reaches the price), no new city or city level, SAM cover for every city unit is the top discretionary buy (levels to 3 first, price escrowed like the bomb fund) and a war target whose cities would carry us over the line is refused (unless it is the only MIRV-capable rival or an opportunity); in hold mode a war whose tiles would carry our share to the denial line − 0.01 is refused unless it removes the last threat. Default off until the 30-game Medium A/B
   clockTicks: number; // the game clock the timed rules assume (18000 = the 30-minute public game): the endgame posture (phase 'endgame', a second war at cap, 1.2× waves and 70 % sends, no buy that cannot pay back — seaFull) starts 3000 ticks before it and the build planner's horizon ends at it; 0 = an open-ended game (the lab's MIN=full, which runs until someone wins): the timed gates never fire and the endgame phase comes from the rank / enemy-silo test alone
+  contestLeader: boolean; // loss cluster 2 (rm1: 13/41 losses ended rank 2–3 while the winner ran to 80 % and we boated 1,500-tile weaklings): while we are rank ≤ contestRank by tiles among non-bots, the leader is not us or a friend, its tiles exceed contestLeadRatio × ours and it is still growing (two tile samples 300 ticks apart), the boats seaExpansion / huntBotsByBoat already send are re-aimed from "weak X" / tribe targets at the leader's coastline (its ports/cities shore, same sizes and gates), maybeBomb / maybeMIRV treat the leader as a priority target like `threats`, and the war scorer adds +4 when it borders us; redirects targets, never sizes. Default off until the 30-game Medium A/B
+  contestRank: number; // contestLeader: contest only while our tile rank among non-bot players is ≤ this (int)
+  contestLeadRatio: number; // contestLeader: the leader's tiles must exceed this × ours
   multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
 }
 
@@ -170,6 +173,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nationMirvAware: false, // default off until the 30-game Medium A/B
   clockTicks: 18000, // the 30-minute public game; tests/lab/playbook.lab.ts sets 0 for MIN=full
   multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
+  contestLeader: false, // default off until the 30-game Medium A/B
+  contestRank: 3,
+  contestLeadRatio: 1.5,
   boatsWaterPath: false, // OFF again 2026-08-30: rm1 (96 mirrored full games, wins objective, docs/PlaybookBotPlan.md) — removal won 63/96 vs base 48 (p=0.032); the water-path ranking hurts full games
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B

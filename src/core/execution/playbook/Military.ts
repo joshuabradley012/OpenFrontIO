@@ -335,6 +335,18 @@ export class Military {
       if (nearest && oldOk && oldT !== null && oldT !== tile) cands.push({ tile: oldT, troops: want, score: -1e9, dm: slD, slScore, slOk: false, oldScore, oldOk: true, what }); // the old ranking's tile, for the liveness count only
       if (wp && slOk && slT !== null && slT !== tile) cands.push({ tile: slT, troops: want, score: -1e9, dm: slD, slScore, slOk: true, oldScore, oldOk: false, what }); // the straight-line ranking's tile, for the liveness count only
     }
+    // `contestLeader`: the boat this rule was about to send at a "weak X" / tribe / free shore goes at the runaway
+    // leader's coastline instead — the SAME wave (the best such candidate's troops) re-aimed at the leader's
+    // ocean-shore tile nearest our coast (its ports/cities shore preferred), inside the rule's own distance cap and
+    // across water. No leader coast in range: the original boat goes — idling contests nothing.
+    const lead = this.ctx.p.contestLeader ? this.ctx.sit.contest : null;
+    if (lead !== null && lead.isAlive() && me.canAttackPlayer(lead)) {
+      const donor = cands.filter((c) => c.score > -1e9 && c.troops <= this.ctx.sit.spendable && (c.what.startsWith("weak") || c.what.startsWith("tribe"))).sort((a, b) => b.score - a.score)[0]; // a collapsed follow-up or a free shore keeps its boat — only the "weak X" habit is redirected
+      if (donor !== undefined) {
+        const lt = this.contestShore(lead, dist);
+        if (lt !== null && (wp ? wp.len(lt.tile) <= BOAT_MAX_PATH.sea : lt.dm <= 500)) cands.push({ tile: lt.tile, troops: donor.troops, score: donor.score + 1000, dm: lt.dm, slScore: -1e9, slOk: false, oldScore: -1e9, oldOk: false, what: `CONTEST leader ${lead.name()} ${lead.numTilesOwned()}t` });
+      }
+    }
     cands.sort((a, b) => b.score - a.score);
     // `boatsWaterPath` liveness: what the straight-line ranking (this rule with the flag off) would have launched at
     const slPick = (extra: number) => cands.filter((o) => o.slOk).sort((a, b) => b.slScore - a.slScore).slice(0, 10).find((o) => o.troops <= this.ctx.sit.spendable + extra && across(o.tile, o.dm));
@@ -345,6 +357,7 @@ export class Military {
       const sent = this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}${wp ? ` (${wp.len(c.tile)} tiles by water)` : nearest ? ` (${dist(c.tile)} tiles)` : ""}`);
       if (sent === 0) continue;
       this.lastSeaTick = this.ctx.mg.ticks();
+      if (c.what.startsWith("CONTEST")) { this.lim.fire("contestLeader", "sea"); return; } // redirected: the other flags' liveness compares are moot
       if (nearest) {
         // liveness: what the old ranking (middle tile, flat − d/2, 30-tile floor) would have launched at
         const old = cands.filter((o) => o.oldOk).sort((a, b) => b.oldScore - a.oldScore).slice(0, 10).find((o) => o.troops <= this.ctx.sit.spendable + sent && this.q.acrossWater(o.tile));
@@ -382,6 +395,13 @@ export class Military {
     if (this.ctx.sit.mode !== "grow") { const t = this.ctx.sit.threats.filter((p) => others.includes(p)).sort((a, b) => Number(b.gold() - a.gold()))[0]; if (t !== undefined) { target = t; why = `finish: ${this.ctx.sit.mode}, richest MIRV-capable rival`; } }
     if (!target) for (const p of others) for (const m of p.units(UnitType.MIRV)) { const d = m.targetTile(); if (d && this.ctx.mg.hasOwner(d) && this.ctx.mg.owner(d) === me) { target = p; why = "counter"; } }
     if (!target) { const t = others.filter((p) => p.numTilesOwned() / total >= 0.5).sort((a, b) => b.numTilesOwned() - a.numTilesOwned())[0]; if (t) { target = t; why = "victory denial"; } }
+    // `contestLeader`: the runaway leader is a priority MIRV target like the threats — no 12000-tick or 0.8× gate
+    // beyond the contest state itself (rank ≤ contestRank, > contestLeadRatio × our tiles, still rising). With
+    // `nationMirvAware` on it keeps that flag's crown discipline: never at a target that can counter.
+    if (!target && this.ctx.p.contestLeader) {
+      const lead = this.ctx.sit.contest;
+      if (lead !== null && others.includes(lead) && !(this.ctx.p.nationMirvAware && this.risk.canCounter(lead))) { target = lead; why = `contest leader (${lead.numTilesOwned()}t vs ours ${me.numTilesOwned()}t)`; }
+    }
     if (!target && this.ctx.mg.ticks() >= 12000) {
       const ranked = this.ctx.mg.players().filter((p) => p.isAlive() && p.type() !== PlayerType.Bot).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
       const myRank = ranked.indexOf(me) + 1;
@@ -413,6 +433,7 @@ export class Military {
     this.ctx.mg.addExecution(new MirvExecution(me, tile));
     this.lastMirvTick = this.ctx.mg.ticks();
     this.bombs++;
+    if (why.startsWith("contest leader")) this.lim.fire("contestLeader", "mirv", 600); // only the flag's branch picked this target
     this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} ${target.numTilesOwned()}t (${why})${tile === center ? "" : " — aimed off-centre, the centre is under a SAM"}`);
   }
   /** The territory centre unless one of the target's SAMs covers it (Config.samRange(level) + 5, as maybeBomb): then
@@ -760,11 +781,12 @@ export class Military {
       });
     }
     if (candidates.length === 0) return null;
-    const { score, isOpp, wantFor, richer, yieldBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
-    let best: Player | null = null, bestS = 0, best0: Player | null = null, bestS0 = 0;
+    const { score, isOpp, wantFor, richer, yieldBonus, contestBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
+    let best: Player | null = null, bestS = 0, best0: Player | null = null, bestS0 = 0, bestC: Player | null = null, bestSC = 0;
     const alts: WarPick["alts"] = [];
-    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } const sc0 = sc - yieldBonus(r); if (sc0 > bestS0) { bestS0 = sc0; best0 = r; } }
+    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } const sc0 = sc - yieldBonus(r); if (sc0 > bestS0) { bestS0 = sc0; best0 = r; } const scC = sc - contestBonus(r); if (scC > bestSC) { bestSC = scC; bestC = r; } }
     if (this.ctx.p.warYield && best !== best0) this.lim.fire("warYield", "pick"); // the cheaper tile changed the pick
+    if (this.ctx.p.contestLeader && best !== bestC) this.lim.fire("contestLeader", "pick"); // the +4 changed the pick
     if (best === null) {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
       return null;
@@ -797,6 +819,9 @@ export class Military {
     const relationBonus = (r: Player) => { if (!this.ctx.p.relationAware) return 0; const rel = this.ctx.sit.rival.get(r)?.relation ?? null; const b = rel === Relation.Friendly ? 2 : rel === Relation.Neutral ? 0.5 : 0; if (b !== 0 && !quiet) this.lim.fire("relationAware", "score"); return b; };
     // `warYield`: a tile that will cost few troops is worth up to +4 (zero from yieldMaxTroopsPerTile up)
     const yieldBonus = (r: Player) => this.ctx.p.warYield ? 4 * clamp(1 - this.expectedCost(r) / this.ctx.p.yieldMaxTroopsPerTile, 0, 1) : 0;
+    // `contestLeader`: the runaway leader on our border is the war that matters — +4, the planned-target weight.
+    // The gates (ratio, posts, density, size) keep their say: a bonus opens no war the army cannot carry.
+    const contestBonus = (r: Player) => (this.ctx.p.contestLeader && r === this.ctx.sit.contest ? 4 : 0);
     // `nationMirvAware`: (3) the denial guard — in hold mode (or push with a threat left) a war whose tiles would carry
     // our share to the denial line − 0.01 is refused unless the target is the last MIRV-capable rival (taking it ends
     // the hold); (2c) the steamroll guard — while a nation can fire, a target whose city units would carry us over the
@@ -832,13 +857,13 @@ export class Military {
       const underFire = r.incomingAttacks().reduce((acc, a) => acc + a.troops(), 0) / Math.max(1, r.troops());
       const bonus = Math.min(underFire, 1) * 4 + (r.isTraitor() ? 2 : 0) + (r === this.plannedTarget() ? 4 : 0);
       if (shadowed && !quiet) this.lim.fire("retaliateAware", "score");
-      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r) + yieldBonus(r);
+      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r) + yieldBonus(r) + contestBonus(r);
     };
     const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r) || annex.has(r);
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
     // shadowWave's test above) or on an annexable one, else fightRatio
     const wantFor = (r: Player) => { const mult = annex.has(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
-    return { score, isOpp, wantFor, richer, yieldBonus };
+    return { score, isOpp, wantFor, richer, yieldBonus, contestBonus };
   }
   /** `lapseToAttack`: would the war rule take `p` if it were an unfriendly neighbour right now? The same gates as
    *  warPick — affordable out of spendable × fightMaxShare (or an opportunity, or troops above fightAbove × cap),
@@ -1295,10 +1320,41 @@ export class Military {
     if (nearest ? !this.q.acrossWaterNear(best, bestDm) : !this.q.acrossWater(best)) return; // reachable by land: that is a land attack, not a boat
     const troops = Math.ceil(bestBot.troops() * 2) + 500;
     if (troops > this.ctx.sit.spendable) return;
+    // `contestLeader`: this tribe boat goes at the runaway leader's coastline instead — the same wave, the same
+    // distance cap and across-water gate, the same 900-tick per-target cooldown (boatedAt keyed by the leader)
+    const lead = this.ctx.p.contestLeader ? this.ctx.sit.contest : null;
+    if (lead !== null && lead.isAlive() && me.canAttackPlayer(lead) && this.ctx.mg.ticks() - (this.boatedAt.get(lead) ?? -1e9) >= 900) {
+      const distFn = nearest ? (t: TileRef) => this.nearestShoreDist(t, sample) : (t: TileRef) => Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+      const lt = this.contestShore(lead, distFn);
+      if (lt !== null && (wp ? wp.len(lt.tile) <= BOAT_MAX_PATH.tribe : lt.dm <= 350) && (nearest ? this.q.acrossWaterNear(lt.tile, lt.dm) : this.q.acrossWater(lt.tile))) {
+        if (this.ctx.boat(lt.tile, troops, `CONTEST leader ${lead.name()} ${lead.numTilesOwned()}t instead of tribe ${bestBot.name()}, ${lt.dm} tiles`) !== 0) {
+          if (!this.ctx.dry) this.boatedAt.set(lead, this.ctx.mg.ticks());
+          this.lim.fire("contestLeader", "tribeBoat");
+          return;
+        }
+      }
+    }
     if (this.ctx.boat(best, troops, `to tribe ${bestBot.name()} ${bestBot.numTilesOwned()}t/${Math.round(bestBot.troops() / 1000)}k, ${bestD} tiles${wp ? " by water" : ""}`) === 0) return;
     if (!this.ctx.dry) this.boatedAt.set(bestBot, this.ctx.mg.ticks());
     if (nearest && oldBest !== best) this.lim.fire("boatsNearest", "tribe");
     if (wp && slBest !== best) this.lim.fire("boatsWaterPath", "tribe");
+  }
+
+  /** `contestLeader`: the leader's ocean-shore tile nearest our coast (by `dist`, the calling rule's own ranking),
+   *  preferring shore within 40 tiles of one of its ports or cities — the coastline its economy sits on. Sampled
+   *  border walk (every 9th tile), null when it has no ocean shore. */
+  private contestShore(lead: Player, dist: (t: TileRef) => number): { tile: TileRef; dm: number } | null {
+    const mg = this.ctx.mg;
+    const spots = [...lead.units(UnitType.Port), ...lead.units(UnitType.City)].map((u) => u.tile());
+    let best: TileRef | null = null, bestD = 1e9, bestNear = false, i = 0;
+    for (const t of lead.borderTiles()) {
+      if ((i++ % 9) !== 0 || !mg.isOceanShore(t)) continue;
+      const near = spots.some((s) => mg.manhattanDist(s, t) <= 40);
+      if (bestNear && !near) continue;
+      const d = dist(t);
+      if ((near && !bestNear) || d < bestD) { best = t; bestD = d; bestNear = near; }
+    }
+    return best === null ? null : { tile: best, dm: bestD };
   }
 
   // ---------------------------------------------------------------- finishByBoat: the remnant a land war cannot reach
@@ -1388,14 +1444,16 @@ export class Military {
       const { rich } = this.bombEnemies(gold, true); // the buy path's side effects: a crown / idle-at-cap pick becomes the war target
       if (gold - spent < plan.cost + BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve)) this.lim.fire("bombBudget", "bomb", 1); // the old rule would not have afforded this bomb yet
       this.launch(plan, ticks);
+      if (this.lastBombTick === ticks && this.planCache?.contest === plan.enemy) this.lim.fire("contestLeader", "bomb"); // the leader only the flag put on the list took the bomb
       return;
     }
-    const { enemies, rich } = this.bombEnemies(gold, true);
+    const { enemies, rich, contest } = this.bombEnemies(gold, true);
     if (enemies.size === 0) return;
     const reserve = BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve);
     const best = this.bombSearch(enemies, rich, (type) => gold - spent >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve);
     if (best === null) return;
     this.launch(best, ticks);
+    if (this.lastBombTick === ticks && contest !== null && best.enemy === contest) this.lim.fire("contestLeader", "bomb"); // the leader only the flag put on the list took the bomb
   }
   private lastFundLog = -1e9;
   private lastFundKey = "";
@@ -1414,7 +1472,7 @@ export class Military {
    *  crown; when `endgameV2` gold can never reach the MIRV price (`rich`), the largest un-allied neighbour; idle at
    *  cap with no attack out, the neighbour with the most buildings we could then take at 1.2×. `mutate` lets those
    *  last two picks become the war target (the buy path); the `bombBudget` plan reads the same set without it. */
-  private bombEnemies(gold: bigint, mutate: boolean): { enemies: Set<Player>; rich: boolean } {
+  private bombEnemies(gold: bigint, mutate: boolean): { enemies: Set<Player>; rich: boolean; contest: Player | null } {
     const me = this.ctx.me;
     const enemies = new Set<Player>();
     if (this.currentTarget_ && this.currentTarget_.isAlive() && !me.isFriendly(this.currentTarget_)) enemies.add(this.currentTarget_);
@@ -1423,6 +1481,12 @@ export class Military {
     if (plannedTarget && plannedTarget.isAlive() && !me.isFriendly(plannedTarget)) enemies.add(plannedTarget);
     for (const r of this.ctx.sit.collapsed) if (!me.isFriendly(r)) enemies.add(r);
     if (this.ctx.sit.share >= 0.5) for (const r of this.ctx.sit.threats) if (me.canAttackPlayer(r) || this.q.neighbours().rivals.includes(r)) enemies.add(r); // whoever could fire at the crown
+    // `contestLeader`: the runaway leader is a bomb target like the threats — the value search does the prioritising
+    // (its clusters are usually the richest on the map, and range/affordability keep their say). `contest` reports it
+    // only when the flag ADDED it, so a pick on it counts as a decision the flag changed.
+    let contest: Player | null = null;
+    const lead = this.ctx.p.contestLeader ? this.ctx.sit.contest : null;
+    if (lead !== null && lead.isAlive() && !me.isFriendly(lead) && !enemies.has(lead)) { enemies.add(lead); contest = lead; }
     const mirvPrice = this.ctx.mg.config().unitInfo(UnitType.MIRV).cost(this.ctx.mg, me);
     const rich = this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && gold >= 8_000_000n && (gold < mirvPrice || me.units(UnitType.MIRV).length > 0);
     if (rich && enemies.size === 0) {
@@ -1437,7 +1501,7 @@ export class Military {
       const pick = rivals.filter((r) => me.canAttackPlayer(r) && r.troops() * 1.2 < me.troops() * this.ctx.p.fightMaxShare).sort((a, b) => b.units(UnitType.City).length - a.units(UnitType.City).length)[0];
       if (pick) { enemies.add(pick); if (mutate) this.currentTarget_ = pick; }
     }
-    return { enemies, rich };
+    return { enemies, rich, contest };
   }
   /** maybeBomb's value search: over every structure of `enemies` not yet bombed, outside a SAM umbrella (the SAM
    *  always hits) and 32 tiles clear of our own or allied land, the bomb — Hydrogen only 105 tiles clear of friends
@@ -1475,7 +1539,7 @@ export class Military {
     return best;
   }
   // ---------------------------------------------------------------- bombBudget: the planned bomb and its fund
-  private planCache: { tick: number; plan: BombPick | null } | null = null;
+  private planCache: { tick: number; plan: BombPick | null; contest: Player | null } | null = null;
   private income = { tick: -1, gold: 0n, rate: 0 };
   /** Observed income per tick: an EMA over the passes of the gold gained since the last one (a pass where gold
    *  fell — a purchase — is skipped; a windfall — conquest gold, a lane paying out — enters at no more than 3× the
@@ -1493,16 +1557,18 @@ export class Military {
     if (this.planCache !== null && this.planCache.tick === ticks) return this.planCache.plan;
     this.noteIncome(ticks);
     const me = this.ctx.me, gold = me.gold();
-    let plan: BombPick | null = null;
+    let plan: BombPick | null = null, contest: Player | null = null;
     if (me.units(UnitType.MissileSilo).length > 0) {
-      const { enemies, rich } = this.bombEnemies(gold, false);
+      const e = this.bombEnemies(gold, false);
+      const { enemies, rich } = e;
+      contest = e.contest;
       if (enemies.size > 0) {
         const any = this.bombSearch(enemies, rich, () => true);
         if (any !== null && any.type === UnitType.HydrogenBomb && gold + BigInt(Math.round(this.income.rate * BOMB_FUND_HORIZON)) >= any.cost) plan = any;
         else plan = any !== null && any.type === UnitType.AtomBomb ? any : this.bombSearch(enemies, rich, (type) => type === UnitType.AtomBomb);
       }
     }
-    this.planCache = { tick: ticks, plan };
+    this.planCache = { tick: ticks, plan, contest };
     return plan;
   }
   /** `bombBudget`: gold Economy.build keeps out of every discretionary buy — the planned bomb's price, or 0n. */
