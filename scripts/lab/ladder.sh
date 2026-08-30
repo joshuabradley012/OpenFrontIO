@@ -20,14 +20,16 @@
 # "cand"), plus everything remote.sh / sweep.sh accept (SERVER_TYPE, KEEP,
 # REUSE, JOBS, BATCHES ...). SERVER_TYPE defaults to cpx51 here.
 #
-# SHIFT reaches the games through the environment: sweep.sh's game processes
-# inherit it, so RUNNER=local honours it. remote.sh (as of 2026-08-30) builds
-# the box's env list by hand (CONFIGS MINUTES SHARD BATCHES SPAWNS JOBS) and
-# does NOT forward SHIFT — a remote ladder runs on the unshifted grid until
-# remote.sh passes it through (see docs/PlaybookBotPlan.md "Scoring").
+# SHIFT reaches the games through the environment (sweep.sh's game processes
+# inherit it; remote.sh forwards it to the box since 6f949877c). Note that the
+# region picker searches 250 tiles around the shifted point, so SHIFT=150 can
+# re-pick the tuning grid's tile; MIRROR=1 (sweep.sh) also changes the opponent
+# field (SEED) for the second slot, and SPRT=1 keeps adding batches until the
+# sequential test decides — both pass through to remote.sh / sweep.sh.
 #
 # Prints summarize.py's table (old fitness `fit_old` and the new score side
-# by side, live-game paired stats with a verdict) and the Bradley–Terry ladder.
+# by side, live-game paired stats with a verdict, the sequential test) and
+# the Bradley–Terry ladder with its transitivity check.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 cand=${1:?usage: ladder.sh '<json>' | file.json}
@@ -58,7 +60,6 @@ CONFIGS=$(node -e '
 names=$(node -e 'console.log(Object.keys(JSON.parse(process.argv[1])).join(" "))' "$CONFIGS")
 
 echo "ladder: $names  ($MINUTES min, $RUNNER, SHIFT=$SHIFT) -> $DEST"
-if [ "$RUNNER" != local ] && [ "$SHIFT" != 0 ]; then echo "note: remote.sh does not forward SHIFT to the box; this ladder runs on the unshifted grid"; fi
 echo "CONFIGS=$CONFIGS"
 mkdir -p "$DEST"
 if [ "$RUNNER" = local ]; then
@@ -67,8 +68,8 @@ else
   CONFIGS="$CONFIGS" MINUTES="$MINUTES" SHIFT="$SHIFT" DEST="$DEST" SERVER_TYPE="${SERVER_TYPE:-cpx51}" bash scripts/lab/remote.sh
 fi
 echo
-echo "== per-config table: fit_old = alive+share+top3, score = land+rank+crown; live-game paired stats vs $NAME_CAND =="
-python3 scripts/lab/summarize.py "$DEST" $names
+echo "== per-config table: fit_old = alive+share+top3, score = land+rank+crown; live-game paired stats and SPRT vs $NAME_CAND =="
+python3 scripts/lab/summarize.py --sprt "$DEST" $names
 echo
-echo "== Bradley-Terry ladder (pairs by alive, tiles) =="
-python3 scripts/lab/summarize.py --ladder "$DEST" $names
+echo "== Bradley-Terry ladder (pairs by alive, tiles), SPRT of $NAME_CAND vs each version, transitivity =="
+python3 scripts/lab/summarize.py --sprt --ladder "$DEST" $names
