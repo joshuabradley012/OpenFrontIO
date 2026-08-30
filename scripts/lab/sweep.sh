@@ -11,6 +11,10 @@
 # worker box one shard of the same job list; the results directories are merged and aggregated locally),
 # RUNNER=node|vitest (default node; vitest = the old `npx vitest` path, ~2 s slower a game),
 # AGGREGATE=0 to skip aggregation (remote.sh aggregates after merging shards).
+# A config value {"__bot":"<tag>"} plays an extracted milestone bot instead of today's: the lab loads
+# .history/<tag>/src/core/execution/playbook (scripts/lab/history.sh, scripts/lab/versions/HISTORY.md) and
+# strips the key from the params, so one sweep can put several bot versions on the same batches/seeds
+# (node runner only; the vitest runner compiles with vite, not tsx).
 #
 # Common random numbers: a lab game is fully determined by (batch, spawn, SHIFT, SEED) — gameID "lab"+SEED
 # seeds the nations, tribes and the bot (tests/lab/playbook.lab.ts), so every config of one sweep meets the

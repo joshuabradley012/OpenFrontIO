@@ -507,6 +507,21 @@ strength is one axis; a candidate that beats its parent but loses to the
 grandparent is a rock-paper-scissors the ladder cannot show. None found in
 the dry-run data; check it on every real ladder.
 
+## Bot strength over time: `history.sh` / `history.py`
+
+How strong has the bot been at each milestone, measured with today's harness and
+score on one grid? `scripts/lab/versions/HISTORY.md` lists the milestone commits
+(tag, hash, what changed). `scripts/lab/history.sh` extracts each one's
+`src/core/execution/playbook/` into `.history/<tag>/` (gitignored) with the rest
+of the engine symlinked in, and type-checks it against today's engine. A sweep
+config `{"__bot":"<tag>"}` then plays that bot (tests/lab/playbook.lab.ts loads
+it via `BOT_DIR`), so one CONFIGS sweep puts every version on the same
+batches/seeds with `base` = today's bot; remote.sh rsyncs `.history/` to the
+boxes. `python3 scripts/lab/history.py <results dir>` prints games / alive /
+crowns / median tiles / score with bootstrap CIs and the paired delta vs base,
+writes `versions/<tag>.json` and draws `lab-out/history.svg`. The exact Hetzner
+command is in HISTORY.md.
+
 ## Clean up
 
 ```bash
