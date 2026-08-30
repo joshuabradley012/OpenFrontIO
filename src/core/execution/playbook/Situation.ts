@@ -181,6 +181,23 @@ export class SituationQueries {
     return true;
   }
 
+  /** `boatsNearest`: acrossWater for a candidate `d` tiles from our nearest shore. acrossWater is a depth-first fill
+   *  that gives up at `cap` tiles, so on a large landmass it wanders off and calls a tile fourteen tiles up our own
+   *  coast "across water". This one is breadth-first inside a manhattan radius of 2 × d + 20 around `t` (capped at
+   *  `cap` tiles): a land path to us that short is found, a longer one is a boat's job anyway. */
+  acrossWaterNear(t: TileRef, d: number, cap = 4000): boolean {
+    const me = this.ctx.me, mg = this.ctx.mg, radius = 2 * d + 20;
+    const seen = new Set<TileRef>([t]);
+    const q: TileRef[] = [t];
+    let i = 0;
+    while (i < q.length && seen.size < cap) {
+      const c = q[i++];
+      if (mg.owner(c) === me) return false;
+      for (const n of mg.neighbors(c)) { if (seen.has(n) || !mg.isLand(n) || mg.manhattanDist(n, t) > radius) continue; seen.add(n); q.push(n); }
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------- defence posts
   postFacing(r: Player): boolean {
     const rid = r.smallID();

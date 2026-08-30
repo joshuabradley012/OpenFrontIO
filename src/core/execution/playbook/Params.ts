@@ -70,6 +70,8 @@ export interface PlaybookParams {
   steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
   holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
   strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
+  boatsNearest: boolean; // every boat rule (seaExpansion, earlyBoat, huntBotsByBoat, seaInvasion) measures a candidate from the nearest of a sample of our ocean-shore tiles — where the engine launches from (SpatialQuery.closestShoreByWater) — instead of an arbitrary middle border tile; candidates are ranked value / max(1, d / 40) so a free shore 60 tiles away beats a richer target 200 away, and a shore across water may be as close as 10 tiles (was 30); default off until the 30-game Medium A/B
+  finishByBoat: boolean; // every 100 ticks from tick 1200: when the war target (or a rival we have a wave on) owns a piece no land attack of ours can reach (Military.pieces with no border tile beside ours) and that piece has an ocean shore, a boat of 2 × its troops × (unreachable / total tiles) + 2000 (at most 40 % of spendable) lands on that piece's shore nearest our coast; one per target, 600-tick cooldown; default off until the 30-game Medium A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -128,6 +130,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   steamrollCap: false,
   holdHumans: false,
   strictOneWar: false,
+  boatsNearest: false, // default off until the 30-game Medium A/B
+  finishByBoat: false, // default off until the 30-game Medium A/B
   utility: false, // default off until the 30-game Medium A/B
   campaigns: false, // default off until the 30-game Medium A/B
 };

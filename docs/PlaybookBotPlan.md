@@ -1056,3 +1056,68 @@ new one. Golden hash unchanged with the flag off.
 **A/B:** `CONFIGS='{"base":{},"x":{"campaigns":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 (and `{"utility":true,"campaigns":true}` for the pair — the review suggested
 #3 / #5 / #6 as one package).
+
+## Boats (`boatsNearest`, `finishByBoat`, 2026-08-29, branch `bot/boats`)
+
+Josh, from watching games: boats sail past a shore they could have taken
+first, and a war target that lives on across a strait is never finished. The
+cause in code: every boat rule measured a candidate from
+`shore[Math.floor(shore.length / 2)]` — an arbitrary middle tile of the border
+list, possibly on the far side of the empire — while the engine launches from
+the shore nearest the landing (`TransportShipUtils.bestShoreDeploymentSource` →
+`SpatialQuery.closestShoreByWater`); the free-shore scan skipped anything under
+30 tiles; and nothing looked at a war target's land beyond the front.
+
+**`boatsNearest`.** `Military.shoreSample()` is every k-th ocean-shore border
+tile (≤ 200, cached per tick) and `nearestShoreDist(t)` the minimum manhattan
+distance from it — the bot's estimate now matches what the engine will do.
+`seaExpansion`, `earlyBoat`, `huntBotsByBoat` and `seaInvasion` measure with it;
+the free-shore scans cover the sampled coast's bounding box (± 300 / ± 200)
+instead of a window around the middle tile, so a shore off either end of a
+long coast is seen at all. Ranking: every value is divided by
+`max(1, d / 40)` instead of the flat `− d / 2` (free shore 300, collapsed 600,
+weak 400, tribe 250, + 10 a city), so an unowned shore 60 tiles away (200)
+beats a collapsed player 200 tiles away (120) — the stepping stone first. The
+"d < 30" skip on a free shore drops to 10; because `acrossWater` is a
+depth-first fill that gives up at 4000 tiles and on a big landmass calls a
+tile fourteen tiles up our own coast "across water", the flagged branches use
+`SituationQueries.acrossWaterNear(t, d)` — breadth-first inside a radius of
+`2d + 20` — instead. Troop sizes are unchanged. Fires (one count per site per
+100 ticks) when the launched candidate is not the one the old ranking —
+middle tile, flat penalty, 30-tile floor, its own scan grid, its own
+`acrossWater` — would have launched at.
+
+**`finishByBoat`.** A rule every 100 ticks from tick 1200: for the current war
+target (hit inside 1800 ticks) and every non-bot rival one of our waves is on,
+`Military.unreachablePart(t)` = the 4-connected pieces of it
+(`Military.pieces`, exact from the border — the flood fill the brief asked
+for costs O(tiles)) with no border tile beside one of ours; AttackExecution
+only takes tiles adjacent to ours, so a land war never reaches those. When
+that part has an ocean shore, a boat goes from our nearest shore to its shore
+tile nearest our coast (≤ 600 tiles): `2 × its troops × (unreachable / its
+tiles) + 2000`, at most 40 % of the spendable, through `ctx.boat()`. One boat
+per target at a time (a transport still bound for it, or one launched inside
+600 ticks, holds the next). Logs `FINISH BY BOAT <name> <n> unreachable tiles
+of <total>, troops <t> spendable <s> → <sent> landing <d> tiles out`; fires on
+every launch.
+
+**Tests.** `tests/playbook/boats.test.ts` on the world test map at
+Bab-el-Mandeb (the 16 × 16 water test maps are too small for a boat rule):
+the early boat off sails 80 tiles from the middle shore tile while a free
+shore 32 tiles from our nearest shore exists, on it takes that one and the
+flag fires; the shore sample and the nearest distance; a target holding a
+piece beside us and a remnant across the strait — the remnant is the
+unreachable part with its shore, at tick 1200 the boat lands on it with the
+formula's troops (the 40 % cap binding) and the next pass holds; off no boat;
+no boat when every tile of the target borders us. Golden hash unchanged with
+both flags off; `MIN=3` africa transcript byte-identical but `botMs`/`gameMs`.
+
+**Smoke** (`MIN=8 SPAWN=africa DIFF=medium`, one game each): off rank 2,
+46.6k tiles, `botMs=657`; both on rank 1, 61.8k tiles, `botMs=729`,
+`fired=boatsNearest:31,finishByBoat:10`. Boat lines now carry the distance
+the engine will sail (`free shore (18 tiles)`, `collapsed Algeria … (18
+tiles)` where the old rule's picks read 60–200); ten `FINISH BY BOAT` lines,
+from a 2k boat at a 4-tile enclave to 288k at Sri Lanka's last 859 tiles
+across the strait.
+
+**A/B:** `CONFIGS='{"base":{},"near":{"boatsNearest":true},"finish":{"finishByBoat":true},"both":{"boatsNearest":true,"finishByBoat":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
