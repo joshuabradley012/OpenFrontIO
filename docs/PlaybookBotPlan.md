@@ -1722,3 +1722,11 @@ Lessons: (1) a 20-minute score is a screen, never a graduation — the same conf
 | boatsWaterPath | **63** | **0.032** | **harmful — flip back off** (removal: 50 % → 66 % wins) |
 
 Base wins 50 % of full games on this grid. Actions (pending Josh): revert the boatsWaterPath default; consider pruning annexWars/takeFallout/steamrollLevels/lapseToAttack for simplicity or re-testing at tuned constants.
+
+## Why we lose full games (2026-08-30, loss_analysis.py over rm1's 96 base games)
+
+Outcomes: 48 won · 37 alive-but-lost · 4 died · 7 hit the cap (6 as rank 1). Caveat: 13 file groups share one spawn (region labels collapsed onto the same spot) — 96 files = 79 unique games; dedupe the spawn slots before the next sweep.
+
+Loss clusters (41): **MIRVed down after leading — 19** (steamroll rule in 80 of 85 MIRVED-by lines; the bot's own `MIRV RISK steamroll` detector fires minutes earlier, then the game builds ~3 SAMs); **lost the endgame race at rank 2–3 — 13**; **plateaued behind a runaway — 5**; died 4. Losses peak at 33 min (wins at 61) holding 0.3 of peak; the 10-minute states of wins and losses are nearly identical — games are decided in the mid-game. Wins average 27 silos/97 SAMs vs 6.8/12 in losses. War efficiency is similar; the failure is growth stalling + MIRV exposure, plus no leader-contest behaviour (a rank-3 bot spends the last 5 minutes boating a 1,500-tile weakling while the leader closes to 80 %).
+
+Ranked proposals (each a default-off flag + full-game A/B): 1) `samOnRisk` — on `MIRV RISK steamroll`, divert gold to a SAM wall + counter-silos (touches ~half the losses); 2) `contestLeader` — rank ≤ 3 with a runaway leader → boats/nukes at the leader, not "weak X"; 3) `plateauBreak` — <5 % tile growth over 5 min while rank > 1 → forced cross-water expansion or war on the largest adjacent non-ally; 4) `warRoiCap` — abort wars beyond ~500 troops/tile realized; 5) `webDefense` — ally/post against a mutual-ally border web before 10:00. Script: scratchpad loss_analysis.py (re-run on every sweep).
