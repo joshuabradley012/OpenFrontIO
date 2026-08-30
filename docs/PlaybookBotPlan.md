@@ -16,8 +16,10 @@ Read this first if you are picking the rebuild up.
 - Branch `playbook-bot`, HEAD `bb03d7cd8`, nothing pushed. All code packages
   A1–C2 are merged; only C3 (the lab campaign) remains.
 - Bot: `src/core/execution/playbook/` — `PlaybookBotExecution.ts` (loop,
-  `send()`, rule table), `Situation.ts` (+ phase, `Rivals.ts`), `Military.ts`
-  (+ `Estimate.ts`), `Economy.ts` (+ `Spend.ts`), `Diplomacy.ts`, `Params.ts`.
+  `send()`, rule table), `Situation.ts` (+ phase, `Rivals.ts`), `Military.ts`,
+  `Economy.ts`, `Diplomacy.ts`, `Params.ts`. (`Estimate.ts` and `Spend.ts`
+  were deleted with their flags in 7cd2c9c56; last commit containing them:
+  95f4b634a.)
 - Tests: `npx vitest --dir tests tests/playbook --run` (golden included; the
   `--dir tests` matters — a bare path also matches copies under
   `.claude/worktrees/`). `npx tsc --noEmit` and `npm run lint` are clean.
@@ -30,6 +32,12 @@ Read this first if you are picking the rebuild up.
 `simWars`, `realRetreats`, `scoredSpend`, `bsrReserve`, `trustWars`,
 `nationAware`, `phaseGates`. `{}` is the exact pre-rebuild baseline (every
 flag-off transcript was proven byte-identical at merge time).
+*Update (C3 done):* `simWars`, `scoredSpend`, `bsrReserve` and `phaseGates`
+lost their A/Bs and were removed in 7cd2c9c56 (code, tests, `Estimate.ts`,
+`Spend.ts`; a default-config game was diff-identical before and after). The
+simWars/scoredSpend ideas live in git history — last commit with
+`Estimate.ts`/`Spend.ts` is 95f4b634a. Remaining flags: `realRetreats`,
+`trustWars`, `nationAware` (all default on, PROVISIONAL).
 
 **What to do next (C3)**
 1. One sweep, MINUTES=20, all in the same CONFIGS so games pair:
@@ -515,6 +523,9 @@ Findings and what was done about them; see "Scoring" above for the formulas.
    `trustWars`+`nationAware` are *undecided*; their defaults stay on as
    PROVISIONAL (bug fix with positive mean; positive mean with CI just
    above zero) until a ladder confirmation. `simWars` is a decisive loss.
+   The four losers (`simWars`, `scoredSpend`, `bsrReserve`, `phaseGates`)
+   were removed from the code in 7cd2c9c56; `Estimate.ts`/`Spend.ts` last
+   exist at 95f4b634a if either idea is picked up again.
 6. **Early stopping: no.** Over 390 games, Spearman(rank at t, final rank)
    = 0.27 / 0.48 / 0.56 / 0.58 / 0.74 at 5 / 8 / 10 / 12 / 15 min; only 43 of
    101 crowns held at 12:00 survive to 20:00. Games are decided late — do not

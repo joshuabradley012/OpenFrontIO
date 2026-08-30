@@ -131,14 +131,7 @@ export class PlaybookBotExecution implements Execution {
     this.sit.hold = this.sit.expiring.find((o) => o.type() === PlayerType.Nation && (this.p.nationAware ? this.q.rivals.couldAttackAtExpiry(o, troops).can : o.troops() > troops * 0.85)) ?? null;
     if (this.p.nationAware && t % 100 === 0) { const heur = this.sit.expiring.find((o) => o.type() === PlayerType.Nation && o.troops() > troops * 0.85) ?? null; if (heur !== this.sit.hold) this.ctx.fire("nationAware"); }
     this.q.enrichRivals(this.sit); // B2: per-rival view
-    if (this.p.bsrReserve) {
-      // C1: the reserve follows the border threat (SituationQueries.reserveFactor documents the curve)
-      const factor = SituationQueries.reserveFactor(this.sit);
-      if (t % 100 === 0 && Math.abs(factor - 1) > 0.05) this.ctx.fire("bsrReserve");
-      this.sit.reserve = troops * this.p.reserveShare * factor;
-      this.sit.spendable = Math.max(0, troops - this.sit.reserve);
-    }
-    this.q.enrichPhase(this.sit); // B2: phase (reads spendable, so after the reserve)
+    this.q.enrichPhase(this.sit); // B2: phase (reads spendable)
   }
   /** The one place troops leave home. Never below the reserve; returns what was actually sent (0 = nothing). */
   private send(targetID: string | null, n: number, why: string, min = 500, capFloor = 0): number {
