@@ -58,6 +58,19 @@ export class SituationQueries {
     if (affordable || sit.troops >= sit.cap * p.fightAbove) return "war";
     return "consolidate";
   }
+  /** `takeFallout`: unowned, irradiated land tiles next to our border (every 3rd border tile sampled, refreshed every 100 ticks). */
+  private falloutCache = { tick: -1e9, n: 0 };
+  falloutBordering(tick: number): number {
+    if (tick - this.falloutCache.tick < 100) return this.falloutCache.n;
+    const mg = this.ctx.mg;
+    let n = 0, i = 0;
+    for (const t of this.ctx.me.borderTiles()) {
+      if ((i++ % 3) !== 0) continue;
+      for (const nb of mg.neighbors(t)) if (mg.isLand(nb) && !mg.hasOwner(nb) && mg.hasFallout(nb)) { n++; break; }
+    }
+    this.falloutCache = { tick, n };
+    return n;
+  }
   /** Unowned, fallout-free land on our own landmass (flood fill capped at 4000 tiles, refreshed every 100 ticks). */
   freeLandReachable(tick: number): boolean {
     if (tick - this.freeLandCache.tick < 100) return this.freeLandCache.ok;

@@ -478,10 +478,19 @@ export class Military {
     const o = this.expandOption();
     if (o !== null) this.actExpand(o.troops);
   }
+  private falloutLogged = -1e9;
   /** The expand click this pass would make (decide half of expand()). */
   expandOption(): { troops: number; contested: boolean } | null {
     const { rivals, wilderness } = this.q.neighbours();
-    if (!wilderness) return null;
+    if (!wilderness) {
+      // `takeFallout`: nearby() hides irradiated free land, so this is the only path that ever expands into it
+      if (!this.ctx.p.takeFallout || this.ctx.sit.troops < this.q.cap() * this.ctx.p.fightAbove) return null;
+      const n = this.q.falloutBordering(this.ctx.mg.ticks());
+      if (n === 0) return null;
+      this.lim.fire("takeFallout", "expand");
+      if (this.ctx.mg.ticks() - this.falloutLogged >= 600) { this.falloutLogged = this.ctx.mg.ticks(); this.ctx.log(`t${this.ctx.mg.ticks()} FALLOUT expand: ~${n * 3} irradiated tiles on our border, troops at ${Math.round(100 * this.ctx.sit.capShare)} % of cap`); }
+      return { troops: Math.floor(this.ctx.sit.troops * this.ctx.p.expandContested), contested: true };
+    }
     const around = [...this.ctx.sit.rivals, ...this.ctx.sit.bots, ...this.ctx.sit.friends];
     const ringing = around.some((r) => this.q.annexable(r));
     // `annexWars`: the click share follows the new definition; count it when the old one would have said otherwise

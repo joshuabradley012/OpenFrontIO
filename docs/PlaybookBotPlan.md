@@ -1382,3 +1382,22 @@ alone is a clear win and `boatsAfterCoast` a clear loss. BFS cost: the flag adds
 `WATER_CACHE_TICKS` 200 would halve it if that matters.
 
 **A/B:** `CONFIGS='{"base":{},"near":{"boatsNearest":true},"wp":{"boatsNearest":true,"boatsWaterPath":true},"coast":{"boatsNearest":true,"boatsAfterCoast":true},"all":{"boatsNearest":true,"boatsWaterPath":true,"boatsAfterCoast":true,"finishByBoat":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
+
+## Irradiated land (`takeFallout`, 2026-08-30)
+
+Josh: "the bot never takes irradiated land". Cause: `PlayerImpl.nearby()`
+(line 532) hides unowned fallout tiles, so a bot whose only free land is
+irradiated has `wilderness = false` and `expand()` returns before sending a
+click. A TerraNullius attack does take those tiles — `AttackExecution` never
+looks at fallout; `attackLogic` multiplies the loss by `falloutDefenseModifier`
+(5 → 2.5 as the map's fallout share rises) and `GameImpl.conquer` clears the
+fallout on capture.
+
+With the flag on, `Military.expandOption()` sends the contested-share click
+whenever `SituationQueries.falloutBordering()` (every 3rd border tile, cached
+100 ticks) finds unowned fallout next to us and troops are ≥ fightAbove × cap —
+idle troops cost nothing, and irradiated land at 2.5–5× the free-land price is
+still cheaper than most wars per tile. Logs `FALLOUT expand: ~N irradiated
+tiles …` every 600 ticks; fires per click. Tests: `tests/playbook/takeFallout.test.ts`.
+
+A/B (removal form once on by default): `CONFIGS='{"base":{},"nofo":{"takeFallout":false}}'`.
