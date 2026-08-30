@@ -654,3 +654,63 @@ units either way; keep the simpler code path (off) and record it as
 "no measurable effect at n=…". Because `trustWars`/`nationAware` fire in
 only a third of the games, expect them to need the mirrored 120 and read
 `n_live`; `realRetreats` fires everywhere and should decide by 36–60.
+## #4 — Calibrating the estimator, `simWars` and `hystRetreats` (2026-08-29, branch bot/estimator)
+
+`Estimate.ts` is back (a replay of AttackExecution's per-tile loop, within
+15 % of the engine on a single attack), now with calibration inputs:
+`lossScale` (× attacker loss per tile), `speedScale` (× tiles per tick) and
+`extraDefenderTroops` (the target's allies' possible pile-in). The 7W-23L
+loss of the original `simWars` was the model's blind spots (merges, allies,
+mid-war posts, the target's other wars), not the replay — so the constants
+are fitted from the games the lab already plays.
+
+**Calibration log (always on, no flag, log lines only).** Every war wave and
+every tribe's first click writes `EST <target> wave=n troops= tilesEst=
+lossEst= ticksEst= wins= class=nation|human|bot others=`; when the attack has
+left `outgoingAttacks()` (won, died, or retreated) the bot writes
+`ACT <target> wave=n tiles= ours= loss= ticks= sent= left= class= end=`.
+`tiles` is the target's tile loss over the wave (confounded by its other
+attackers, hence `others=`), `ours` our net tile change, `loss` = sent − the
+last troop count seen on the attack (`end=fast`: over before the first
+10-tick look, loss unknown and logged as 0; calibrate.py skips those). Tribe
+follow-up clicks add to `sent` of the open record. A game's decisions are unchanged (golden material identical
+minus the EST/ACT lines; the hash was regenerated for them).
+
+**How to calibrate**
+
+1. Sweep with the base config (any results dir with `log:` lines works —
+   the transcripts of every A/B from now on carry the pairs):
+   `CONFIGS='{"base":{}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+2. `python3 scripts/lab/calibrate.py lab-out/<dir>` prints, per defender
+   class, the log-ratio least-squares `lossScale` / `speedScale`, their
+   medians and residual spread, and a JSON blob with the Params values
+   (`--selftest` checks the fit on a synthetic fixture).
+3. Paste `estLossScaleNation` / `estLossScaleHuman` / `estLossScaleBot` /
+   `estSpeedScale` into `DEFAULT_PLAYBOOK` (they default to 1.0 = the raw
+   replay) or into the candidate's CONFIGS entry.
+4. A/B the two consumers on the calibrated numbers:
+   `CONFIGS='{"base":{},"sim":{"simWars":true},"hyst":{"hystRetreats":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+**`simWars` (default off):** the B1 target/size choice — smallest 1k-step
+wave whose estimate wins with 20 % of itself to spare (bisection), best
+tiles-per-troop-lost candidate, with the calibrated scales, a running wave
+on the target counted as part of the estimate (the engine merges them), and
+— with `trustWars` on — the target's allies' `nationWouldSend` added to its
+army. Fires when it picks a different target or size (±1k) than the scorer,
+or nothing where the scorer would have sent. The free-land gate (20 troops a
+tile while wilderness remains, 60 after) is unchanged from B1 and is the
+first thing to revisit if the calibrated A/B still loses.
+
+**`hystRetreats` (default off):** every 100 ticks a running war is judged
+'continue' (estimate over 600 ticks: survivors × 0.75 + tiles × 60) against
+'retreat now' (troops × 0.75); continue must win by
+`0.1 + 0.2 × clamp(maxBsr − 1, 0, 2)` over our other borders' largest
+border-security ratio, and lose two checks in a row before the wave is
+recalled. A wave under `retreatBelowRatio` × the target's troops whose
+estimate cannot win is lost outright and comes home at the first check.
+`retreatBelowRatio` (0.4, in the CMA-ES set) was read nowhere before this.
+Fires when the verdict differs from the literal 20 % / 70 % thresholds.
+Works with `realRetreats` (the same `retreat()`).
+
+Tests: `estimate.test.ts` (restored + scales), `simWars.test.ts`,
+`hystRetreats.test.ts`, `calibration.test.ts`.
