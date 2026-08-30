@@ -260,14 +260,18 @@ export class Military {
   /** Playbook: boats are the answer to a closed land border. Whenever a boat is free and either the land front is
    *  blocked or troops sit above 40 % of cap, send one to the best target across water: free shore first, then a
    *  neighbour we (or a MIRV) have just collapsed, then a weak player with no posts at 3×, then a tribe at 2×. */
-  seaExpansion(): void {
+  /** `forced` (plateauBreak): growth has stalled, so a farther shore beats sitting still — the capShare gates are
+   *  skipped and every distance cap is 1.5×; the boatsNearest/boatsWaterPath liveness counts are muted (a forced
+   *  pass is not the flag-off comparison those measure). Returns true when a boat launched. */
+  seaExpansion(forced = false): boolean {
     const me = this.ctx.me;
-    if (this.ctx.sit.boats >= this.ctx.mg.config().boatMaxNumber()) return;
-    if (this.ctx.mg.ticks() - this.lastSeaTick < 100) return;
-    if (this.ctx.sit.wilderness && this.ctx.sit.capShare < 0.4) return; // land first while it is free and we are small
-    if (this.ctx.sit.incoming.length > 0 && this.ctx.sit.capShare < 0.6) return; // under attack: the army stays
+    if (this.ctx.sit.boats >= this.ctx.mg.config().boatMaxNumber()) return false;
+    if (this.ctx.mg.ticks() - this.lastSeaTick < 100) return false;
+    if (!forced && this.ctx.sit.wilderness && this.ctx.sit.capShare < 0.4) return false; // land first while it is free and we are small
+    if (!forced && this.ctx.sit.incoming.length > 0 && this.ctx.sit.capShare < 0.6) return false; // under attack: the army stays
+    const relax = forced ? 1.5 : 1;
     const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isOceanShore(t));
-    if (shore.length === 0) return;
+    if (shore.length === 0) return false;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
     const distOld = (t: TileRef) => Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
@@ -287,7 +291,7 @@ export class Military {
     const cands: { tile: TileRef; troops: number; score: number; dm: number; slScore: number; slOk: boolean; oldScore: number; oldOk: boolean; what: string }[] = [];
     // (a) free shore across water: 15 % of home, worth the most per troop
     let seen = 0;
-    const box = this.scanBox(sample, fx, fy, 300);
+    const box = this.scanBox(sample, fx, fy, 300 * relax);
     for (let y = box.y0; y <= box.y1; y += 8) for (let x = box.x0; x <= box.x1; x += 8) {
       if (!this.ctx.mg.isValidCoord(x, y)) continue;
       const t = this.ctx.mg.ref(x, y);
@@ -295,9 +299,9 @@ export class Military {
       const dOld = Math.abs(x - fx) + Math.abs(y - fy);
       const dm = nearest ? dist(t) : dOld;
       if (dm < (nearest ? 10 : 30) || seen++ > 400) continue;
-      const slOk = !(nearest && dm > 300);
+      const slOk = !(nearest && dm > 300 * relax);
       const d = wp ? wp.len(t) : dm;
-      const capped = wp ? d > BOAT_MAX_PATH.sea : !slOk;
+      const capped = wp ? d > BOAT_MAX_PATH.sea * relax : !slOk;
       if (capped && !slOk) continue;
       const slScore = nearest ? 300 / Math.max(1, dm / 40) : 300 - dm;
       cands.push({ tile: t, troops: Math.max(5000, Math.floor(this.ctx.sit.troops * 0.15)), score: capped ? -1e9 : nearest ? 300 / Math.max(1, d / 40) : 300 - d, dm, slScore, slOk, oldScore: 300 - dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 300 && Math.abs(y - fy) <= 300 && (x - fx) % 8 === 0 && (y - fy) % 8 === 0, what: "free shore" }); // oldOk: on the old scan's grid and inside its window
@@ -327,7 +331,7 @@ export class Military {
       const oldScore = value - oldD / 2 + (o.units(UnitType.City).length * 10);
       const slOk = slT !== null && slD <= 500 && !(late && weak && slD > 150 && o.troops() >= this.ctx.sit.troops * 0.25);
       const slScore = nearest ? (value + o.units(UnitType.City).length * 10) / Math.max(1, slD / 40) : value - slD / 2 + (o.units(UnitType.City).length * 10);
-      const capped = bestT === null || bestD > (wp ? BOAT_MAX_PATH.sea : 500) || (late && weak && bestD > 150 && o.troops() >= this.ctx.sit.troops * 0.25); // the late-game jump is a short one
+      const capped = bestT === null || bestD > (wp ? BOAT_MAX_PATH.sea : 500) * relax || (late && weak && bestD > 150 * relax && o.troops() >= this.ctx.sit.troops * 0.25); // the late-game jump is a short one
       if (capped && !(wp && slOk)) continue;
       const score = capped ? -1e9 : nearest ? (value + o.units(UnitType.City).length * 10) / Math.max(1, bestD / 40) : oldScore;
       const tile = capped ? slT! : bestT!;
@@ -345,15 +349,70 @@ export class Military {
       const sent = this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}${wp ? ` (${wp.len(c.tile)} tiles by water)` : nearest ? ` (${dist(c.tile)} tiles)` : ""}`);
       if (sent === 0) continue;
       this.lastSeaTick = this.ctx.mg.ticks();
-      if (nearest) {
+      if (nearest && !forced) {
         // liveness: what the old ranking (middle tile, flat − d/2, 30-tile floor) would have launched at
         const old = cands.filter((o) => o.oldOk).sort((a, b) => b.oldScore - a.oldScore).slice(0, 10).find((o) => o.troops <= this.ctx.sit.spendable + sent && this.q.acrossWater(o.tile));
         if (old === undefined || old.tile !== c.tile) this.lim.fire("boatsNearest", "sea");
       }
-      if (wp) { const sl = slPick(sent); if (sl === undefined || sl.tile !== c.tile) this.lim.fire("boatsWaterPath", "sea"); }
-      return;
+      if (wp && !forced) { const sl = slPick(sent); if (sl === undefined || sl.tile !== c.tile) this.lim.fire("boatsWaterPath", "sea"); }
+      return true;
     }
-    if (wp) { const sl = slPick(0); if (sl !== undefined && sl.score <= -1e9) this.lim.fire("boatsWaterPath", "sea"); } // refused by the cap
+    if (wp && !forced) { const sl = slPick(0); if (sl !== undefined && sl.score <= -1e9) this.lim.fire("boatsWaterPath", "sea"); } // refused by the cap
+    return false;
+  }
+
+  // ---------------------------------------------------------------- plateauBreak: growth stalled behind a leader
+  private plateauBuf: { tick: number; tiles: number }[] = [];
+  private plateauEscAt = -1e9;
+  private plateauLogAt = -1e9;
+  /** `plateauBreak`: warPick/warScorer relax the affordability gate and the ratio floor while this is set. */
+  private plateauForce = false;
+  /** `plateauBreak` (rm1 loss analysis: 40 of 41 losses stop growing by minute 33; wins keep growing to 61): our
+   *  tile count, sampled every 300 ticks. A plateau = rank > 1 among non-bots, tiles grew < plateauGrowth over
+   *  plateauWindow ticks, no outgoing non-bot attack — and never in hold mode (the finish rule owns that posture).
+   *  Escalated once per window, in order: (1) a forced sea expansion (capShare gates off, 1.5× the distance caps);
+   *  (2) a forced war on the largest adjacent non-ally through warPick/actWar — every invariant (whole-or-nothing,
+   *  reserve, capFloor 0.3, the posts / thin-empire / sticky gates) stays, only the affordability gate and the
+   *  ratio floor (1× instead of fightRatio) relax; (3) boxed in by allies: the weakest adjacent alliance lapses at
+   *  its next expiry (returned for Diplomacy.planLapse). The rule runs AFTER wars and sea expansion in the tick's
+   *  table, so an action taken here is one the plain rules just declined — it fires unconditionally. */
+  plateauRule(): Player | null {
+    if (!this.ctx.p.plateauBreak) return null;
+    const me = this.ctx.me, now = this.ctx.mg.ticks(), sit = this.ctx.sit;
+    const tiles = me.numTilesOwned(), w = this.ctx.p.plateauWindow;
+    const buf = this.plateauBuf;
+    buf.push({ tick: now, tiles });
+    while (buf.length > 0 && buf[0].tick < now - w) buf.shift();
+    if (now - buf[0].tick < w) return null; // the window is not full yet
+    const grew = tiles / Math.max(1, buf[0].tiles) - 1;
+    if (grew >= this.ctx.p.plateauGrowth) return null; // growing: no plateau
+    if (sit.mode === "hold") return null; // holding under the denial line on purpose — never fight the finish rule
+    let rank = 1;
+    for (const o of this.ctx.mg.players()) if (o !== me && o.isAlive() && o.type() !== PlayerType.Bot && o.numTilesOwned() > tiles) rank++;
+    if (rank <= 1) return null; // the leader may sit still
+    if (sit.outgoing.some((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot) || now - this.lastWarTick < 300) return null; // already at war (or one opened this pass, not yet in outgoing)
+    if (now - this.plateauEscAt < w) return null; // one escalation per window
+    const tag = `PLATEAU t${now} tiles ${buf[0].tiles}→${tiles} (${(grew * 100).toFixed(1)} % in ${w} ticks) rank ${rank}`;
+    // (1) a reachable free or weak shore across water
+    if (this.seaExpansion(true)) { this.plateauEscAt = now; this.ctx.fire("plateauBreak"); this.ctx.log(`${tag}: forced sea expansion`); return null; }
+    // (2) the largest adjacent non-ally the war gates accept, at the affordable ratio even below fightAbove
+    this.plateauForce = true;
+    try {
+      const pick = this.warPick();
+      if (pick !== null && this.actWar(pick)) { this.plateauEscAt = now; this.ctx.fire("plateauBreak"); this.ctx.log(`${tag}: forced war on ${pick.r.name()} (${Math.round(pick.want / 1000)}k)`); return null; }
+    } finally { this.plateauForce = false; }
+    // (3) fully boxed in by allies: the weakest adjacent alliance lapses at its next expiry
+    if (sit.rivals.length === 0) {
+      let weakest: Player | null = null;
+      for (const f of sit.friends) { if (!me.allianceWith(f)) continue; if (weakest === null || f.troops() < weakest.troops()) weakest = f; }
+      if (weakest !== null && weakest !== this.plannedTarget()) {
+        this.plateauEscAt = now; this.ctx.fire("plateauBreak");
+        this.ctx.log(`${tag}: boxed in by allies — the alliance with ${weakest.name()} lapses at its expiry`);
+        return weakest;
+      }
+    }
+    if (now - this.plateauLogAt >= w) { this.plateauLogAt = now; this.ctx.log(`${tag}: no escalation available`); }
+    return null;
   }
 
   // ---------------------------------------------------------------- MIRV and the finish
@@ -690,6 +749,7 @@ export class Military {
   private warPick(): WarPick | null {
     const me = this.ctx.me;
     const cap = this.q.cap();
+    const forced = this.plateauForce; // `plateauBreak`: relax the affordability gate and the ratio floor for this pick
     const nb = this.q.neighbours();
     for (const r of nb.rivals) this.collapsed(r);
     // `markTargets`: a running war is re-marked as soon as the cooldown allows (canTarget), so the allies keep piling on
@@ -707,7 +767,7 @@ export class Military {
     const affordableAt = (r: Player) => r.troops() * (this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : this.ctx.p.fightRatio) + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare;
     const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
     if (affordable && !nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) this.lim.fire("drainedNations", "affordable");
-    if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return null; // a 1.67× push that keeps home healthy is always taken
+    if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove && !forced) return null; // a 1.67× push that keeps home healthy is always taken
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
     const nonBot = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
@@ -760,7 +820,7 @@ export class Military {
       });
     }
     if (candidates.length === 0) return null;
-    const { score, isOpp, wantFor, richer, yieldBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
+    const { score, isOpp, wantFor, richer, yieldBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom, forced, forced);
     let best: Player | null = null, bestS = 0, best0: Player | null = null, bestS0 = 0;
     const alts: WarPick["alts"] = [];
     for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } const sc0 = sc - yieldBonus(r); if (sc0 > bestS0) { bestS0 = sc0; best0 = r; } }
@@ -769,6 +829,9 @@ export class Military {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
       return null;
     }
+    // `plateauBreak` (forced): the escalation goes at the LARGEST adjacent non-ally the gates accept, not the
+    // scorer's favourite — the plateau is about contesting land, and the big neighbour has the most of it
+    if (forced && alts.length > 0) best = alts.reduce((a, x) => (x.r.numTilesOwned() > a.r.numTilesOwned() ? x : a)).r;
     const b = best;
     alts.sort((x, y) => (x.r === b ? -1 : y.r === b ? 1 : y.score - x.score));
     const bomb = richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100;
@@ -776,7 +839,7 @@ export class Military {
   }
   /** The scorer half of warPick, shared with wouldTarget(): the gates on ratio / posts / density / size and every
    *  bonus. `quiet` skips the flag counters (a what-if question, not a decision). */
-  private warScorer(gapOwner: Player | null, threatHere: Player | null, annex: Set<Player>, extra = false, extraRoom = Infinity, quiet = false) {
+  private warScorer(gapOwner: Player | null, threatHere: Player | null, annex: Set<Player>, extra = false, extraRoom = Infinity, quiet = false, forced = false) {
     const me = this.ctx.me, cap = this.q.cap();
     const atCap = me.troops() >= cap * 0.95;
     const endgame = onTheClock(this.ctx.p, this.ctx.mg.ticks()) || this.ctx.sit.mode === "push"; // 25:00 (clockTicks − 3000) or the push — land now is worth more than troops later
@@ -787,7 +850,9 @@ export class Military {
     // At cap every troop above the line is wasted growth, so commit more and accept a thinner edge.
     // `multiWar`: an extra war is sized from what is left this pass, inside the army-wide share
     const maxSend = extra ? Math.min(extraRoom, Math.floor(this.ctx.sit.troops * (atCap || endgame ? 0.7 : this.ctx.p.fightMaxShare))) : Math.floor(me.troops() * (atCap || endgame ? 0.7 : this.ctx.p.fightMaxShare));
-    const minRatio = atCap || endgame ? 1.2 : this.ctx.p.fightRatio;
+    // `plateauBreak` (forced): the affordable ratio is enough — 1× is the lowest the gates ever accept (the fair
+    // fight at cap); the posts (1.5×) and thin-empire (3×) gates below still stand
+    const minRatio = forced ? 1 : atCap || endgame ? 1.2 : this.ctx.p.fightRatio;
     const richer = (r: Player) => this.q.cap() >= this.ctx.mg.config().maxTroops(r) * 2 && this.ctx.sit.gold >= 1_000_000n; // we replace losses, they cannot
     const attackingUs = new Set(me.incomingAttacks().map((a) => a.attacker()));
     // `retaliateAware`: the smaller attacker is invisible to `retaliate`; a 1.2× wave that stays under the bigger one
