@@ -25,6 +25,7 @@ import { BotContext, FireLimiter } from "./Context";
 import { Diplomacy } from "./Diplomacy";
 import { Economy } from "./Economy";
 import { Military } from "./Military";
+import { MirvRisk } from "./MirvRisk";
 import { DEFAULT_PLAYBOOK, PlaybookParams } from "./Params";
 import { Situation, SituationQueries } from "./Situation";
 
@@ -52,10 +53,15 @@ export class PlaybookBotExecution implements Execution {
   get bombs(): number {
     return this.military.bombs;
   }
+  /** Enemy MIRVs aimed at our land (MirvRisk, always on). */
+  get mirvsTaken(): number {
+    return this.risk.mirvsTaken;
+  }
 
   private ctx: BotContext;
   private lim: FireLimiter;
   private q: SituationQueries;
+  private risk: MirvRisk;
   private military: Military;
   private economy: Economy;
   private diplomacy: Diplomacy;
@@ -81,8 +87,9 @@ export class PlaybookBotExecution implements Execution {
     };
     this.lim = new FireLimiter(this.ctx);
     this.q = new SituationQueries(this.ctx);
-    this.military = new Military(this.ctx, this.q, () => this.diplomacy.plannedTarget);
-    this.economy = new Economy(this.ctx, this.q, this.military);
+    this.risk = new MirvRisk(this.ctx);
+    this.military = new Military(this.ctx, this.q, () => this.diplomacy.plannedTarget, this.risk);
+    this.economy = new Economy(this.ctx, this.q, this.military, this.risk);
     this.diplomacy = new Diplomacy(this.ctx, this.q, this.military, this.economy);
   }
 
@@ -252,6 +259,9 @@ export class PlaybookBotExecution implements Execution {
     { name: "finish by boat", every: 100, run: () => { if (this.p.finishByBoat && this.sit.tick >= 1200) this.military.finishByBoat(); } }, // `finishByBoat`: the remnant a land war cannot reach
     { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick, this.economy.spentThisPass); } },
     { name: "mirv", every: 100, run: () => this.military.maybeMIRV() },
+    // always-on diagnostics: the nations' MIRV rules against us (logged on change) and every enemy MIRV aimed at our land
+    { name: "mirv risk", every: 100, run: () => this.risk.check() },
+    { name: "mirved", every: 10, run: () => this.risk.scan() },
     { name: "prune", every: 300, run: () => { this.military.prune(); this.q.prune(); } }, // the per-player maps would otherwise grow for the whole game
   ];
 

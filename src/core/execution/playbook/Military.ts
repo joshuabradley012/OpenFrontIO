@@ -9,6 +9,7 @@ import { TargetPlayerExecution } from "../TargetPlayerExecution";
 import { calculateTerritoryCenter } from "../Util";
 import { BotContext, FireLimiter } from "./Context";
 import { AttackEstimate, EstimateOptions, estimateAttack } from "./Estimate";
+import { MirvRisk } from "./MirvRisk";
 import { SituationQueries } from "./Situation";
 import { clamp, compensate, describeOption, linear, logistic, Option, rankOptions } from "./Utility";
 
@@ -87,6 +88,7 @@ export class Military {
     private ctx: BotContext,
     private q: SituationQueries,
     private plannedTarget: () => Player | null, // Diplomacy.plannedTarget
+    private risk: MirvRisk = new MirvRisk(ctx), // the nations' MIRV rules against us (`nationMirvAware` guards)
   ) {
     this.lim = new FireLimiter(ctx);
   }
@@ -353,6 +355,8 @@ export class Military {
 
   // ---------------------------------------------------------------- MIRV and the finish
   private lastMirvTick = -1e9;
+  private lastCrownHeld = -1e9;
+  private lastGuardLog = new Map<string, number>();
   private lastWarTick = -1e9;
   private strictFired = -1e9;
   private bombOutOfRange_ = 0;
@@ -374,7 +378,24 @@ export class Military {
     if (!target && this.ctx.mg.ticks() >= 12000) {
       const ranked = this.ctx.mg.players().filter((p) => p.isAlive() && p.type() !== PlayerType.Bot).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
       const myRank = ranked.indexOf(me) + 1;
-      if (myRank <= 3) { const t = others.filter((p) => p.numTilesOwned() > me.numTilesOwned() * 0.8).sort((a, b) => b.numTilesOwned() - a.numTilesOwned())[0]; if (t) { target = t; why = `crown (we are #${myRank})`; } }
+      if (myRank <= 3) {
+        const cands = others.filter((p) => p.numTilesOwned() > me.numTilesOwned() * 0.8).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
+        let t: Player | undefined = cands[0];
+        if (t !== undefined && this.ctx.p.nationMirvAware) {
+          // `nationMirvAware` (1): a nation with a silo and the MIRV price answers our MIRV with its own (NationMIRVBehavior's
+          // counter rule; 5 of the 6 lab launches were crown MIRVs answered this way) — the crown MIRV goes only at a
+          // target that cannot counter, else it is held
+          const safe = cands.find((p) => !this.risk.canCounter(p));
+          if (safe === undefined) {
+            this.lim.fire("nationMirvAware", "crown", 600);
+            if (this.ctx.mg.ticks() - this.lastCrownHeld >= 600) { this.lastCrownHeld = this.ctx.mg.ticks(); this.ctx.log(`t${this.ctx.mg.ticks()} MIRV held: ${t.name()} can counter`); }
+            return;
+          }
+          if (safe !== t) this.lim.fire("nationMirvAware", "crown", 600);
+          t = safe;
+        }
+        if (t !== undefined) { target = t; why = `crown (we are #${myRank})`; }
+      }
     }
     if (!target) return;
     const center = calculateTerritoryCenter(this.ctx.mg, target);
@@ -766,12 +787,24 @@ export class Military {
     const relationBonus = (r: Player) => { if (!this.ctx.p.relationAware) return 0; const rel = this.ctx.sit.rival.get(r)?.relation ?? null; const b = rel === Relation.Friendly ? 2 : rel === Relation.Neutral ? 0.5 : 0; if (b !== 0 && !quiet) this.lim.fire("relationAware", "score"); return b; };
     // `warYield`: a tile that will cost few troops is worth up to +4 (zero from yieldMaxTroopsPerTile up)
     const yieldBonus = (r: Player) => this.ctx.p.warYield ? 4 * clamp(1 - this.expectedCost(r) / this.ctx.p.yieldMaxTroopsPerTile, 0, 1) : 0;
+    // `nationMirvAware`: (3) the denial guard — in hold mode (or push with a threat left) a war whose tiles would carry
+    // our share to the denial line − 0.01 is refused unless the target is the last MIRV-capable rival (taking it ends
+    // the hold); (2c) the steamroll guard — while a nation can fire, a target whose city units would carry us over the
+    // steamroll line (it leaves the ranking, its cities join ours) is refused unless it is the only MIRV-capable rival
+    // or an opportunity (collapsed / gap / threatHere / annex, returned above it)
+    const aware = this.ctx.p.nationMirvAware;
+    const denialGuard = aware && (this.ctx.sit.mode === "hold" || (this.ctx.sit.mode === "push" && this.ctx.sit.threats.length > 0));
+    const steamrollGuard = aware && this.risk.armed(); // a nation can fire or is within half the price of it
+    const lastThreat = (r: Player) => this.ctx.sit.threats.length === 1 && this.ctx.sit.threats[0] === r;
+    const guard = (r: Player, site: string, line: string): number => { if (!quiet) { this.lim.fire("nationMirvAware", site); const now = this.ctx.mg.ticks(); if (now - (this.lastGuardLog.get(`${site}/${r.id()}`) ?? -1e9) >= 600) { this.lastGuardLog.set(`${site}/${r.id()}`, now); this.ctx.log(`t${now} no war on ${r.name()}: ${line}`); } } return -1; };
     const score = (r: Player) => {
       const ratio = maxSend / Math.max(1, r.troops());
+      if (denialGuard && !lastThreat(r)) { const d = this.risk.denial(r.numTilesOwned()); if (d.share >= d.threshold - 0.01) return guard(r, "denial", `its ${r.numTilesOwned()} tiles would carry our share to ${(d.share * 100).toFixed(1)} % (denial at ${(d.threshold * 100).toFixed(0)} %)`); }
       if (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) return ratio >= 1.5 ? 20 + ratio : -1; // bombed: go now at 1.5×, posts are gone
       if (r === gapOwner) return ratio >= 1.2 ? 30 + ratio : -1; // they are cutting our land in two: reconnect before the piece is handed over
       if (r === threatHere) return ratio >= 1.5 ? 25 + ratio : -1; // a MIRV-capable rival next door during the hold
       if (annex.has(r)) return ratio >= 1.2 ? 25 + ratio : -1; // `annexWars`: encircled — we come from most of its border, it cannot be reinforced
+      if (steamrollGuard && !lastThreat(r)) { const s = this.risk.steamroll(r.unitCount(UnitType.City), r); if (s.over) return guard(r, "steamroll", `its ${r.unitCount(UnitType.City)} cities would carry us over the steamroll line (${s.units} vs ${s.threshold})`); }
       if (this.drained(r)) { if (!quiet) this.lim.fire("drainedNations", "score"); return ratio >= this.ctx.p.drainRatio ? 18 + ratio : -1; } // under its reserve ratio: it cannot answer until it regrows
       if (this.ctx.p.warYield && this.ctx.mg.ticks() - (this.yieldRetreatAt.get(r) ?? -1e9) < YIELD_COOLDOWN) return -1; // `warYield`: its tiles were too dear a minute ago
       const shadowed = shadow(r);
