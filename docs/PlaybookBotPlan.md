@@ -1887,3 +1887,17 @@ rules declined that same tick — it logs `PLATEAU t… tiles a→b (x % in w ti
 
 A/B (judge on full games — the plateau is a full-game failure mode):
 `CONFIGS='{"base":{},"plat":{"plateauBreak":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+## `fix1` — the five loss-analysis flags, full games (2026-08-30, `lab-out/fix1`)
+
+120 mirrored full games per config on 553568ce4 (5× cpx62 IPv6). Note the base now wins **65 %** (78/120) — up from rm1's 50 % after the boatsWaterPath revert and the review-fix pass; the loss clusters these flags target are already rarer.
+
+| flag | wins vs base 78 | McNemar p | SPRT (δ 0.10) |
+|---|---|---|---|
+| contestLeader | 81 | 0.73 | CONTINUE +0.03 |
+| plateauBreak | 80 | 0.88 | CONTINUE +0.05 (led +0.24 at 18 pairs, faded) |
+| webDefense | 78 (1 live pair in 120) | 1.00 | REJECT — never fires |
+| samOnRisk | 76 | 0.87 | CONTINUE −0.06 |
+| warRoiCap | 70 | 0.33 | CONTINUE −0.16 |
+
+Verdict: none decisive at default constants; contestLeader/plateauBreak lean positive, warRoiCap leans harmful (warRoiMax 500 likely too aggressive), webDefense needs a rarer-situation test or deletion. Next: append the five flags' constants to specs/wins.json and let the full-game CMA (flags on) settle them together, per the ab1 lesson.
