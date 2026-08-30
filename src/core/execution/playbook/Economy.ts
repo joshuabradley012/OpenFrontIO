@@ -1,6 +1,6 @@
 // Economy: gold spending (posts, SAMs, cities, ports, rail, silos, warships) and the tile pickers behind it.
 
-import { Player, PlayerType, Unit, UnitType } from "../../game/Game";
+import { Difficulty, Player, PlayerType, Unit, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { UpgradeStructureExecution } from "../UpgradeStructureExecution";
@@ -153,12 +153,20 @@ export class Economy {
 
   /** Nations MIRV the city leader once it has >10 city units and 1.25× (Hard) / 1.5× (Medium) the runner-up's count.
    *  Stay under that line: past it, cap comes from city levels, which the rule does not count. */
-  cityUnitCap(): number {
+  cityUnitCap(steamroll = this.ctx.p.steamrollCap): number {
     const me = this.ctx.me;
     let second = 0;
     for (const p of this.ctx.mg.players()) { if (p === me || !p.isAlive() || p.type() === PlayerType.Bot) continue; second = Math.max(second, p.unitCount(UnitType.City)); }
-    return Math.max(9, Math.floor(second * 1.15));
+    if (!steamroll) return Math.max(9, Math.floor(second * 1.15));
+    // `steamrollCap`: the rule itself (NationMIRVBehavior.selectSteamrollStopTarget) — the leader is MIRVed past
+    // `minLeader` city units and at ≥ mult × the runner-up — at 0.9× the multiplier, so the flat 1.15× no longer
+    // pins the cap at 9 when the field has 8 cities and the rule would allow 13
+    const diff = this.ctx.mg.config().gameConfig().difficulty;
+    const mult = diff === Difficulty.Easy ? 2 : diff === Difficulty.Medium ? 1.5 : diff === Difficulty.Hard ? 1.25 : 1.15;
+    const minLeader = diff === Difficulty.Easy ? 20 : diff === Difficulty.Impossible ? 8 : 10;
+    return Math.max(minLeader, Math.floor(second * mult * 0.9));
   }
+  private lastCapFire = -1e9;
   rank(): number {
     const me = this.ctx.me;
     return this.ctx.mg.players().filter((p) => p.isAlive() && p.type() !== PlayerType.Bot && p.numTilesOwned() > me.numTilesOwned()).length + 1;
@@ -176,6 +184,7 @@ export class Economy {
     const capFull = me.troops() > this.q.cap() * this.ctx.p.capFullShare;
     const { rivals, friends } = this.q.neighbours();
     const cityCapHit = cityUnits.length >= this.cityUnitCap();
+    if (this.ctx.p.steamrollCap && cityCapHit !== cityUnits.length >= this.cityUnitCap(false) && ticks - this.lastCapFire >= 100) { this.lastCapFire = ticks; this.ctx.fire("steamrollCap"); }
     const myRank = this.ctx.mg.ticks() >= 9000 ? this.rank() : 99;
     // top three after 20:00: half of every gold pile is the MIRV fund — a crown without a MIRV loses to the first one fired
     // top three from 20:00: the whole MIRV price is reserved (it rises 15M with every launch on the map, so the first
@@ -420,14 +429,25 @@ export class Economy {
     }
     return best;
   }
+  /** The sampled tile deepest inside our land that `type` can be built on. The 40 samples' distances to the border
+   *  come from one walk of the border (one x/y decode per border tile for all samples, not 40 closestTile walks),
+   *  ranked once per tick and shared by the SAM / city / silo calls of a build pass. Same pick as before: the
+   *  largest distance among the samples canBuild accepts, the earliest sample on a tie. */
+  private interiorRank: { tick: number; ranked: TileRef[] } | null = null;
   interiorTile(type: UnitType = UnitType.City): TileRef | null {
-    const border = this.ctx.me.borderTiles();
-    let best: TileRef | null = null, bestD = -1;
-    for (const t of this.sampleTerritory(40)) {
-      const [, d] = closestTile(this.ctx.mg, border, t);
-      if (d > bestD && this.ctx.me.canBuild(type, t) !== false) { bestD = d; best = t; }
+    const t = this.ctx.mg.ticks();
+    if (this.interiorRank === null || this.interiorRank.tick !== t) {
+      const mg = this.ctx.mg, samples = this.sampleTerritory(40);
+      const sx = samples.map((s) => mg.x(s)), sy = samples.map((s) => mg.y(s)), d = samples.map(() => Infinity);
+      for (const b of this.ctx.me.borderTiles()) {
+        const bx = mg.x(b), by = mg.y(b);
+        for (let i = 0; i < samples.length; i++) { const m = Math.abs(bx - sx[i]) + Math.abs(by - sy[i]); if (m < d[i]) d[i] = m; }
+      }
+      const order = samples.map((_, i) => i).sort((a, b) => d[b] - d[a] || a - b);
+      this.interiorRank = { tick: t, ranked: order.map((i) => samples[i]) };
     }
-    return best;
+    for (const s of this.interiorRank.ranked) if (this.ctx.me.canBuild(type, s) !== false) return s;
+    return null;
   }
   oceanShoreTile(): TileRef | null {
     const me = this.ctx.me;

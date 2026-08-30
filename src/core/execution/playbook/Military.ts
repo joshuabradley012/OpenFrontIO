@@ -1,6 +1,6 @@
 // Military: expansion, tribe harvesting, counter-attacks, wars and retreats, boats, bombs, MIRV, split watch.
 
-import { Attack, Player, PlayerType, Relation, UnitType } from "../../game/Game";
+import { Attack, Game, Player, PlayerType, Relation, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { MirvExecution } from "../MIRVExecution";
@@ -26,7 +26,7 @@ interface CalibRecord { wave: number; tick: number; sent: number; tiles0: number
 export class Military {
   private currentTarget_: Player | null = null;
   private waves = new Map<Player, { want: number; sent: number; last: number }>();
-  private sentAt = new Map<Player, number>();
+  private sentAt = new Map<Player, { tick: number; tiles: number; contested: boolean }>();
   private blacklist = new Map<Player, number>();
   public bombs = 0;
   private lastBombTick = -1e9;
@@ -94,18 +94,49 @@ export class Military {
   }
 
   // ---------------------------------------------------------------- reachability
-  /** Record an attack we just sent; if it has vanished 2 ticks later the target wasn't really reachable. */
-  noteSent(target: Player): void { this.sentAt.set(target, this.ctx.mg.ticks()); }
+  /** Record a first wave we just sent: the target's size, and whether it had a wave on us ours could cancel against. */
+  noteSent(target: Player): void { this.sentAt.set(target, { tick: this.ctx.mg.ticks(), tiles: target.numTilesOwned(), contested: this.ctx.me.incomingAttacks().some((a) => a.attacker() === target) }); }
+  /** A wave gone 2–12 ticks after it left means the engine dropped it. AttackExecution folds a second land attack
+   *  into the running one (so an attack always remains), cancels a wave troop-for-troop against the target's own
+   *  wave on us, and retreats one with nothing left to conquer — either because we took everything beside us (the
+   *  target shrank or died) or because there never was anything: a neighbour `nearby()` lists only diagonally, or
+   *  across a strait. Only that last case — the wave vanished uncontested without taking a tile — marks the target
+   *  unreachable for 600 ticks; the old check blacklisted every vanished wave, a won fight and a cancelled counter
+   *  included. */
   reachable(target: Player): boolean {
+    const t = this.ctx.mg.ticks(), me = this.ctx.me;
     const bl = this.blacklist.get(target);
-    if (bl !== undefined && this.ctx.mg.ticks() < bl) return false;
-    const t0 = this.sentAt.get(target);
-    if (t0 !== undefined && this.ctx.mg.ticks() - t0 >= 2 && this.ctx.mg.ticks() - t0 < 12 && !this.q.outgoingTo(target)) {
-      this.blacklist.set(target, this.ctx.mg.ticks() + 600);
+    if (bl !== undefined && t < bl) return false;
+    const s = this.sentAt.get(target);
+    if (s !== undefined && t - s.tick >= 2 && t - s.tick < 12 && !this.q.outgoingTo(target)) {
       this.sentAt.delete(target);
+      if (s.contested || !target.isAlive() || me.isFriendly(target) || target.numTilesOwned() < s.tiles) return true;
+      this.blacklist.set(target, t + 600);
+      this.ctx.log(`t${t} ${target.name()} unreachable: the wave vanished without taking a tile`);
       return false;
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------- housekeeping
+  /** Every 300 ticks: drop entries about dead players, finished attacks and windows that have passed. Each map's
+   *  reader treats a missing entry exactly like a stale one, so this changes no decision. `bombed` is kept: a
+   *  structure bombed once is never bombed again, by design. */
+  prune(): void {
+    const t = this.ctx.mg.ticks(), me = this.ctx.me;
+    const dead = (p: Player) => !p.isAlive();
+    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged]) for (const p of m.keys()) if (dead(p)) m.delete(p);
+    for (const [p, until] of this.blacklist) if (t >= until) this.blacklist.delete(p);
+    for (const [p, s] of this.sentAt) if (t - s.tick >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
+    for (const [p, at] of this.lastCounter) if (t - at >= 300) this.lastCounter.delete(p);
+    for (const [p, at] of this.boatedAt) if (t - at >= 900) this.boatedAt.delete(p);
+    for (const [p, at] of this.pileInLogged) if (t - at >= 600) this.pileInLogged.delete(p);
+    for (const [p, at] of this.embargoedAt_) if (t - at > 1200 && !me.hasEmbargoAgainst(p)) this.embargoedAt_.delete(p);
+    const running = new Set(me.outgoingAttacks().map((a) => a.id()));
+    for (const id of this.attackStart.keys()) if (!running.has(id)) this.attackStart.delete(id);
+    const targets = new Set(me.outgoingAttacks().map((a) => a.target()));
+    for (const p of this.waves.keys()) if (!targets.has(p)) this.waves.delete(p); // read only while an attack on that tribe runs
+    for (const p of this.counters) if (dead(p)) this.counters.delete(p);
   }
 
   // ---------------------------------------------------------------- boats in the mid and late game
@@ -167,6 +198,7 @@ export class Military {
   // ---------------------------------------------------------------- MIRV and the finish
   private lastMirvTick = -1e9;
   private lastWarTick = -1e9;
+  private strictFired = -1e9;
   private bombOutOfRange_ = 0;
   /** Playbook phase 6: a MIRV goes to (1) whoever has one in the air at us, (2) anyone over half the map,
    *  (3) from 25:00, the largest un-allied player above us when we are in the top three — launch first, then
@@ -190,11 +222,30 @@ export class Military {
     }
     if (!target) return;
     const center = calculateTerritoryCenter(this.ctx.mg, target);
-    if (center === null || me.canBuild(UnitType.MIRV, center) === false) return;
-    this.ctx.mg.addExecution(new MirvExecution(me, center));
+    if (center === null) return;
+    const tile = this.mirvTile(target, center);
+    if (tile === null) { this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} held: every tile of it sits under a SAM`); return; }
+    if (me.canBuild(UnitType.MIRV, tile) === false) return;
+    this.ctx.mg.addExecution(new MirvExecution(me, tile));
     this.lastMirvTick = this.ctx.mg.ticks();
     this.bombs++;
-    this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} ${target.numTilesOwned()}t (${why})`);
+    this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} ${target.numTilesOwned()}t (${why})${tile === center ? "" : " — aimed off-centre, the centre is under a SAM"}`);
+  }
+  /** The territory centre unless one of the target's SAMs covers it (Config.samRange(level) + 5, as maybeBomb): then
+   *  the uncovered tile of its territory nearest the centre (sampled from its border), or null if there is none. */
+  private mirvTile(target: Player, center: TileRef): TileRef | null {
+    const mg = this.ctx.mg;
+    const sams = target.units(UnitType.SAMLauncher);
+    const covered = (t: TileRef) => sams.some((s) => mg.euclideanDistSquared(s.tile(), t) <= (mg.config().samRange(s.level()) + 5) ** 2);
+    if (!covered(center)) return center;
+    const border = target.borderTiles(), step = Math.max(1, Math.floor(border.size / 120));
+    let best: TileRef | null = null, bestD = 1e18, i = 0;
+    for (const t of border) {
+      if ((i++ % step) !== 0 || covered(t)) continue;
+      const d = mg.euclideanDistSquared(t, center);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
   }
 
   // ---------------------------------------------------------------- territory integrity
@@ -205,21 +256,12 @@ export class Military {
    *  The engine hands a surrounded piece to the surrounding player, so a split is a countdown. */
   watchSplit(): void {
     const me = this.ctx.me;
-    const tiles = me.tiles();
-    if (tiles.size < 200) { this.splitOwner = null; return; }
-    const seen = new Set<TileRef>();
-    const clusters: TileRef[][] = [];
-    for (const t of me.borderTiles()) {
-      if (seen.has(t)) continue;
-      const cl: TileRef[] = []; const q = [t]; seen.add(t);
-      while (q.length > 0) { const c = q.pop()!; cl.push(c); for (const n of this.ctx.mg.neighbors(c)) { if (seen.has(n) || this.ctx.mg.owner(n) !== me) continue; seen.add(n); q.push(n); } }
-      clusters.push(cl);
-      if (clusters.length > 8) break;
-    }
+    if (me.numTilesOwned() < 200) { this.splitOwner = null; return; }
+    const clusters = Military.pieces(this.ctx.mg, me);
     if (clusters.length <= 1) { if (this.splitOwner !== null) this.ctx.log(`t${this.ctx.mg.ticks()} territory reconnected`); this.splitOwner = null; this.splitTile = null; return; }
-    clusters.sort((a, b) => b.length - a.length);
-    const main = clusters[0], other = clusters[1];
-    // nearest pair of tiles between the two pieces (sampled), then the owner of the midpoint
+    clusters.sort((a, b) => b.tiles - a.tiles);
+    const main = clusters[0].border, other = clusters[1].border;
+    // nearest pair of border tiles between the two pieces (sampled), then the owner of the midpoint
     let best = 1e18, bt: TileRef | null = null, bo: TileRef | null = null;
     for (let i = 0; i < main.length; i += Math.max(1, Math.floor(main.length / 60))) for (let j = 0; j < other.length; j += Math.max(1, Math.floor(other.length / 60))) {
       const d = this.ctx.mg.euclideanDistSquared(main[i], other[j]); if (d < best) { best = d; bt = main[i]; bo = other[j]; }
@@ -230,9 +272,61 @@ export class Military {
     const owner = this.ctx.mg.owner(mid);
     const who = owner.isPlayer() ? (owner as Player) : null;
     if (this.splitSince < 0) this.splitSince = this.ctx.mg.ticks();
-    if (who !== this.splitOwner) this.ctx.log(`t${this.ctx.mg.ticks()} SPLIT: ${clusters.length} pieces, second piece ${other.length}+ border tiles, gap ${Math.round(Math.sqrt(best))} tiles held by ${who ? who.name() : "nobody"}`);
+    if (who !== this.splitOwner) this.ctx.log(`t${this.ctx.mg.ticks()} SPLIT: ${clusters.length} pieces, second piece ${clusters[1].tiles} tiles, gap ${Math.round(Math.sqrt(best))} tiles held by ${who ? who.name() : "nobody"}`);
     this.splitOwner = who && who !== me && !me.isFriendly(who) ? who : null;
     this.splitTile = this.ctx.mg.isLand(mid) && !this.ctx.mg.hasOwner(mid) ? mid : null;
+  }
+  /** The 4-connected pieces of `p`'s territory — exact, from the border alone. Each row's owned tiles form runs
+   *  whose ends are border tiles (a run end has a non-owned tile beside it), so the runs come from the sorted border
+   *  tiles of the row plus the map's left/right edges (an edge tile is not a border tile: GameMap.isBorder); runs
+   *  in neighbouring rows that overlap in x are one piece (union-find). A row with no border tile is either empty or
+   *  owned wall to wall. Cost O(border log border) against O(tiles) for a flood fill; tile counts are exact. */
+  static pieces(mg: Game, p: Player): { tiles: number; border: TileRef[] }[] {
+    const w = mg.width(), h = mg.height(), pid = p.smallID();
+    const rows = new Map<number, TileRef[]>();
+    for (const t of p.borderTiles()) { const y = mg.y(t); let r = rows.get(y); if (!r) { r = []; rows.set(y, r); } r.push(t); }
+    if (rows.size === 0) return [];
+    const owned = (x: number, y: number) => mg.ownerID(mg.ref(x, y)) === pid;
+    // runs: [x0, x1, id] per row; border tiles keep the run they lie in
+    const parent: number[] = [];
+    const find = (i: number): number => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    const union = (a: number, b: number) => { a = find(a); b = find(b); if (a !== b) parent[b] = a; };
+    const runTiles: TileRef[][] = [], runLen: number[] = [];
+    let prev: [number, number, number][] = [];
+    for (let y = 0; y < h; y++) { // every row: a wall-to-wall row has no border tile at all (map edges are not borders)
+      const cur: [number, number, number][] = [];
+      const bt = rows.get(y);
+      if (bt === undefined) {
+        if (owned(0, y)) { const id = parent.length; parent.push(id); runTiles.push([]); runLen.push(w); cur.push([0, w - 1, id]); }
+      } else {
+        bt.sort((a, b) => a - b);
+        let open = owned(0, y) ? 0 : -1, tiles: TileRef[] = [];
+        for (const t of bt) {
+          const x = mg.x(t);
+          if (x > 0 && !owned(x - 1, y)) { open = x; tiles = []; }
+          tiles.push(t);
+          if (x === w - 1 || !owned(x + 1, y)) { const id = parent.length; parent.push(id); runTiles.push(tiles); runLen.push(x - open + 1); cur.push([open, x, id]); open = -1; tiles = []; }
+        }
+        if (open >= 0) { const id = parent.length; parent.push(id); runTiles.push(tiles); runLen.push(w - open); cur.push([open, w - 1, id]); }
+      }
+      // two-pointer merge with the row above
+      let i = 0, j = 0;
+      while (i < prev.length && j < cur.length) {
+        const a = prev[i], b = cur[j];
+        if (a[0] <= b[1] && b[0] <= a[1]) union(a[2], b[2]);
+        if (a[1] < b[1]) i++; else j++;
+      }
+      prev = cur;
+    }
+    const out = new Map<number, { tiles: number; border: TileRef[] }>();
+    for (let id = 0; id < parent.length; id++) {
+      const root = find(id);
+      let c = out.get(root);
+      if (!c) { c = { tiles: 0, border: [] }; out.set(root, c); }
+      c.tiles += runLen[id];
+      for (const t of runTiles[id]) c.border.push(t);
+    }
+    return [...out.values()];
   }
 
   // ---------------------------------------------------------------- expansion
@@ -360,8 +454,18 @@ export class Military {
     if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return; // a 1.67× push that keeps home healthy is always taken
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
-    const wars = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot && !this.counters.has(a.target() as Player)).length;
-    if (wars >= (this.ctx.mg.ticks() >= 15000 && atCapNow ? 2 : 1) && !opportunity) return;
+    const nonBot = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
+    const wars = nonBot.filter((a) => !this.counters.has(a.target() as Player)).length;
+    const limit = this.ctx.mg.ticks() >= 15000 && atCapNow ? 2 : 1;
+    if (wars >= limit && !opportunity) return;
+    // `strictOneWar`: counters occupy the second slot — one war plus counters, but no second war (opportunity wars
+    // included) while a counter runs. A counter on the current target is that war (the old count skipped it, so
+    // wars read 0 and another war could open beside it).
+    if (this.ctx.p.strictOneWar) {
+      const countersRunning = nonBot.some((a) => this.counters.has(a.target() as Player));
+      const warsStrict = wars + nonBot.filter((a) => this.counters.has(a.target() as Player) && a.target() === this.currentTarget_).length;
+      if (countersRunning && warsStrict >= 1) { if (this.ctx.mg.ticks() - this.strictFired >= 100) { this.strictFired = this.ctx.mg.ticks(); this.ctx.fire("strictOneWar"); } return; }
+    }
     const early = !atCapNow && !opportunity && (this.ctx.mg.ticks() < this.ctx.p.fightNotBeforeTick || me.unitsOwned(UnitType.City) < this.ctx.p.fightMinCities);
     let { rivals } = nb;
     // before the 5-minute mark only clear prey: a neighbour we can hit with 2.5× its whole army

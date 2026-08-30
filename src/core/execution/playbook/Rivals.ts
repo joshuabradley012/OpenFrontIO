@@ -4,7 +4,7 @@
 //
 // Exposure only: nothing here changes behaviour until a consumer (C1) reads `sit.rival`.
 
-import { Difficulty, GameMode, Player, PlayerType, Relation } from "../../game/Game";
+import { Difficulty, GameMode, Player, PlayerType, Relation, TerraNullius } from "../../game/Game";
 import { BotContext, FireLimiter } from "./Context";
 import type { Situation } from "./Situation";
 import { Bucket, CELL, ThreatMap } from "./ThreatMap";
@@ -119,10 +119,13 @@ export class Rivals {
   }
 
   // ---------------------------------------------------------------- events
-  /** An alliance with `p` ended. `broken` = ended before its expiry (they broke it; the bot never does). */
-  onAllianceEnded(p: Player, broken: boolean = this.wasBroken(p)): void {
+  /** An alliance with `p` ended. `broken` = ended before its expiry (they broke it; the bot never does). `planned` =
+   *  we let it lapse to attack them (Diplomacy.plannedTarget): a lapse of our choosing earns them no trust — the
+   *  +0.1 used to make the planned prey look trustworthy in the war scorer's trust bonus. */
+  onAllianceEnded(p: Player, planned = false, broken: boolean = this.wasBroken(p)): void {
     this.expiry.delete(p);
     if (broken) this.bump(p, -0.3, "broke the alliance early");
+    else if (planned) this.ctx.log(`t${this.ctx.mg.ticks()} trust ${p.name()} ${this.trust(p).toFixed(2)} unchanged: we let the alliance lapse`);
     else this.bump(p, +0.1, "alliance ran its course");
   }
   private wasBroken(p: Player): boolean {
@@ -257,6 +260,23 @@ export class Rivals {
     return (p.troops() * share) / Math.max(1, ourTroops);
   }
 
+  // ---------------------------------------------------------------- housekeeping
+  /** `p.nearby()` walks the rival's whole border; memoised per rival for `nearbyEvery` ticks like the bot's own
+   *  neighbours() (Situation.ts). nearbyEvery = 1 is the uncached behaviour. */
+  private nearbyCache = new Map<Player, { tick: number; players: (Player | TerraNullius)[] }>();
+  private nearbyOf(p: Player): (Player | TerraNullius)[] {
+    const t = this.ctx.mg.ticks(), every = Math.max(1, this.ctx.p.nearbyEvery);
+    let c = this.nearbyCache.get(p);
+    if (!c || t - c.tick >= every) { c = { tick: t, players: p.nearby() }; this.nearbyCache.set(p, c); }
+    return c.players;
+  }
+  /** Drop what is kept about players no longer on the map (called every 300 ticks). Trust survives a lapse of
+   *  contact on purpose: a neighbour that broke faith and comes back is still the one that broke faith. */
+  prune(): void {
+    for (const m of [this.nearbyCache, this.trustOf, this.expiry, this.ring, this.nationCache, this.border]) for (const p of m.keys()) if (!p.isAlive()) m.delete(p);
+    for (const p of this.nearbyCache.keys()) if (!this.ring.has(p) && !this.expiry.has(p)) this.nearbyCache.delete(p);
+  }
+
   // ---------------------------------------------------------------- nation rules (AiAttackBehavior re-implemented)
   /** troopSendCap for `p` (AiAttackBehavior.ts:903-949): Infinity unless Hard/Impossible FFA, where it is
    *  troops − ceil(retain × strongest unfriendly non-bot neighbour's troops), raised to the incoming total if under attack. */
@@ -267,7 +287,7 @@ export class Rivals {
     const retain = NATION_RULES.retain[mg.config().gameConfig().difficulty];
     if (retain === undefined) return Infinity;
     let maxNeighborTroops = 0;
-    for (const n of p.nearby()) {
+    for (const n of this.nearbyOf(p)) {
       // asIfUnallied: we are read as the unfriendly neighbour we become once the alliance lapses
       if (n.isPlayer() && (!p.isFriendly(n) || (asIfUnallied && n === this.ctx.me)) && n.type() !== PlayerType.Bot && n.troops() > maxNeighborTroops) maxNeighborTroops = n.troops();
     }

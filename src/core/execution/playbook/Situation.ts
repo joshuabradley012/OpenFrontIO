@@ -7,6 +7,7 @@ import { BotContext } from "./Context";
 import { RivalView, Rivals } from "./Rivals";
 
 export type Phase = "opening" | "consolidate" | "war" | "endgame";
+export interface Neighbours { bots: Player[]; rivals: Player[]; friends: Player[]; wilderness: boolean }
 
 /** One evaluated picture of the game per tick; every rule reads this instead of re-deriving state. */
 export interface Situation {
@@ -83,25 +84,42 @@ export class SituationQueries {
   // ---------------------------------------------------------------- helpers
   // me.nearby() walks every border tile (thousands late-game) and was ~28 % of a 20-minute lab game
   // (profiled 2026-08-29): readSituation() asks every tick and the rules ask up to five more times. The
-  // set of neighbouring players is memoised for `nearbyEvery` ticks; the friend/rival split is redone on
-  // every call because alliances can change within a tick. nearbyEvery = 1 keeps the bot's decisions
-  // bit-identical to the uncached code (golden test); larger values are a lab flag until A/B-ed.
+  // set of neighbouring players is memoised for `nearbyEvery` ticks. The friend/rival split is memoised per
+  // tick (alliances change between ticks, never inside one: every rule of a tick sees the same split), so the
+  // 8–12 calls of an active tick share one pass. nearbyEvery = 1 keeps the bot's decisions bit-identical to
+  // the uncached code (golden test); larger values are a lab flag until A/B-ed.
   private nearbyCache: { tick: number; players: (Player | TerraNullius)[] } | null = null;
+  private splitCache: { tick: number; nb: Neighbours } | null = null;
   private nearby(): (Player | TerraNullius)[] {
     const t = this.ctx.mg.ticks(), every = Math.max(1, this.ctx.p.nearbyEvery);
-    if (this.nearbyCache === null || t - this.nearbyCache.tick >= every) this.nearbyCache = { tick: t, players: this.ctx.me.nearby() };
+    if (this.nearbyCache === null || t - this.nearbyCache.tick >= every) { this.nearbyCache = { tick: t, players: this.ctx.me.nearby() }; this.splitCache = null; }
     return this.nearbyCache.players;
   }
-  neighbours(): { bots: Player[]; rivals: Player[]; friends: Player[]; wilderness: boolean } {
-    const bots: Player[] = [], rivals: Player[] = [], friends: Player[] = [];
-    let wilderness = false;
-    for (const n of this.nearby()) {
-      if (!n.isPlayer()) { wilderness = true; continue; }
-      if (n.type() === PlayerType.Bot) bots.push(n);
-      else if (this.ctx.me.isFriendly(n)) friends.push(n);
-      else rivals.push(n);
+  /** Callers get fresh arrays: several of them sort or filter the lists in place. */
+  neighbours(): Neighbours {
+    const players = this.nearby(), t = this.ctx.mg.ticks();
+    if (this.splitCache === null || this.splitCache.tick !== t) {
+      const bots: Player[] = [], rivals: Player[] = [], friends: Player[] = [];
+      let wilderness = false;
+      for (const n of players) {
+        if (!n.isPlayer()) { wilderness = true; continue; }
+        if (n.type() === PlayerType.Bot) bots.push(n);
+        else if (this.ctx.me.isFriendly(n)) friends.push(n);
+        else rivals.push(n);
+      }
+      this.splitCache = { tick: t, nb: { bots, rivals, friends, wilderness } };
     }
-    return { bots, rivals, friends, wilderness };
+    const c = this.splitCache.nb;
+    return { bots: c.bots.slice(), rivals: c.rivals.slice(), friends: c.friends.slice(), wilderness: c.wilderness };
+  }
+  /** acceptAlliances() turns a rival into a friend inside the tick: the split is redone on the next call. */
+  invalidateNeighbours(): void {
+    this.splitCache = null;
+  }
+  /** Every 300 ticks: forget what is kept about dead players. */
+  prune(): void {
+    for (const p of this.annexCache.keys()) if (!p.isAlive()) this.annexCache.delete(p);
+    this.rivals.prune();
   }
   cap(): number {
     return this.ctx.mg.config().maxTroops(this.ctx.me);
