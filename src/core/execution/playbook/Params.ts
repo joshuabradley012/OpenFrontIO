@@ -8,6 +8,7 @@
 // alive, 800k vs 705k tiles) and homeFloor (declared and defaulted but read nowhere — A1 finding).
 // Removed after losing their 30-game A/Bs (PlaybookBotPlan.md C3): simWars (Estimate.ts), scoredSpend (Spend.ts), bsrReserve, phaseGates — the first two live in git history.
 // Removed after ab1 (PlaybookBotPlan.md "Review-package A/B ab1"): campaigns (Campaign.ts, review #6; 38W/60L, dScore −0.19, p=0.03) — in git history at 85ce33c8e.
+// Removed after ab2 (PlaybookBotPlan.md #4): simWars, restored on the calibrated estimator and lost again (dScore −0.43 at 18 mirrored pairs; with hystRetreats −0.52) — in git history at a36b357b5. Estimate.ts stays (hystRetreats, utility, the EST/ACT calibration log).
 
 export interface PlaybookParams {
   expandContested: number; // share of home troops per click into empty land while a rival borders us
@@ -58,7 +59,6 @@ export interface PlaybookParams {
   estLossScaleHuman: number;
   estLossScaleBot: number;
   estSpeedScale: number;
-  simWars: boolean; // #4: fight() picks the war target and size with the calibrated estimator (smallest 1k-step wave that wins with a 20 % margin, bisection; a running wave on the target counts as part of it, the target's allies' pile-in (trustWars) as part of its army); off = the fightRatio scorer. Default off until the 30-game Medium A/B
   hystRetreats: boolean; // #4: manageRetreats judges a war every 100 ticks as 'continue' (estimate, 600-tick horizon) vs 'retreat now', continue must win by 0.1 + 0.2 × clamp(maxBsr − 1, 0, 2) and lose twice in a row before the wave comes home; a wave under retreatBelowRatio × the target's troops that no longer wins is lost outright; off = the literal 20 % / 70 % thresholds every 10 ticks. Default off until the 30-game Medium A/B
   // Opportunity #2 (nation AI as a perfect-information opponent), one flag per edge; all default off until the 30-game Medium A/B
   markTargets: boolean; // fight()/counterAttack mark the war target (TargetPlayerExecution, the human 'target' button) so allied nations' `assist` and their nuke targeting pile on; re-marked every targetCooldown while the war runs
@@ -135,7 +135,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   estLossScaleHuman: 1.0,
   estLossScaleBot: 1.0,
   estSpeedScale: 1.0,
-  simWars: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4); the uncalibrated version lost 7W-23L (C3)
   hystRetreats: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4)
   markTargets: false, // default off until the 30-game Medium A/B
   wildernessAware: false, // default off until the 30-game Medium A/B

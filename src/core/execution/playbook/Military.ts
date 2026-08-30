@@ -12,23 +12,19 @@ import { AttackEstimate, EstimateOptions, estimateAttack } from "./Estimate";
 import { SituationQueries } from "./Situation";
 import { clamp, compensate, describeOption, linear, logistic, Option, rankOptions } from "./Utility";
 
-const SIM_HORIZON = 3000; // simWars: a war that has not resolved in 5 minutes is judged on where it stands then
-const SIM_MARGIN = 0.2; // simWars: the wave must end with this share of itself still standing
-const SIM_OPPORTUNITY_LOSS_PER_TILE = 150; // simWars: even a collapsed / gap-owner / threat target is not worth more than this per tile
+const CALIB_HORIZON = 3000; // calibration log: a war that has not resolved in 5 minutes is judged on where it stands then
 const HYST_EVERY = 100; // hystRetreats: ticks between re-estimates of a running war
 const HYST_HORIZON = 600; // hystRetreats: the 'continue' branch is judged one minute ahead
-const HYST_TILE_WORTH = 60; // hystRetreats: what a tile of the target is worth in troops — the non-wilderness bar of simMaxLossPerTile. The wilderness discount belongs to opening a war, not to abandoning one
+const HYST_TILE_WORTH = 60; // hystRetreats: what a tile of the target is worth in troops — the non-wilderness troop-sink bar (free land costs 16–24 a tile). The wilderness discount belongs to opening a war, not to abandoning one
 const RETREAT_MALUS = 0.75; // AttackExecution.retreat(25) against a player: the share of a recalled wave that gets home
-interface SimPick { troops: number; est: AttackEstimate; tilesPerLoss: number; value: number }
 /** A war fight() would open: the decision half of the old fight(); actWar() is the other half. */
 interface WarPick {
   r: Player;
   want: number;
-  sim: SimPick | null; // simWars: the estimate the size came from
   bomb: boolean; // open the war with a bomb on their cluster (richer, silo)
   opportunity: boolean; // collapsed / gap owner / MIRV threat / drained: goes at once (utility ranks it first)
   /** Every candidate the scorer accepted, for the utility layer (`best` first). */
-  alts: { r: Player; want: number; sim: SimPick | null; score: number; opportunity: boolean }[];
+  alts: { r: Player; want: number; score: number; opportunity: boolean }[];
 }
 const UTIL_EST_EVERY = 50; // utility: ticks an option's estimate is cached
 /** One war or tribe wave under calibration bookkeeping (EST at the send, ACT when the attack is gone). */
@@ -481,7 +477,7 @@ export class Military {
     const pick = this.warPick();
     if (pick !== null) this.actWar(pick);
   }
-  /** The decision half of the war rule: gates, candidates, the scorer (or simWars' estimator) and the wave size.
+  /** The decision half of the war rule: gates, candidates, the scorer and the wave size.
    *  Returns the war fight() would open now, or null. Side effects are the log and the flag counters only. */
   private warPick(): WarPick | null {
     const me = this.ctx.me;
@@ -580,34 +576,8 @@ export class Military {
     // shadowWave's test above), else fightRatio
     const wantFor = (r: Player) => { const mult = this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
     let best: Player | null = null, bestS = 0;
-    if (this.ctx.p.simWars) {
-      // #4 (B1 restored on calibrated numbers): the estimator picks the target and the size. For each candidate the
-      // smallest wave (1k steps) that wins with a margin is found by bisection; the candidate with the most tiles per
-      // troop lost wins, keeping the opportunity bonuses (collapsed / gap owner / planned target) of the heuristic scorer.
-      let bestSim: { r: Player; sim: SimPick } | null = null;
-      const simAlts: WarPick["alts"] = [];
-      for (const r of candidates) {
-        const sim = this.simPick(r, maxSend, gapOwner, threatHere);
-        if (sim === null) continue;
-        const value = sim.tilesPerLoss * 100 + (this.collapsed(r) ? 20 : 0) + (r === gapOwner ? 30 : 0) + (r === threatHere ? 25 : 0) + (r === this.plannedTarget() ? 4 : 0) + (r === this.currentTarget_ ? 3 : 0) + (r.isTraitor() ? 2 : 0) + trustBonus(r);
-        simAlts.push({ r, want: sim.troops, sim, score: value, opportunity: isOpp(r) });
-        if (bestSim === null || value > bestSim.sim.value) { sim.value = value; bestSim = { r, sim }; }
-      }
-      // liveness: the flag changed a decision when it picks another target or size than the scorer would, or nothing
-      for (const r of candidates) { const sc = score(r); if (sc > bestS) { bestS = sc; best = r; } }
-      const heurWant = best === null ? 0 : Math.min(Math.ceil(best.troops() * (richer(best) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio)) + 1000, maxSend);
-      if (bestSim === null) {
-        if (best !== null && heurWant >= 1000 && this.ctx.mg.ticks() - this.simFired >= 100) { this.simFired = this.ctx.mg.ticks(); this.ctx.fire("simWars"); }
-        if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap (sim): ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
-        return null;
-      }
-      const { r, sim } = bestSim;
-      if (r !== best || Math.abs(sim.troops - heurWant) > 1000) this.ctx.fire("simWars");
-      simAlts.sort((a, b) => (a.r === r ? -1 : b.r === r ? 1 : b.score - a.score));
-      return { r, want: sim.troops, sim, bomb: false, opportunity: isOpp(r), alts: simAlts };
-    }
     const alts: WarPick["alts"] = [];
-    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), sim: null, score: sc, opportunity: isOpp(r) }); if (sc > bestS) { bestS = sc; best = r; } }
+    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r) }); if (sc > bestS) { bestS = sc; best = r; } }
     if (best === null) {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
       return null;
@@ -615,31 +585,23 @@ export class Military {
     const b = best;
     alts.sort((x, y) => (x.r === b ? -1 : y.r === b ? 1 : y.score - x.score));
     const bomb = richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100;
-    return { r: best, want: wantFor(best), sim: null, bomb, opportunity: isOpp(best), alts };
+    return { r: best, want: wantFor(best), bomb, opportunity: isOpp(best), alts };
   }
   /** The action half of the war rule: the embargo, the wave (whole or not at all), the log, the calibration record,
    *  the mark. Returns true when a wave went. */
   private actWar(pick: WarPick): boolean {
     const me = this.ctx.me, r = pick.r, now = this.ctx.mg.ticks();
-    if (pick.sim === null) {
-      if (pick.bomb) { this.currentTarget_ = r; this.maybeBomb(now); } // open the war with a bomb on their cluster
-      if (pick.want < 1000) return false;
-    }
+    if (pick.bomb) { this.currentTarget_ = r; this.maybeBomb(now); } // open the war with a bomb on their cluster
+    if (pick.want < 1000) return false;
     this.currentTarget_ = r;
     if (!me.hasEmbargoAgainst(r) && r.type() !== PlayerType.Nation) { me.addEmbargo(r, false); this.embargoedAt_.set(r, now); }
     const want = this.ctx.send(r.id(), pick.want, "war", 1000, 0.3);
     if (want === 0) return false;
     this.lastWarTick = now;
     this.noteSent(r);
-    if (pick.sim !== null) {
-      this.simCache.clear();
-      this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×) sim: ${pick.sim.est.tilesTaken}t for ${Math.round(pick.sim.est.attackerLoss / 1000)}k in ${pick.sim.est.ticks} ticks${pick.sim.est.wins ? "" : ", still going at the horizon"}`);
-      this.noteWave(r, want, pick.sim.est);
-    } else {
-      this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×)${this.drained(r) ? " drained" : this.shadowWave(r) >= Math.ceil(r.troops() * this.ctx.p.retalRatio) + 1000 ? " as the smaller attacker" : ""}`);
-      this.noteWave(r, want);
-      this.mark(r, "war");
-    }
+    this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×)${this.drained(r) ? " drained" : this.shadowWave(r) >= Math.ceil(r.troops() * this.ctx.p.retalRatio) + 1000 ? " as the smaller attacker" : ""}`);
+    this.noteWave(r, want);
+    this.mark(r, "war");
     return true;
   }
 
@@ -698,7 +660,7 @@ export class Military {
     const war = this.warPick();
     if (war !== null) {
       for (const a of war.alts) {
-        const est = a.sim !== null ? a.sim.est : this.utilEstimate(a.r, a.want);
+        const est = this.utilEstimate(a.r, a.want);
         const tpt = this.tilesPerTroop(est, a.want);
         const troopsC = logistic(sit.capShare, p.utilCapMid, p.utilCapSteep); // utilCapMid (= fightAbove by default) is the midpoint, not a gate
         const marginC = (est.wins ? 1 : 0.8) * (0.6 + 0.4 * linear(est.troopsLeft / a.want, 0, 0.5)); // what the wave has left over; an estimate still open at the horizon is judged on the same footing, discounted
@@ -721,7 +683,7 @@ export class Military {
         if (warDone || war === null) continue;
         const alt = war.alts.find((a) => a.r === o.target);
         if (alt === undefined) continue;
-        ok = this.actWar(alt.r === war.r ? war : { r: alt.r, want: alt.want, sim: alt.sim, bomb: false, opportunity: alt.opportunity, alts: war.alts });
+        ok = this.actWar(alt.r === war.r ? war : { r: alt.r, want: alt.want, bomb: false, opportunity: alt.opportunity, alts: war.alts });
         if (ok) warDone = true;
       } else if (o.kind === "expand") ok = this.actExpand(o.troops) > 0;
       else if (o.kind === "tribe" && o.target !== null) {
@@ -737,7 +699,7 @@ export class Military {
     if (key !== null && key !== chainFirst) this.lim.fire("utility", "pick");
   }
 
-  // ---------------------------------------------------------------- the estimator: calibration, simulated wars (simWars)
+  // ---------------------------------------------------------------- the estimator: calibration
   /** Calibration scales for an estimate against `t` (Params.estLossScale*, estSpeedScale), plus — with trustWars on — the
    *  troops its living allies on our border could send at us (RivalView.nationWouldSend), counted as part of its army. */
   estOpts(t: Player): EstimateOptions {
@@ -750,11 +712,11 @@ export class Military {
   private calib = new Map<Player, CalibRecord>();
   private calibSeq = 0;
   /** Bookkeeping for the calibration log (always on, log only): a war wave or a tribe's first click opens a record and
-   *  logs the estimate for it (`est` when the caller already has one); trackCalibration() logs the outcome. */
-  private noteWave(t: Player, troops: number, est?: AttackEstimate): void {
+   *  logs the estimate for it; trackCalibration() logs the outcome. */
+  private noteWave(t: Player, troops: number): void {
     if (this.calib.has(t)) { this.noteFollowUp(t, troops); return; } // a second war wave merges into the running attack (AttackExecution.init)
     const now = this.ctx.mg.ticks();
-    const e = est ?? estimateAttack(this.ctx.mg, this.ctx.me, t, troops, { horizonTicks: SIM_HORIZON, ...this.estOpts(t) });
+    const e = estimateAttack(this.ctx.mg, this.ctx.me, t, troops, { horizonTicks: CALIB_HORIZON, ...this.estOpts(t) });
     const wave = ++this.calibSeq;
     const others = t.incomingAttacks().filter((a) => a.attacker() !== this.ctx.me).length;
     this.calib.set(t, { wave, tick: now, sent: troops, tiles0: t.numTilesOwned(), ours0: this.ctx.me.numTilesOwned(), others, last: troops, seen: false, retreating: false });
@@ -781,42 +743,6 @@ export class Military {
       this.ctx.log(`t${now} ACT ${t.name()} wave=${c.wave} tiles=${tiles} ours=${this.ctx.me.numTilesOwned() - c.ours0} loss=${Math.max(0, Math.round(c.sent - left))} ticks=${now - c.tick} sent=${c.sent} left=${Math.round(left)} class=${Military.klass(t)} end=${end}`);
       this.calib.delete(t);
     }
-  }
-
-  private simCache = new Map<Player, { tick: number; pick: SimPick | null }>();
-  private simFired = -1e9;
-  /** Free land costs mag/5 = 16–24 troops a tile; a war is only worth it while free land remains if it is not much
-   *  dearer. Once the wilderness is gone the bar is a troop-sink guard only. */
-  private simMaxLossPerTile(): number { return this.ctx.sit.wilderness ? 20 : 60; }
-  /** Smallest wave (1k steps, at most maxSend) whose estimate wins — or is still winning at the horizon — with a
-   *  fifth of itself to spare, and takes tiles cheaply enough. A wave already running on the target is part of the
-   *  estimate (the engine merges the two, AttackExecution.init), so the pick is the addition to it. Cached 50 ticks. */
-  private simPick(r: Player, maxSend: number, gapOwner: Player | null, threatHere: Player | null): SimPick | null {
-    const now = this.ctx.mg.ticks();
-    const c = this.simCache.get(r);
-    if (c && now - c.tick < 50) return c.pick;
-    const opportunity = r === gapOwner || r === threatHere || (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5);
-    const running = this.q.outgoingTo(r)?.troops() ?? 0;
-    const opts = this.estOpts(r);
-    const ok = (est: AttackEstimate, n: number) => est.tilesTaken > 0 && (est.wins || est.ticks >= SIM_HORIZON) && est.troopsLeft >= n * SIM_MARGIN;
-    let pick: SimPick | null = null;
-    const hiK = Math.floor(maxSend / 1000);
-    if (hiK >= 1) {
-      const run = (k: number) => estimateAttack(this.ctx.mg, this.ctx.me, r, k * 1000 + running, { horizonTicks: SIM_HORIZON, stopBelow: (k * 1000 + running) * SIM_MARGIN, ...opts });
-      let bestEst = run(hiK);
-      if (ok(bestEst, hiK * 1000 + running)) {
-        let lo = 1, high = hiK; // invariant: high is ok
-        while (lo < high) {
-          const mid = Math.floor((lo + high) / 2);
-          const e = run(mid);
-          if (ok(e, mid * 1000 + running)) { high = mid; bestEst = e; } else lo = mid + 1;
-        }
-        const perTile = bestEst.attackerLoss / Math.max(1, bestEst.tilesTaken);
-        if (perTile <= (opportunity ? SIM_OPPORTUNITY_LOSS_PER_TILE : this.simMaxLossPerTile())) pick = { troops: high * 1000, est: bestEst, tilesPerLoss: bestEst.tilesTaken / Math.max(1, bestEst.attackerLoss), value: 0 };
-      }
-    }
-    this.simCache.set(r, { tick: now, pick });
-    return pick;
   }
 
   // ---------------------------------------------------------------- allies that can pile in (trustWars)

@@ -748,15 +748,8 @@ minus the EST/ACT lines; the hash was regenerated for them).
 4. A/B the two consumers on the calibrated numbers:
    `CONFIGS='{"base":{},"sim":{"simWars":true},"hyst":{"hystRetreats":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 
-**`simWars` (default off):** the B1 target/size choice — smallest 1k-step
-wave whose estimate wins with 20 % of itself to spare (bisection), best
-tiles-per-troop-lost candidate, with the calibrated scales, a running wave
-on the target counted as part of the estimate (the engine merges them), and
-— with `trustWars` on — the target's allies' `nationWouldSend` added to its
-army. Fires when it picks a different target or size (±1k) than the scorer,
-or nothing where the scorer would have sent. The free-land gate (20 troops a
-tile while wilderness remains, 60 after) is unchanged from B1 and is the
-first thing to revisit if the calibrated A/B still loses.
+**`simWars` — removed (bot/drop-simwars, from a36b357b5).** Lost twice: uncalibrated 7W-23L (C3); on the calibrated
+scales in ab2 dScore −0.43 at 18 mirrored pairs (−0.52 with hystRetreats). The estimator, est*Scale, calibrate.py and the EST/ACT log stay.
 
 **`hystRetreats` (default off):** every 100 ticks a running war is judged
 'continue' (estimate over 600 ticks: survivors × 0.75 + tiles × 60) against
@@ -769,8 +762,8 @@ estimate cannot win is lost outright and comes home at the first check.
 Fires when the verdict differs from the literal 20 % / 70 % thresholds.
 Works with `realRetreats` (the same `retreat()`).
 
-Tests: `estimate.test.ts` (restored + scales), `simWars.test.ts`,
-`hystRetreats.test.ts`, `calibration.test.ts`.
+Tests: `estimate.test.ts` (restored + scales), `hystRetreats.test.ts`,
+`calibration.test.ts` (`simWars.test.ts` went with the flag).
 ## Opportunity #2 — the nation AI as a perfect-information opponent (2026-08-29)
 
 Branch `bot/nation-exploit`. The opponent pool is a deterministic script whose
