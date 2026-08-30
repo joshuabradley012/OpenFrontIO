@@ -542,7 +542,6 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 30 min, SHIFT=150) → fold or revert; then `cmaes.py --pop 10 --gens 12
 --games-growth`; then Hard.
 
-<<<<<<< HEAD
 ## Ladder (2026-08-29 late; `lab-out/ladder1`)
 
 Shifted grid (`SHIFT=150`, `med0–med9`), 30-minute games, 45 paired games
@@ -615,8 +614,6 @@ pre-position without troops). Golden unchanged with the flag off.
 A/B: `CONFIGS='{"base":{},"threat":{"threatMap":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
 Cost: the `busyElsewhere` pass walks each unfriendly neighbour's border every
 50 ticks; see the smoke `botMs` in the package report.
->>>>>>> bot/threat-map
-=======
 **Next lab session:** graduate the PROVISIONAL flags with the sequential
 test (below), then `cmaes.py --pop 10 --gens 12 --race --games-growth`;
 then Hard.
