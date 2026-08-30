@@ -1730,3 +1730,24 @@ Outcomes: 48 won · 37 alive-but-lost · 4 died · 7 hit the cap (6 as rank 1). 
 Loss clusters (41): **MIRVed down after leading — 19** (steamroll rule in 80 of 85 MIRVED-by lines; the bot's own `MIRV RISK steamroll` detector fires minutes earlier, then the game builds ~3 SAMs); **lost the endgame race at rank 2–3 — 13**; **plateaued behind a runaway — 5**; died 4. Losses peak at 33 min (wins at 61) holding 0.3 of peak; the 10-minute states of wins and losses are nearly identical — games are decided in the mid-game. Wins average 27 silos/97 SAMs vs 6.8/12 in losses. War efficiency is similar; the failure is growth stalling + MIRV exposure, plus no leader-contest behaviour (a rank-3 bot spends the last 5 minutes boating a 1,500-tile weakling while the leader closes to 80 %).
 
 Ranked proposals (each a default-off flag + full-game A/B): 1) `samOnRisk` — on `MIRV RISK steamroll`, divert gold to a SAM wall + counter-silos (touches ~half the losses); 2) `contestLeader` — rank ≤ 3 with a runaway leader → boats/nukes at the leader, not "weak X"; 3) `plateauBreak` — <5 % tile growth over 5 min while rank > 1 → forced cross-water expansion or war on the largest adjacent non-ally; 4) `warRoiCap` — abort wars beyond ~500 troops/tile realized; 5) `webDefense` — ally/post against a mutual-ally border web before 10:00. Script: scratchpad loss_analysis.py (re-run on every sweep).
+
+## Aggressive multi-boat opening (`boatOpening`, 2026-08-30, branch `bot/boat-opening`)
+
+Josh's request: open with several boats, not one. While `tick < boatOpeningUntil` (3000) the early-boat rule keeps
+up to `boatOpeningCount` (2, int) transports alive at once instead of the single 20 % boat: whenever fewer of our
+transports are at sea, an extra boat goes through `Military.earlyBoat`'s own picker (no new scorer — the tribe 2×
+ratios, empty-shore scan, boatsNearest/boatsWaterPath ranking and the across-water launch check are all reused)
+with two opening adjustments — an open shore on a landmass we own no tile of is preferred (a bounded 1500-tile
+flood fill from the candidate; +200 ranking tiles on our own landmass — the second-continent beachhead), and every
+boat is capped at `boatShare` of home (a tribe whose 2× wave would not fit is skipped). The reserve, the hold and
+finish gates and boatDedupe still apply (extras go through ctx.boat); the plain first boat, its `boatSent`
+bookkeeping, huntBotsByBoat and seaExpansion are untouched (their boats count toward the opening's cap of live
+transports), the other boat flags' liveness counters are not polluted by extras, and the flag is inert on a small
+landmass (`onSmallLandmass` — the island spawn's plain rules already boat continuously). After `boatOpeningUntil`
+the normal rules resume unchanged. Each extra launch logs `BOAT OPENING n/count out → …` (the fire site: a boat
+the plain rules would not have launched this tick) and fires `boatOpening` via the FireLimiter.
+Params: `boatOpening` (default off), `boatOpeningCount` (int 2), `boatOpeningUntil` (int 3000).
+Tests: tests/playbook/boatOpening.test.ts (Bab-el-Mandeb fixture: two boats out by t200, one on the other
+landmass; plain sends one; extras stop at the cutoff; an inert opening is log-identical to plain).
+A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+Watch it in the GUI: `localStorage.playbookParams = '{"boatOpening":true}'` then load `?bot=1` (PlaybookBotGUI.md).

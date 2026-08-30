@@ -258,9 +258,15 @@ export class PlaybookBotExecution implements Execution {
     // through on one pass (donation cooldown, no room for the gift) is retried before the expiry
     { name: "expiries", every: 50, run: () => this.diplomacy.manageExpiries() },
     { name: "early boat", every: 20, run: () => {
-      if (this.boatSent || this.sit.tick < this.p.boatAtTick) return;
+      if (this.sit.tick < this.p.boatAtTick) return;
+      // `boatOpening`: while tick < boatOpeningUntil keep up to boatOpeningCount transports alive instead of the one
+      // early boat — extras go through earlyBoat's own picker in opening mode. Never on a small landmass: the island
+      // spawn's plain rules (early boat + seaExpansion) already boat continuously and the flag must not double-spend.
+      const opening = this.p.boatOpening && !this.onSmallLandmass && this.sit.tick < this.p.boatOpeningUntil;
+      if (this.boatSent && !(opening && this.sit.boats < this.p.boatOpeningCount)) return;
       if (this.coastFirst()) { if (!this.earlyWould && this.dryRun(() => this.military.earlyBoat())) { this.earlyWould = true; this.ctx.fire("boatsAfterCoast"); } return; }
-      this.boatSent = this.military.earlyBoat() || this.sit.tick > this.p.boatAtTick + 600;
+      if (!this.boatSent) { this.boatSent = this.military.earlyBoat() || this.sit.tick > this.p.boatAtTick + 600; return; } // the plain first boat: bookkeeping unchanged
+      this.military.earlyBoat(true); // an extra opening boat: fires `boatOpening` and logs BOAT OPENING at the launch site
     } },
     { name: "tribe boats", every: 100, run: () => {
       if (this.sit.tick < 300) return;
