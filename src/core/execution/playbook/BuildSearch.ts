@@ -105,9 +105,10 @@ const MIN_PAYBACK = 200;
 
 // ---------------------------------------------------------------- horizon
 /** Opening and consolidate: a 10-minute block; war: 4000 ticks (a war resolves inside that); endgame: what is
- *  left of the 25:00 clock (guide: nothing bought after 25:00 pays back), at least 1000 and never more than the
- *  opening block (the endgame phase can start at 6:00 when we are top three under an enemy silo). */
-export function horizonForPhase(phase: Phase, tick: number, block = 6000): number {
+ *  left of the 25:00 clock (clock − 3000; guide: nothing bought after 25:00 pays back), at least 1000 and never
+ *  more than the opening block (the endgame phase can start at 6:00 when we are top three under an enemy silo).
+ *  With no clock (0, an open-ended game) an endgame is planned like a war. */
+export function horizonForPhase(phase: Phase, tick: number, block = 6000, clock = 18000): number {
   switch (phase) {
     case "opening":
     case "consolidate":
@@ -115,7 +116,7 @@ export function horizonForPhase(phase: Phase, tick: number, block = 6000): numbe
     case "war":
       return Math.min(block, 4000);
     case "endgame":
-      return Math.min(block, Math.max(1000, 15000 - tick));
+      return clock > 0 ? Math.min(block, Math.max(1000, clock - 3000 - tick)) : Math.min(block, 4000);
   }
 }
 

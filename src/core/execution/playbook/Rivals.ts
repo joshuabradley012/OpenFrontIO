@@ -98,7 +98,9 @@ export class Rivals {
   private seenAttacks = new Set<string>(); // attack ids already charged against trust
   private pendingRequests = new Set<Player>(); // outgoing alliance requests still open last tick
   private expiry = new Map<Player, number>(); // expiresAt of each current alliance, to tell a break from a lapse
-  private nationCache = new Map<Player, { tick: number; can: boolean; send: number }>();
+  private nationCache = new Map<Player, { tick: number; friendly: boolean; can: boolean; send: number }>();
+  /** The RivalView map, rebuilt on the 10-tick cadence every reader runs on (or when the watched set changes). */
+  private view: { tick: number; key: string; map: Map<Player, RivalView> } | null = null;
   /** `threatMap`: the per-segment influence map, rebuilt in the same border pass (empty while the flag is off). */
   readonly threat: ThreatMap;
   private wildCache = new Map<Player, { tick: number; bound: boolean }>();
@@ -151,6 +153,10 @@ export class Rivals {
     const watched = sit.rivals.concat(sit.friends);
     this.watchEvents(sit, watched);
     if (t - this.lastSample >= SAMPLE_EVERY) { this.sample(t, watched); this.lastSample = t; }
+    // every reader of sit.rival (the war scorer, the retreat judge, the utility layer, the nation checks) runs on a
+    // 10-tick rule; between those ticks the last map is handed back rather than rebuilt (a border walk per neighbour)
+    const key = watched.map((p) => p.smallID()).join(",");
+    if (this.view !== null && t % 10 !== 0 && this.view.key === key) return this.view.map;
     const out = new Map<Player, RivalView>();
     for (const p of watched) {
       const r = this.ring.get(p);
@@ -159,13 +165,14 @@ export class Rivals {
       // the nation rules walk its border (troopSendCap → nearby) and its units (maxTroops): refreshed every 10 ticks,
       // the cadence every rule that will read them runs on
       let nr = this.nationCache.get(p);
-      if (!nr || t - nr.tick >= 10) {
-        const nation = p.type() === PlayerType.Nation && !me.isFriendly(p);
+      const friendly = me.isFriendly(p);
+      if (!nr || t - nr.tick >= 10 || nr.friendly !== friendly) { // a new ally (or a lapsed one) is re-read at once, not after the cache's 10 ticks
+        const nation = p.type() === PlayerType.Nation && !friendly;
         let send = nation ? this.nationWouldSend(p) : 0;
         let can = nation && this.nationCanAttack(p, send, sit.troops);
         // `wildernessAware`: free land next door takes its whole surplus before any player is considered
         if (can && this.ctx.p.wildernessAware && this.wildernessBound(p)) { can = false; send = 0; this.lim.fire("wildernessAware", "view"); }
-        nr = { tick: t, can, send };
+        nr = { tick: t, friendly, can, send };
         this.nationCache.set(p, nr);
       }
       const isNation = p.type() === PlayerType.Nation;
@@ -181,6 +188,7 @@ export class Rivals {
         relation: isNation ? p.relation(me) : null,
       });
     }
+    this.view = { tick: t, key, map: out };
     return out;
   }
 

@@ -155,6 +155,7 @@ export async function runLab(): Promise<void> {
   if (process.env.EVERY) params.expandEvery = Number(process.env.EVERY);
   if (process.env.PARAMS) { Object.assign(params, o); if (o.spawnInland !== undefined) DEFAULT_PLAYBOOK.spawnInland = o.spawnInland; }
   const minutes = process.env.MIN === "full" ? 170 : process.env.MIN ? Number(process.env.MIN) : 20;
+  if (process.env.MIN === "full" && o.clockTicks === undefined) params.clockTicks = 0; // open-ended: the 25:00 posture must not freeze for 145 minutes (PlaybookParams.clockTicks)
   const shift = Number(process.env.SHIFT ?? 0);
   for (const [name, pref0] of spawns) { const pref: [number, number] = [pref0[0] + shift, pref0[1] + shift]; if (process.env.SPAWN && process.env.SPAWN !== name) continue; out.push(await runGame(name, params, minutes, process.env.DIFF === "medium" ? Difficulty.Medium : Difficulty.Hard, pref)); fs.writeFileSync(OUT + (process.env.OUTFILE ?? "lab_v10.txt"), out.join("\n\n")); }
   fs.writeFileSync(OUT + "lab_baseline.txt", out.join("\n\n"));

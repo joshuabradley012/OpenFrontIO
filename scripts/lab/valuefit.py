@@ -22,6 +22,9 @@ import random
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import summarize  # noqa: E402
+
 TIMES = [300, 480, 600, 720, 900]  # seconds: 5, 8, 10, 12, 15 min
 FEATURES = ["log_tiles", "log_troops", "troops_over_cap", "log_gold", "cities", "ports", "dp", "allies", "rank_score", "share", "log_cap"]
 
@@ -32,24 +35,22 @@ ROW_RE = re.compile(
 )
 DEAD_RE = re.compile(r"^\s*DEAD at (?P<t>\d+)s")
 FINAL_RE = re.compile(r"FINAL(?: rank=(?P<rank>\d+))?(?: share=(?P<share>[\d.]+))?.*?alive=(?P<alive>\w+) tiles=(?P<tiles>\d+)(?:.*? players=(?P<players>\d+))?")
+WINNER_RE = summarize.WINNER_RE
 
 
-# ---------------------------------------------------------------- scoring (summarize.py's formulas)
+# ---------------------------------------------------------------- scoring: summarize.py's own functions (a copy here drifted:
+# no winner= / WIN_BONUS, so a full-game FINAL scored the same won or lost)
 def land_score(tiles):
-    return math.log10(max(tiles, 100)) / 5
+    return summarize.land_score(tiles)
 
 
 def rank_score(alive, rank, players):
-    if not alive or rank is None or rank >= 99:
-        return 0.0
-    if players is None or players <= 1:
-        return 1.0
-    return max(0.0, 1 - (rank - 1) / (players - 1))
+    return summarize.rank_score({"alive": alive, "rank": rank, "players": players})
 
 
-def score(alive, rank, players, tiles):
-    crown = 0.25 if (alive and rank == 1) else 0.0
-    return land_score(tiles) + rank_score(alive, rank, players) + crown
+def score(alive, rank, players, tiles, winner=None):
+    """summarize.wscore: land + rank + crown, plus WIN_BONUS when the FINAL line says winner=us (MIN=full sweeps)."""
+    return summarize.wscore({"alive": alive, "rank": rank, "players": players, "tiles": tiles, "winner": winner})
 
 
 # ---------------------------------------------------------------- parsing
@@ -81,6 +82,7 @@ def parse_games(text, source):
                 "alive": m.group("alive") == "true",
                 "tiles": int(m.group("tiles")),
                 "players": int(m.group("players")) if m.group("players") else None,
+                "winner": (WINNER_RE.search(line).group(1) if WINNER_RE.search(line) else None),
             }
     return [x for x in games if x["final"] is not None]
 
@@ -102,7 +104,7 @@ def final_score(g):
     players = f["players"]
     if players is None and g["rows"]:
         players = g["rows"][max(g["rows"])]["players"]
-    return score(f["alive"], f["rank"], players, f["tiles"]), players
+    return score(f["alive"], f["rank"], players, f["tiles"], f.get("winner")), players
 
 
 def features_at(g, t):

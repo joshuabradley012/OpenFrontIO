@@ -18,7 +18,7 @@ import {
 import { TileRef } from "../../game/GameMap";
 import { PseudoRandom } from "../../PseudoRandom";
 import { simpleHash } from "../../Util";
-import { Difficulty, GameMapType } from "../../game/Game";
+import { GameMapType } from "../../game/Game";
 import { AttackExecution } from "../AttackExecution";
 import { TransportShipExecution } from "../TransportShipExecution";
 import { BotContext, FireLimiter } from "./Context";
@@ -160,17 +160,18 @@ export class PlaybookBotExecution implements Execution {
     const me = this.player;
     const share = this.sit.share;
     const expiring = me.alliances().filter((al) => al.expiresAt() - t < 450).map((al) => al.other(me));
-    // the finish: nations MIRV anyone over 65 % of the map on Medium (55 % Hard), allies included. Under that line
-    // while a rival can still fire; remove the rivals; then push for the win.
-    const diff = this.mg.config().gameConfig().difficulty;
-    const denial = diff === Difficulty.Easy ? 0.75 : diff === Difficulty.Medium ? 0.65 : diff === Difficulty.Hard ? 0.55 : 0.5;
+    // the finish: nations MIRV anyone over 65 % of the map on Medium (55 % Hard, 40 % Impossible), allies included —
+    // MirvRisk.denial() is the rule itself (mirvRules' table; in a team game the TEAM's share against the team line,
+    // fired at the largest member). Under that line while a rival can still fire; remove the rivals; then push for the win.
+    const d = this.risk.denial();
+    const denial = d.threshold, denialShare = d.share;
     // a rival can fire once it has a silo and either the live MIRV price (25M + 15M per launch on the map, the gate
     // NationMIRVBehavior.considerMIRV uses) or a MIRV already built
     const mirvInfo = this.mg.config().unitInfo(UnitType.MIRV);
     const threats = this.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot && !me.isOnSameTeam(p) && p.units(UnitType.MissileSilo).length > 0 && (p.gold() >= mirvInfo.cost(this.mg, p) || p.units(UnitType.MIRV).length > 0));
     let mode: "grow" | "hold" | "push" = "grow";
-    if (this.p.finishRule && share >= denial - 0.03) mode = threats.length > 0 ? "hold" : "push";
-    else if (this.p.finishRule && share >= 0.45 && threats.length === 0) mode = "push";
+    if (this.p.finishRule && denialShare >= denial - 0.03) mode = threats.length > 0 ? "hold" : "push";
+    else if (this.p.finishRule && denialShare >= Math.min(0.45, denial - 0.03) && threats.length === 0) mode = "push";
     if (mode !== this.lastMode) { if (this.log.length < 2000) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${mode}: share ${(share * 100).toFixed(0)} %, ${threats.length} MIRV-capable rivals${threats.length ? " (" + threats.map((x) => x.name()).join(", ") + ")" : ""}`); this.lastMode = mode; }
     // A Hard nation renews only if we look as strong as it at expiry: 45 s before an alliance with a stronger
     // neighbour lapses, the army stays home so the check sees all of it.
@@ -269,7 +270,7 @@ export class PlaybookBotExecution implements Execution {
     { name: "sea expansion", every: 100, run: () => { if (this.sit.tick >= 600) this.military.seaExpansion(); } },
     { name: "finish by boat", every: 100, run: () => { if (this.p.finishByBoat && this.sit.tick >= 1200) this.military.finishByBoat(); } }, // `finishByBoat`: the remnant a land war cannot reach
     { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick, this.economy.spentThisPass); } },
-    { name: "mirv", every: 100, run: () => this.military.maybeMIRV() },
+    { name: "mirv", every: 100, run: () => this.military.maybeMIRV(this.economy.spentThisPass) }, // after "build" in the same tick: its buys are not yet deducted
     // always-on diagnostics: the nations' MIRV rules against us (logged on change) and every enemy MIRV aimed at our land
     { name: "mirv risk", every: 100, run: () => this.risk.check() },
     { name: "mirved", every: 10, run: () => this.risk.scan() },
@@ -299,9 +300,12 @@ export class PlaybookBotExecution implements Execution {
       this.landmassChecked = true;
       this.onSmallLandmass = this.q.landmassSize(this.p.islandMaxTiles + 1) <= this.p.islandMaxTiles;
     }
-    this.readSituation();
+    // requests are answered before the picture is read: an accepted request is a friend in this tick's neighbour
+    // split and Rivals' nation view (until 2026-08-30 the view ran first and, cached 10 ticks, kept the new ally an
+    // unfriendly nation whose attack rules `trustWars` and the pile-in test still read)
     this.diplomacy.acceptAlliances();
-    this.q.invalidateNeighbours(); // an accepted request is a friend from this tick on
+    this.q.invalidateNeighbours();
+    this.readSituation();
     this.events();
     for (const r of this.rules) if (ticks % r.every === 0) r.run();
   }

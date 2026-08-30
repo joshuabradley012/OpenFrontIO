@@ -6,11 +6,11 @@ import { ConstructionExecution } from "../ConstructionExecution";
 import { MirvExecution } from "../MIRVExecution";
 import { RetreatExecution } from "../RetreatExecution";
 import { TargetPlayerExecution } from "../TargetPlayerExecution";
-import { calculateTerritoryCenter } from "../Util";
+import { calculateTerritoryCenter, listNukeBreakAlliance } from "../Util";
 import { BotContext, FireLimiter } from "./Context";
 import { AttackEstimate, EstimateOptions, estimateAttack } from "./Estimate";
 import { MirvRisk } from "./MirvRisk";
-import { SituationQueries } from "./Situation";
+import { onTheClock, SituationQueries } from "./Situation";
 import { clamp, compensate, describeOption, linear, logistic, Option, rankOptions } from "./Utility";
 
 const CALIB_HORIZON = 3000; // calibration log: a war that has not resolved in 5 minutes is judged on where it stands then
@@ -22,8 +22,8 @@ const RETREAT_MALUS = 0.75; // AttackExecution.retreat(25) against a player: the
  *  engine paths the ship over water around every coast (TransportShipExecution → WaterPathFinder), often several
  *  times the straight-line distance the rules used to rank by: 45 lab games launched every early boat at tick 60
  *  to an "empty shore" 54–112 tiles straight-line, and tribe/island boats sailed a median 156 tiles (p90 292). */
-export const BOAT_MAX_PATH = { early: 80, tribe: 150, island: 150, sea: 200, finish: 250, invade: 300 } as const;
-const WATER_MAX_DIST = Math.max(...Object.values(BOAT_MAX_PATH)); // the fill stops at the longest cap any rule accepts (300)
+export const BOAT_MAX_PATH = { early: 80, tribe: 150, sea: 200, finish: 250 } as const;
+const WATER_MAX_DIST = Math.max(...Object.values(BOAT_MAX_PATH)); // the fill stops at the longest cap any rule accepts (250)
 const WATER_BFS_TILES = 400_000; // ... and at this many water tiles (a 1000-tile coast × 300 sails 300k; a 40k budget starved an 8-minute empire's coast to a 50-tile band)
 const WATER_CACHE_TICKS = 100; // the fill is reused by every boat rule of the pass and for this long after
 /** `boatsWaterPath`: water-path lengths from our shore, from one breadth-first fill over the water tiles the
@@ -81,7 +81,6 @@ export class Military {
   private lastCounter = new Map<Player, number>();
   private embargoedAt_ = new Map<Player, number>();
   private bombed = new Map<TileRef, number>();
-  private lastInvasionTick = -1e9;
   private lim: FireLimiter;
 
   constructor(
@@ -367,16 +366,20 @@ export class Military {
   /** Playbook phase 6: a MIRV goes to (1) whoever has one in the air at us, (2) anyone over half the map,
    *  (3) from 25:00, the largest un-allied player above us when we are in the top three — launch first, then
    *  the collapse rule sends the army into the emptied land. */
-  maybeMIRV(): void {
+  maybeMIRV(spent = 0n): void {
     const me = this.ctx.me;
     if (me.units(UnitType.MissileSilo).length === 0 || this.ctx.mg.config().isUnitDisabled(UnitType.MIRV)) return;
     if (this.ctx.mg.ticks() - this.lastMirvTick < 600) return;
     const cost = this.ctx.mg.config().unitInfo(UnitType.MIRV).cost(this.ctx.mg, me);
-    if (me.gold() < cost) return;
+    // `spent`: gold Economy.build committed this pass (deducted next tick) — MirvExecution checks the price on its own
+    // tick, and a launch it drops for gold would still have burnt the cooldown here
+    if (me.gold() - spent < cost) return;
     const total = this.ctx.mg.numLandTiles();
     const others = this.ctx.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot && !me.isFriendly(p) && !me.isOnSameTeam(p));
     let target: Player | null = null, why = "";
-    if (this.ctx.sit.mode !== "grow" && this.ctx.sit.threats.length > 0) { target = [...this.ctx.sit.threats].sort((a, b) => Number(b.gold() - a.gold()))[0]; why = `finish: ${this.ctx.sit.mode}, richest MIRV-capable rival`; }
+    // the finish: the richest MIRV-capable rival — `threats` is every silo owner off our team, allies included
+    // (readSlow: an ally can still fire), so the un-allied filter of `others` is applied here
+    if (this.ctx.sit.mode !== "grow") { const t = this.ctx.sit.threats.filter((p) => others.includes(p)).sort((a, b) => Number(b.gold() - a.gold()))[0]; if (t !== undefined) { target = t; why = `finish: ${this.ctx.sit.mode}, richest MIRV-capable rival`; } }
     if (!target) for (const p of others) for (const m of p.units(UnitType.MIRV)) { const d = m.targetTile(); if (d && this.ctx.mg.hasOwner(d) && this.ctx.mg.owner(d) === me) { target = p; why = "counter"; } }
     if (!target) { const t = others.filter((p) => p.numTilesOwned() / total >= 0.5).sort((a, b) => b.numTilesOwned() - a.numTilesOwned())[0]; if (t) { target = t; why = "victory denial"; } }
     if (!target && this.ctx.mg.ticks() >= 12000) {
@@ -709,7 +712,7 @@ export class Military {
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
     const nonBot = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
     const wars = nonBot.filter((a) => !this.counters.has(a.target() as Player)).length + this.pending.size;
-    const limit = this.ctx.mg.ticks() >= 15000 && atCapNow ? 2 : 1;
+    const limit = onTheClock(this.ctx.p, this.ctx.mg.ticks()) && atCapNow ? 2 : 1;
     // `multiWar`: a second and third war beside the running ones — a running counter occupies a slot (the strictOneWar
     // finding) — as long as the wave fits above the reserve and the total committed stays under fightMaxShare of the army
     let extra = false, extraRoom = Infinity;
@@ -734,8 +737,11 @@ export class Military {
     let { rivals } = nb;
     // before the 5-minute mark only clear prey: a neighbour we can hit with 2.5× its whole army
     if (early) rivals = rivals.filter((r) => r.troops() * 2.5 <= me.troops() * this.ctx.p.fightMaxShare && r.numTilesOwned() <= me.numTilesOwned());
+    // the running war's target is forgotten only when it is dead or no longer an unfriendly neighbour — never because
+    // the early prey filter above left it out for a pass (it did, until 2026-08-30, and the sticky-war filter, the
+    // embargo bookkeeping and finishByBoat lost the war)
+    if (this.currentTarget_ && (!this.currentTarget_.isAlive() || !nb.rivals.includes(this.currentTarget_))) this.currentTarget_ = null;
     if (rivals.length === 0) return null;
-    if (this.currentTarget_ && (!this.currentTarget_.isAlive() || !rivals.includes(this.currentTarget_))) this.currentTarget_ = null;
     let candidates = rivals.filter((r) => me.canAttackPlayer(r) && !this.q.outgoingTo(r) && !this.pending.has(r) && this.reachable(r));
     // one enemy at a time, to the end: nations nuke whoever attacks them, and eight half-wars make eight nuclear enemies.
     // The current target stays the only candidate while it lives, borders us, and was hit within the last three minutes.
@@ -773,7 +779,7 @@ export class Military {
   private warScorer(gapOwner: Player | null, threatHere: Player | null, annex: Set<Player>, extra = false, extraRoom = Infinity, quiet = false) {
     const me = this.ctx.me, cap = this.q.cap();
     const atCap = me.troops() >= cap * 0.95;
-    const endgame = this.ctx.mg.ticks() >= 15000 || this.ctx.sit.mode === "push"; // 25:00 or the push — land now is worth more than troops later
+    const endgame = onTheClock(this.ctx.p, this.ctx.mg.ticks()) || this.ctx.sit.mode === "push"; // 25:00 (clockTicks − 3000) or the push — land now is worth more than troops later
     // review #5 (`threatMap`): prefer a rival whose army is committed on its other borders (+3 × busyElsewhere) and
     // avoid opening a war on a border where we are already contested (−2 × Σ vulnerability / troops)
     const threatBonus = (r: Player) => { if (!this.ctx.p.threatMap) return 0; const tm = this.q.rivals.threat; const b = this.ctx.p.threatBusyWeight * tm.busyElsewhere(r) - (this.ctx.p.threatVulnWeight * tm.vulnerability(r)) / Math.max(1, this.ctx.sit.troops); if (b !== 0 && !quiet && this.ctx.mg.ticks() - this.threatFired >= 100) { this.threatFired = this.ctx.mg.ticks(); this.ctx.fire("threatMap"); } return b; };
@@ -862,6 +868,7 @@ export class Military {
     if (pick.bomb) { this.currentTarget_ = r; this.maybeBomb(now); } // open the war with a bomb on their cluster
     if (pick.want < 1000) return false;
     if (!pick.extra) this.currentTarget_ = r; // `multiWar`: the sticky target stays the first war's
+    this.counters.delete(r); // a war wave, whatever the counter before it did
     if (!me.hasEmbargoAgainst(r) && r.type() !== PlayerType.Nation) { me.addEmbargo(r, false); this.embargoedAt_.set(r, now); }
     const want = this.ctx.send(r.id(), pick.want, "war", 1000, 0.3);
     if (want === 0) return false;
@@ -893,11 +900,11 @@ export class Military {
     return est.tilesTaken / Math.max(1, est.attackerLoss, want * 0.1);
   }
   /** How far ahead an option is judged: 2:30 in the opening (free land is cheaper than anything that takes longer),
-   *  5:00 in consolidate / war, what is left of the 30-minute clock in the endgame (at least a minute). */
+   *  5:00 in consolidate / war, what is left of the clock (clockTicks) in the endgame (at least a minute; 5:00 with no clock). */
   private utilHorizon(): number {
     const ph = this.ctx.sit.phase;
     if (ph === "opening") return 1500;
-    if (ph === "endgame") return Math.max(600, Math.min(3000, 18000 - this.ctx.sit.tick));
+    if (ph === "endgame") return this.ctx.p.clockTicks > 0 ? Math.max(600, Math.min(3000, this.ctx.p.clockTicks - this.ctx.sit.tick)) : 3000;
     return 3000;
   }
   /** Border-threat consideration shared by every option: 1 on a calm border, down to 0.5 when the unanswered pressure
@@ -1120,6 +1127,10 @@ export class Military {
     const me = this.ctx.me;
     this.trackCalibration();
     for (const id of this.hyst.keys()) if (!me.outgoingAttacks().some((a) => a.id() === id)) this.hyst.delete(id);
+    // a counter wave that is gone (cancelled troop-for-troop by AttackExecution, or home) leaves `counters`: the entry
+    // used to survive and a later real war on that player was recalled as a 'counter done'. A counter sent this pass
+    // is not in outgoingAttacks() before its execution inits, hence the 20-tick grace after lastCounter.
+    for (const p of this.counters) if (!this.q.outgoingTo(p) && this.ctx.mg.ticks() - (this.lastCounter.get(p) ?? -1e9) > 20) this.counters.delete(p);
     for (const a of me.outgoingAttacks()) {
       const t = a.target();
       if (!t.isPlayer() || t.type() === PlayerType.Bot) continue;
@@ -1244,33 +1255,6 @@ export class Military {
     return false;
   }
 
-  sendBoat(): boolean {
-    const me = this.ctx.me;
-    if (me.unitCount(UnitType.TransportShip) >= this.ctx.mg.config().boatMaxNumber()) return false;
-    const border = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isShore(t));
-    if (border.length === 0) return false;
-    const from = border[this.ctx.random.nextInt(0, border.length)];
-    const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
-    const mine = this.q.landmassTiles(this.ctx.p.islandMaxTiles + 1);
-    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null; // `boatsWaterPath`: rank by the sailed path, refuse beyond BOAT_MAX_PATH.island
-    let best: TileRef | null = null, bestD = 1e9, slBest: TileRef | null = null, slD = 1e9;
-    for (let dy = -200; dy <= 200; dy += 6) for (let dx = -200; dx <= 200; dx += 6) {
-      const x = fx + dx, y = fy + dy;
-      if (!this.ctx.mg.isValidCoord(x, y)) continue;
-      const t = this.ctx.mg.ref(x, y);
-      if (!this.ctx.mg.isLand(t) || !this.ctx.mg.isShore(t) || this.ctx.mg.hasOwner(t) || mine.has(t)) continue;
-      const dm = Math.abs(dx) + Math.abs(dy);
-      if (dm < 30) continue;
-      if (dm < slD) { slD = dm; slBest = t; }
-      const d = wp ? wp.len(t) : dm;
-      if (d <= (wp ? BOAT_MAX_PATH.island : 1e9) && d < bestD) { bestD = d; best = t; }
-    }
-    if (best === null) { if (wp && slBest !== null) this.lim.fire("boatsWaterPath", "island"); return false; } // refused by the cap
-    const sent = this.ctx.boat(best, Math.floor(this.ctx.sit.troops * this.ctx.p.boatShare), `island boat, ${bestD} tiles${wp ? " by water" : ""}`) > 0;
-    if (sent && wp && slBest !== best) this.lim.fire("boatsWaterPath", "island");
-    return sent;
-  }
-
   /** No bots on our borders: boat to the nearest bot within reach, with 1.67× its troops. */
   private boatedAt = new Map<Player, number>();
   huntBotsByBoat(): void {
@@ -1315,53 +1299,6 @@ export class Military {
     if (!this.ctx.dry) this.boatedAt.set(bestBot, this.ctx.mg.ticks());
     if (nearest && oldBest !== best) this.lim.fire("boatsNearest", "tribe");
     if (wp && slBest !== best) this.lim.fire("boatsWaterPath", "tribe");
-  }
-
-  /** Boxed in at cap with nothing to fight on land: land a big boat on the weakest unfriendly player within reach. */
-  seaInvasion(): void {
-    const me = this.ctx.me;
-    if (me.troops() < this.q.cap() * 0.9) return;
-    if (this.ctx.mg.ticks() - this.lastInvasionTick < 1800) return;
-    if (me.units(UnitType.TransportShip).length > 0) return; // one landing at a time
-    if (me.outgoingAttacks().length > 0 || me.incomingAttacks().some((a) => a.attacker().type() !== PlayerType.Bot)) return;
-    const nb = this.q.neighbours();
-    // only when genuinely boxed in: no empty land, no bots, and no neighbour we could fight on land
-    if (nb.wilderness || nb.bots.length > 0) return;
-    if (nb.rivals.some((r) => r.troops() < me.troops() * 0.5)) return;
-    if (nb.rivals.some((r) => r.troops() > me.troops() * 0.6)) return; // a strong hostile neighbour: the army stays home
-    const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isShore(t));
-    if (shore.length === 0) return;
-    const from = shore[Math.floor(shore.length / 2)];
-    const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
-    const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
-    const nearest = sample.length > 0;
-    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null; // `boatsWaterPath`: rank by the sailed path, refuse beyond BOAT_MAX_PATH.invade; slBest is the straight-line pick, for the liveness count
-    const { rivals } = this.q.neighbours();
-    let best: { tile: TileRef; p: Player; d: number; score: number } | null = null, oldBest: { tile: TileRef; score: number } | null = null, slBest: { tile: TileRef; score: number } | null = null;
-    for (const o of this.ctx.mg.players()) {
-      if (o === me || !o.isAlive() || me.isFriendly(o) || o.type() === PlayerType.Bot || rivals.includes(o)) continue;
-      if (o.troops() > me.troops() * 0.25 || o.numTilesOwned() < 300 || o.units(UnitType.DefensePost).length > 0) continue;
-      let i = 0;
-      for (const t of o.borderTiles()) {
-        if ((i++ % 9) !== 0 || !this.ctx.mg.isShore(t)) continue;
-        const dO = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
-        const dm = nearest ? this.nearestShoreDist(t, sample) : dO;
-        const d = wp ? wp.len(t) : dm;
-        const base = this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - o.units(UnitType.DefensePost).length * 2;
-        if (nearest && dO <= 500) { const s = base - dO / 100; if (oldBest === null || s > oldBest.score) oldBest = { tile: t, score: s }; }
-        if (wp && dm <= 500) { const s = nearest ? base / Math.max(1, dm / 40) : base - dm / 100; if (slBest === null || s > slBest.score) slBest = { tile: t, score: s }; }
-        if (d > (wp ? BOAT_MAX_PATH.invade : 500)) continue;
-        const score = nearest ? base / Math.max(1, d / 40) : this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - d / 100 - o.units(UnitType.DefensePost).length * 2;
-        if (best === null || score > best.score) best = { tile: t, p: o, d, score };
-      }
-    }
-    if (best === null) { if (wp && slBest !== null) this.lim.fire("boatsWaterPath", "invade"); return; } // refused by the cap
-    const troops = Math.min(Math.floor(this.ctx.sit.spendable * 0.5), Math.floor(this.ctx.sit.troops - this.ctx.sit.cap * 0.3), Math.ceil(best.p.troops() * 3) + 5000);
-    if (troops < 20000 || troops < best.p.troops() * 3) return; // a landing under 3× is the boat that takes no land
-    if (this.ctx.boat(best.tile, troops, `INVADE ${best.p.name()} ${best.p.numTilesOwned()}t/${Math.round(best.p.troops() / 1000)}k, ${best.d} tiles${wp ? " by water" : ""}`) === 0) return;
-    this.lastInvasionTick = this.ctx.mg.ticks();
-    if (nearest && (oldBest === null || oldBest.tile !== best.tile)) this.lim.fire("boatsNearest", "invade");
-    if (wp && (slBest === null || slBest.tile !== best.tile)) this.lim.fire("boatsWaterPath", "invade");
   }
 
   // ---------------------------------------------------------------- finishByBoat: the remnant a land war cannot reach
@@ -1428,7 +1365,9 @@ export class Military {
   }
 
   // ---------------------------------------------------------------- nukes
-  /** `spent`: gold Economy.build committed this pass (deducted next tick) — read with `bombBudget` on only. */
+  /** `spent`: gold Economy.build committed this pass (deducted next tick). NukeExecution checks the price on its own
+   *  tick and silently drops a launch it cannot pay for, while the cooldown, the `bombed` blacklist and the bomb
+   *  count were already recorded here — so the bomb is judged on what is left after this pass's buys. */
   maybeBomb(ticks: number, spent = 0n): void {
     const me = this.ctx.me;
     if (me.units(UnitType.MissileSilo).length === 0) return;
@@ -1454,7 +1393,7 @@ export class Military {
     const { enemies, rich } = this.bombEnemies(gold, true);
     if (enemies.size === 0) return;
     const reserve = BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve);
-    const best = this.bombSearch(enemies, rich, (type) => gold >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve);
+    const best = this.bombSearch(enemies, rich, (type) => gold - spent >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve);
     if (best === null) return;
     this.launch(best, ticks);
   }
@@ -1503,7 +1442,12 @@ export class Military {
   /** maybeBomb's value search: over every structure of `enemies` not yet bombed, outside a SAM umbrella (the SAM
    *  always hits) and 32 tiles clear of our own or allied land, the bomb — Hydrogen only 105 tiles clear of friends
    *  on an owner of ≥ 8000 tiles (3000 when `rich`), and only the types `allow` accepts — whose blast covers the most
-   *  building value (city 3, silo / SAM 4, else 2, × level) per 100k of its price; null when nothing reaches value 4. */
+   *  building value (city 3, silo / SAM 4, else 2, × level) per 100k of its price; null when nothing reaches value 4.
+   *  A pick is then checked against the engine's own collateral rule (NukeExecution.maybeBreakAlliances via
+   *  listNukeBreakAlliance: every player with more than nukeAllianceBreakThreshold weighted tiles in the blast, or
+   *  any structure under it, is docked −100 relation and, if allied, betrayed): a bomb that would touch anyone but
+   *  its target is refused. The sampled clearOfFriends misses a thin strip; this one is exact and runs only on a
+   *  candidate about to become the pick. */
   private bombSearch(enemies: Set<Player>, rich: boolean, allow: (type: UnitType) => boolean): BombPick | null {
     const atomCost = this.ctx.mg.config().unitInfo(UnitType.AtomBomb).cost(this.ctx.mg, this.ctx.me);
     const hCost = this.ctx.mg.config().unitInfo(UnitType.HydrogenBomb).cost(this.ctx.mg, this.ctx.me);
@@ -1524,7 +1468,7 @@ export class Military {
           let value = 0;
           for (const o of structures) if (this.ctx.mg.euclideanDistSquared(o.tile(), tile) <= r * r) value += (o.type() === UnitType.City ? 3 : o.type() === UnitType.MissileSilo || o.type() === UnitType.SAMLauncher ? 4 : 2) * o.level();
           const perGold = value / Number(cost / 100_000n);
-          if (value >= 4 && (best === null || perGold > best.value)) best = { tile, value: perGold, type, enemy, cost };
+          if (value >= 4 && (best === null || perGold > best.value) && !this.blastCollateral(tile, type, enemy)) best = { tile, value: perGold, type, enemy, cost };
         }
       }
     }
@@ -1564,6 +1508,13 @@ export class Military {
   /** `bombBudget`: gold Economy.build keeps out of every discretionary buy — the planned bomb's price, or 0n. */
   bombFund(ticks: number): bigint {
     return this.bombPlan(ticks)?.cost ?? 0n;
+  }
+  /** Would a `type` bomb at `tile` hit anyone but `enemy` by the engine's rule (see bombSearch)? */
+  private blastCollateral(tile: TileRef, type: UnitType, enemy: Player): boolean {
+    const mg = this.ctx.mg;
+    const hit = listNukeBreakAlliance({ game: mg, targetTile: tile, magnitude: mg.config().nukeMagnitudes(type), threshold: mg.config().nukeAllianceBreakThreshold() });
+    for (const id of hit) if (id !== enemy.smallID()) return true;
+    return false;
   }
   clearOfFriends(tile: TileRef, r: number): boolean {
     const x = this.ctx.mg.x(tile), y = this.ctx.mg.y(tile);

@@ -119,8 +119,9 @@ export function estimateAttack(
     classes.set(key, c);
     return c;
   };
-  // defence posts: the same check attackLogic makes (any post of the defender within defensePostRange)
-  const posts = defender.units(UnitType.DefensePost).map((u) => u.tile());
+  // defence posts: the same check attackLogic makes (any ACTIVE post of the defender within defensePostRange —
+  // GameImpl.hasUnitNearby skips units under construction, so a post still building does not count)
+  const posts = defender.units(UnitType.DefensePost).filter((u) => !u.isUnderConstruction()).map((u) => u.tile());
   const range2 = config.defensePostRange() ** 2;
   function posted(tile: TileRef): boolean {
     for (const p of posts) if (mg.euclideanDistSquared(p, tile) <= range2) return true;

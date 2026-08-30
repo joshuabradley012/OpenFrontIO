@@ -4,9 +4,17 @@
 import { Attack, Player, PlayerType, TerraNullius, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { BotContext } from "./Context";
+import { PlaybookParams } from "./Params";
 import { RivalView, Rivals } from "./Rivals";
 
 export type Phase = "opening" | "consolidate" | "war" | "endgame";
+/** The timed rules' gate: `before` ticks (3000 = 5:00) before the clock the params assume the game ends at
+ *  (clockTicks, 18000 for the 30-minute public game). Never true in an open-ended game (clockTicks 0): the
+ *  25:00 posture — endgame phase, nothing bought, a second war at cap — used to freeze for the remaining
+ *  145 minutes of a MIN=full lab game. */
+export function onTheClock(p: PlaybookParams, tick: number, before = 3000): boolean {
+  return p.clockTicks > 0 && tick >= p.clockTicks - before;
+}
 export interface Neighbours { bots: Player[]; rivals: Player[]; friends: Player[]; wilderness: boolean }
 
 /** One evaluated picture of the game per tick; every rule reads this instead of re-deriving state. */
@@ -48,11 +56,11 @@ export class SituationQueries {
       this.lastPhase = sit.phase;
     }
   }
-  /** opening while free land is reachable; endgame from 15000 or when top-3 and an unfriendly silo exists; war when a
+  /** opening while free land is reachable; endgame from clockTicks − 3000 (25:00) or when top-3 and an unfriendly silo exists; war when a
    *  war is affordable (Military.fight's test) or troops ≥ fightAbove·cap (fight() proceeds from there); else consolidate. */
   private phase(sit: Situation): Phase {
     const p = this.ctx.p;
-    if (sit.tick >= 15000 || this.endgameThreat(sit.tick)) return "endgame";
+    if (onTheClock(p, sit.tick) || this.endgameThreat(sit.tick)) return "endgame";
     if (sit.wilderness || this.freeLandReachable(sit.tick)) return "opening";
     const affordable = sit.tick >= p.fightNotBeforeTick && sit.rivals.some((r) => r.troops() * p.fightRatio + 1000 <= sit.spendable * p.fightMaxShare);
     if (affordable || sit.troops >= sit.cap * p.fightAbove) return "war";
@@ -244,8 +252,6 @@ export class SituationQueries {
   postFacing(r: Player): boolean {
     const rid = r.smallID();
     for (const dp of this.ctx.me.units(UnitType.DefensePost)) {
-      const near = this.ctx.mg.nearbyUnits(dp.tile(), 30, UnitType.DefensePost);
-      void near;
       let touches = false;
       // cheap check: any tile of r within 30 manhattan of the post along a sampled ring
       const x = this.ctx.mg.x(dp.tile()), y = this.ctx.mg.y(dp.tile());

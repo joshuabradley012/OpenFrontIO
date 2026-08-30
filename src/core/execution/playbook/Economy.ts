@@ -1,6 +1,6 @@
 // Economy: gold spending (posts, SAMs, cities, ports, rail, silos, warships) and the tile pickers behind it.
 
-import { Difficulty, Player, PlayerType, Unit, UnitType } from "../../game/Game";
+import { Player, PlayerType, Unit, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { UpgradeStructureExecution } from "../UpgradeStructureExecution";
@@ -9,7 +9,7 @@ import { BuildKind, describePlan, EconModel, EconState, horizonForPhase, Plan, p
 import { BotContext, FireLimiter } from "./Context";
 import { Military } from "./Military";
 import { MirvRisk, mirvRules } from "./MirvRisk";
-import { SituationQueries } from "./Situation";
+import { onTheClock, SituationQueries } from "./Situation";
 
 export class Economy {
   private rail: { factory: Unit | null; anchor: Unit | null; infilled: number; extended: boolean; failed: number } = { factory: null, anchor: null, infilled: 0, extended: false, failed: 0 };
@@ -171,9 +171,7 @@ export class Economy {
     // `steamrollCap`: the rule itself (NationMIRVBehavior.selectSteamrollStopTarget) — the leader is MIRVed past
     // `minLeader` city units and at ≥ mult × the runner-up — at 0.9× the multiplier, so the flat 1.15× no longer
     // pins the cap at 9 when the field has 8 cities and the rule would allow 13
-    const diff = this.ctx.mg.config().gameConfig().difficulty;
-    const mult = diff === Difficulty.Easy ? 2 : diff === Difficulty.Medium ? 1.5 : diff === Difficulty.Hard ? 1.25 : 1.15;
-    const minLeader = diff === Difficulty.Easy ? 20 : diff === Difficulty.Impossible ? 8 : 10;
+    const { mult, minLeader } = mirvRules(this.ctx.mg.config().gameConfig().difficulty);
     return Math.max(minLeader, Math.floor(second * mult * 0.9));
   }
   private lastCapFire = -1e9;
@@ -223,7 +221,7 @@ export class Economy {
     // launch is the cheap one); the economy keeps buying only while troops are under 40 % of cap
     const mirvPriceNow = this.ctx.mg.config().unitInfo(UnitType.MIRV).cost(this.ctx.mg, me);
     const mirvFund = this.ctx.mg.ticks() >= 12000 && myRank <= 3 && me.units(UnitType.MissileSilo).length > 0 && me.units(UnitType.MIRV).length === 0 && me.troops() >= this.q.cap() * 0.4 && mirvPriceNow <= 40_000_000n ? mirvPriceNow : 0n; // past 40M the MIRV is a hoard, not a plan
-    const seaFull = this.ctx.mg.unitCount(UnitType.TradeShip) >= this.ctx.p.seaFullShips || this.ctx.mg.ticks() >= 15000; // guide: nothing bought after 25:00 pays back
+    const seaFull = this.ctx.mg.unitCount(UnitType.TradeShip) >= this.ctx.p.seaFullShips || onTheClock(this.ctx.p, this.ctx.mg.ticks()); // guide: nothing bought after 25:00 pays back (never in an open-ended game)
     this.spentThisPass = 0n;
     const upgrade = (u: Unit) => { this.ctx.mg.addExecution(new UpgradeStructureExecution(me, u.id())); this.spentThisPass += cost(u.type()); this.ctx.log(`t${ticks} level ${u.type()} → ${u.level() + 1}`); };
     // `bombBudget`: the planned bomb's price (Military.bombPlan — silo owned, a bomb target, a cluster worth it) is
@@ -445,7 +443,7 @@ export class Economy {
     if (seaFull && portLevels >= 20) state.portUnits = p.maxPortUnits; // chain rule: nothing more on a full sea
     // re-plan every 100 ticks, when gold jumped by half (a lane paid, a war ended), or after a purchase
     if (this.plan === null || ticks - this.planTick >= 100 || gold >= this.planGold * 1.5 + 100_000) {
-      this.plan = search(state, model, horizonForPhase(this.ctx.sit.phase, ticks, p.buildHorizon));
+      this.plan = search(state, model, horizonForPhase(this.ctx.sit.phase, ticks, p.buildHorizon, p.clockTicks));
       this.planTick = ticks; this.planGold = gold; this.lastPlanNodes = this.plan.nodes;
       if (ticks - this.lastPlanLog >= 300) { this.lastPlanLog = ticks; this.ctx.log(`t${ticks} PLAN h=${this.plan.horizon} +${((this.plan.value - this.plan.idleValue) / 1e6).toFixed(1)}M over idle, income ${Math.round(state.goldRate)}/t: ${describePlan(this.plan)} (${this.plan.nodes} nodes)`); }
     }

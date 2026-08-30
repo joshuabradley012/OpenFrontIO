@@ -39,29 +39,33 @@ def milestones():
     return out
 
 
-def bootstrap_ci(xs, stat=statistics.fmean, n=BOOT_N, seed=0):
-    """95 % percentile bootstrap of `stat` over games (mean for the score, median for tiles)."""
+def median_ci(xs, n=BOOT_N, seed=0):
+    """95 % percentile bootstrap of the median over games (tiles); the score's CI is summarize.bootstrap_ci."""
     if not xs:
         return (0.0, 0.0)
     rnd = random.Random(seed)
-    vals = sorted(stat(rnd.choices(xs, k=len(xs))) for _ in range(n))
+    vals = sorted(statistics.median(rnd.choices(xs, k=len(xs))) for _ in range(n))
     return (vals[int(0.025 * n)], vals[int(0.975 * n) - 1])
 
 
 def stats(games):
+    """summarize.summary's counts (games / alive / crowns / top3 — the same definitions as the lab tables) plus the
+    per-game objective summarize.obj (score, or wscore = score + WIN_BONUS · winner=us once resolve_objective has seen a
+    decided game) with summarize's bootstrap CI. A copy of these here had drifted (no winner=, its own crown and CI)."""
     vals = list(games.values())
-    scores = [summarize.score(g) for g in vals]
+    sm = summarize.summary(games)
+    scores = [summarize.obj(g) for g in vals]
     tiles = [g["tiles"] for g in vals]
     return {
-        "games": len(vals),
-        "alive": sum(g["alive"] for g in vals),
-        "crowns": sum(1 for g in vals if g["alive"] and g["rank"] == 1),
-        "top3": sum(1 for g in vals if g["alive"] and g["rank"] is not None and g["rank"] <= 3),
+        "games": sm["games"],
+        "alive": sm["alive"],
+        "crowns": sm["crowns"],
+        "top3": sm["top3"],
         "medianTiles": statistics.median(tiles) if tiles else 0,
-        "tilesCI": bootstrap_ci(tiles, statistics.median),
+        "tilesCI": median_ci(tiles),
         "meanTiles": statistics.fmean(tiles) if tiles else 0,
         "score": statistics.fmean(scores) if scores else 0.0,
-        "scoreCI": bootstrap_ci(scores),
+        "scoreCI": summarize.bootstrap_ci(scores),
     }
 
 
@@ -183,12 +187,15 @@ def main(argv):
     want = argv[1:] or [t for t, *_ in order if t in present]
     rows = []
     base = summarize.load(d, "base") if "base" in present else None
+    data = {t: summarize.load(d, t) for t in want if t in present}
+    summarize.resolve_objective(data)  # wscore when the dir has decided (winner=) games, else score
+    print(summarize.OBJECTIVE_NOTE)
     print(f"{'version':<10} {'commit':<10} {'games':>5} {'alive':>5} {'crowns':>6} {'top3':>5} {'med tiles':>9} {'score':>7} {'95% CI':<16} vs base (live pairs)")
     for tag in want:
         info = next((m for m in order if m[0] == tag), None)
         if info is None:
             print(f"{tag}: not in {MANIFEST}"); continue
-        games = summarize.load(d, tag)
+        games = data.get(tag) or summarize.load(d, tag)
         if not games:
             print(f"{tag:<10} no games in {d}"); continue
         st = stats(games)

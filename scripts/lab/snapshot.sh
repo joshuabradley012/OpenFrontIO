@@ -30,6 +30,8 @@ CI
 echo "creating $NAME ($SERVER_TYPE, $LOCATION) ..."
 hcloud server create --name "$NAME" --type "$SERVER_TYPE" --image ubuntu-24.04 --location "$LOCATION" \
   --ssh-key "$KEY_NAME" --label lab=1 --user-data-from-file /tmp/lab-cloud-init.yml >/dev/null
+# The builder box is deleted however the script ends (a failed step used to leave a billing cpx11 behind).
+trap 'hcloud server delete "$NAME" >/dev/null 2>&1 && echo "builder $NAME deleted"' EXIT
 IP=$(hcloud server ip "$NAME")
 until $SSH@"$IP" test -f /root/.lab-ready 2>/dev/null; do sleep 5; done
 echo "installing dependencies ..."
@@ -39,6 +41,10 @@ $SSH@"$IP" 'cd /root/openfront && npm run inst > /tmp/inst.log 2>&1 && cp packag
 hcloud server shutdown "$NAME" >/dev/null
 until [ "$(hcloud server describe "$NAME" -o 'format={{.Status}}')" = off ]; do sleep 3; done
 echo "creating snapshot ..."
-IMG=$(hcloud server create-image --type snapshot --description "openfront-lab $(date +%Y-%m-%d) $(git rev-parse --short HEAD)" --label lab-image=1 --label "arch=$ARCH" "$NAME" | grep -o 'image: *[0-9]*' | grep -o '[0-9]*' | tail -1)
-hcloud server delete "$NAME" >/dev/null
+# hcloud prints "Image N created from Server M" (v1.67; older versions "... image: N"): take the first number after
+# either form, and fall back to the newest lab-image snapshot for this arch if the wording changes again.
+out=$(hcloud server create-image --type snapshot --description "openfront-lab $(date +%Y-%m-%d) $(git rev-parse --short HEAD)" --label lab-image=1 --label "arch=$ARCH" "$NAME")
+IMG=$(echo "$out" | grep -oE '(Image|image:) *[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
+[ -n "$IMG" ] || IMG=$(hcloud image list --type snapshot -l lab-image=1 -a "$ARCH" -o noheader -o columns=id,created | sort -k2 | tail -1 | awk '{print $1}')
+[ -n "$IMG" ] || { echo "snapshot id not found in: $out"; exit 1; }
 echo "snapshot $IMG ($ARCH) ready; remote.sh uses it automatically for $ARCH server types (IMAGE=auto)"

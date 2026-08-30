@@ -1,6 +1,7 @@
 // Diplomacy: alliances (accept, request, renew or let lapse), embargoes, and the reaction to an ended alliance.
 
-import { Player, PlayerType, Relation } from "../../game/Game";
+import { Difficulty, Player, PlayerType, Relation } from "../../game/Game";
+import { assertNever } from "../../Util";
 import { AllianceExtensionExecution } from "../alliance/AllianceExtensionExecution";
 import { AllianceRequestExecution } from "../alliance/AllianceRequestExecution";
 import { DonateTroopsExecution } from "../DonateTroopExecution";
@@ -9,8 +10,21 @@ import { Economy } from "./Economy";
 import { Military } from "./Military";
 import { SituationQueries } from "./Situation";
 
+const PLANNED_TARGET_TTL = 1800; // ticks a lapsed ally stays the planned target with no war opened on it (the sticky-war window)
+/** The divisor of DonateTroopExecution.getMinTroopsForRelationUpdate's upper bound per difficulty. */
+export function giftDivisor(diff: Difficulty): number {
+  switch (diff) {
+    case Difficulty.Easy: return 11;
+    case Difficulty.Medium: return 9;
+    case Difficulty.Hard: return 7;
+    case Difficulty.Impossible: return 5;
+    default: assertNever(diff);
+  }
+}
+
 export class Diplomacy {
   private plannedTarget_: Player | null = null; // ally whose alliance we let lapse on purpose
+  private plannedLapsedAt = -1; // tick its alliance actually ended (−1 while it still stands)
   private lim: FireLimiter;
   private againstRulesLogged = new Map<Player, number>();
 
@@ -123,12 +137,15 @@ export class Diplomacy {
         }
       }
       // A Hard nation renews only if we are as strong as it, a threat to it, or on friendly terms.
-      // A gift of 1/7 of its cap makes it friendly (+50): cheap insurance when we are the weaker side.
+      // A gift over DonateTroopExecution's random minimum (maxTroops / [13, 11) Easy, / [11, 9) Medium, / [9, 7) Hard,
+      // / [7, 5) Impossible) makes it friendly (+50): cheap insurance when we are the weaker side. The gift is the
+      // upper bound of that range + 1000, so it always clears the roll (a flat / 7 fell under Impossible's roll and
+      // overpaid on Easy and Medium).
       // C1 (`nationAware`): "weaker side" = its own attack rules would let it hit us at expiry, not the 0.9× heuristic.
       const weakerSide = this.ctx.p.nationAware ? this.q.rivals.couldAttackAtExpiry(other, me.troops()).can : me.troops() < other.troops() * 0.9;
       if (this.ctx.p.nationAware && weakerSide !== me.troops() < other.troops() * 0.9) this.ctx.fire("nationAware");
       if (!prey && !st.gifted && other.type() === PlayerType.Nation && weakerSide && me.canDonateTroops(other)) {
-        const gift = Math.ceil(this.ctx.mg.config().maxTroops(other) / 7) + 1000;
+        const gift = Math.ceil(this.ctx.mg.config().maxTroops(other) / giftDivisor(this.ctx.mg.config().gameConfig().difficulty)) + 1000;
         if (gift < me.troops() * 0.3 && gift <= this.ctx.mg.config().maxTroops(other) - other.troops()) {
           this.ctx.mg.addExecution(new DonateTroopsExecution(me, other.id(), gift));
           this.ctx.log(`t${this.ctx.mg.ticks()} gift ${Math.round(gift / 1000)}k troops to ${other.name()} before renewal`);
@@ -136,6 +153,7 @@ export class Diplomacy {
         }
       }
       if (prey) {
+        if (this.plannedTarget_ !== other) this.plannedLapsedAt = -1;
         this.plannedTarget_ = other;
         if (lapseScore !== null) { this.ctx.fire("lapseToAttack"); this.ctx.log(`t${this.ctx.mg.ticks()} let alliance lapse to attack ${other.name()} (score ${lapseScore.toFixed(1)}, ${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`); }
         else this.ctx.log(`t${this.ctx.mg.ticks()} let alliance with ${other.name()} lapse (${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`);
@@ -143,15 +161,31 @@ export class Diplomacy {
       }
       if (!st.extended) { this.ctx.mg.addExecution(new AllianceExtensionExecution(me, other.id())); st.extended = true; }
     }
-    if (this.plannedTarget_ && (me.isFriendly(this.plannedTarget_) === false && !this.plannedTarget_.isAlive())) this.plannedTarget_ = null;
+    this.forgetPlannedTarget();
+  }
+  /** The planned target is forgotten when it is dead, allied again, or when its alliance has lapsed for
+   *  PLANNED_TARGET_TTL ticks without a war on it and it is not the current target: the mark used to last the
+   *  target's whole life, refusing every later alliance with it and feeding it to the bomb list with no war on. */
+  private forgetPlannedTarget(): void {
+    const t = this.plannedTarget_;
+    if (t === null) return;
+    const me = this.ctx.me, now = this.ctx.mg.ticks();
+    if (!t.isAlive()) { this.plannedTarget_ = null; this.plannedLapsedAt = -1; return; }
+    if (this.plannedLapsedAt < 0) return; // the alliance still stands (onAllianceEnded stamps the lapse)
+    if (me.isFriendly(t)) { this.plannedTarget_ = null; this.plannedLapsedAt = -1; return; } // allied again after the lapse
+    if (t === this.military.currentTarget || this.q.outgoingTo(t) !== undefined) return;
+    if (now - this.plannedLapsedAt >= PLANNED_TARGET_TTL) { this.ctx.log(`t${now} planned target ${t.name()} dropped: no war on it ${Math.round(PLANNED_TARGET_TTL / 600)} min after the lapse`); this.plannedTarget_ = null; this.plannedLapsedAt = -1; }
   }
   /** Trade feeds whoever you trade with: embargo anyone attacking us or targeted by us; lift it when we ally. */
   manageEmbargoes(): void {
     const me = this.ctx.me;
-    // Embargoes cost 20 relation with nations, so they are reserved for the player we are actually at war with.
+    // Embargoes cost 20 relation with nations, so they are reserved for the player we are actually at war with — or
+    // who is at war with us: the engine's own embargo on an attacker (AttackExecution, temporary) is left standing
+    // while the attack runs; it used to be lifted after tick 1200 like one of ours.
     for (const e of me.getEmbargoes()) {
       const atWarWith = e.target === this.military.currentTarget && this.q.outgoingTo(e.target) !== undefined;
-      if (me.isFriendly(e.target) || !e.target.isAlive() || (!atWarWith && this.ctx.mg.ticks() - (this.military.embargoedAt.get(e.target) ?? 0) > 1200)) me.stopEmbargo(e.target);
+      const attackingUs = me.incomingAttacks().some((a) => a.attacker() === e.target);
+      if (me.isFriendly(e.target) || !e.target.isAlive() || (!atWarWith && !attackingUs && this.ctx.mg.ticks() - (this.military.embargoedAt.get(e.target) ?? 0) > 1200)) me.stopEmbargo(e.target);
     }
   }
 
@@ -159,6 +193,7 @@ export class Diplomacy {
   onAllianceEnded(p: Player): void {
     const me = this.ctx.me;
     if (me.isFriendly(p)) return;
+    if (p === this.plannedTarget_) this.plannedLapsedAt = this.ctx.sit.tick;
     this.ctx.log(`t${this.ctx.sit.tick} ALLIANCE ENDED ${p.name()} ${Math.round(p.troops() / 1000)}k vs our ${Math.round(this.ctx.sit.troops / 1000)}k`);
     // if they are stronger, every tribe wave comes home now — the nation attacks within seconds of a lapse
     if (p.troops() > this.ctx.sit.troops * 0.8) {
