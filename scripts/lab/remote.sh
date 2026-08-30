@@ -9,8 +9,11 @@
 # id/name from scripts/lab/snapshot.sh; "auto" = newest snapshot labelled lab-image=1, "none" = plain
 # ubuntu-24.04 + cloud-init; default auto), DEST (local results dir, default ./lab-out), KEEP=1 to leave
 # the boxes running, REUSE=1 to use running boxes with those names, BATCHES / SPAWNS / JOBS pass through
-# to sweep.sh; STAGED=1 runs the first STAGE1 (3) batches, then the rest only for an unclear verdict
-# (summarize.py --verdict VERDICT, default 3). Needs: hcloud CLI with a context selected, ~/.ssh/id_ed25519(.pub), rsync.
+# to sweep.sh, as do SHIFT, MIRROR / MIRRORSHIFT / MIRRORSEED (mirrored slots) and SEED (opponent field); STAGED=1 runs the
+# first STAGE1 (3) batches, then the rest only for an unclear verdict (summarize.py --verdict VERDICT, default 3);
+# SPRT=1 (implies staged) keeps adding chunks of STAGE1 batches from BATCHES then EXTRA (med5..med9), up to
+# MAXBATCHES (10), until summarize.py's sequential test (--sprt, DELTA = its --delta) says ACCEPT or REJECT for
+# every config vs the first one. Needs: hcloud CLI with a context selected, ~/.ssh/id_ed25519(.pub), rsync.
 #
 # Every box carries the labels lab=1,pool=NAME:  hcloud server list -l lab=1  shows strays;
 #   hcloud server delete $(hcloud server list -l lab=1 -o noheader -o columns=name)  removes them all.
@@ -108,7 +111,7 @@ run_pool() {
   # serialised the shards.) `timeout` is belt and braces: a hung ssh cannot stall the other launches.
   i=0
   for ip in "${ips[@]}"; do
-    $TIMEOUT $SSH@"$ip" "cd /root/openfront && rm -rf /root/lab-out && mkdir -p /root/lab-out && (setsid nohup env CONFIGS='$CONFIGS' MINUTES=$MINUTES SHARD=$i/${#ips[@]} AGGREGATE=0 BATCHES='$batches' ${SPAWNS:+SPAWNS='$SPAWNS'} ${JOBS:+JOBS=$JOBS} ${SHIFT:+SHIFT=$SHIFT} OUT=/root/lab-out bash scripts/lab/sweep.sh > /root/lab-out/sweep.log 2>&1 < /dev/null &); sleep 1; head -1 /root/lab-out/sweep.log" \
+    $TIMEOUT $SSH@"$ip" "cd /root/openfront && rm -rf /root/lab-out && mkdir -p /root/lab-out && (setsid nohup env CONFIGS='$CONFIGS' MINUTES=$MINUTES SHARD=$i/${#ips[@]} AGGREGATE=0 BATCHES='$batches' ${SPAWNS:+SPAWNS='$SPAWNS'} ${JOBS:+JOBS=$JOBS} ${SHIFT:+SHIFT=$SHIFT} ${MIRROR:+MIRROR=$MIRROR} ${MIRRORSHIFT:+MIRRORSHIFT=$MIRRORSHIFT} ${MIRRORSEED:+MIRRORSEED=$MIRRORSEED} ${SEED:+SEED=$SEED} OUT=/root/lab-out bash scripts/lab/sweep.sh > /root/lab-out/sweep.log 2>&1 < /dev/null &); sleep 1; head -1 /root/lab-out/sweep.log" \
       || echo "WARNING: launch on $ip did not confirm; check /root/lab-out/sweep.log there"
     i=$((i + 1))
   done
@@ -137,13 +140,28 @@ run_pool() {
 }
 
 BATCHES=${BATCHES:-"med0 med1 med2 med3 med4"}
-if [ "${STAGED:-0}" = 1 ]; then
+cfgs=$(node -e 'console.log(Object.keys(JSON.parse(process.argv[1])).join(" "))' "$CONFIGS")
+if [ "${SPRT:-0}" = 1 ]; then
+  # Sequential A/B: chunks of STAGE1 batches from the pool until the GSPRT decides (see summarize.py --sprt).
+  # The first config is the baseline; a chunk is one run_pool, so a decided test after 3 batches costs 18 games.
+  set -- $BATCHES ${EXTRA:-med5 med6 med7 med8 med9}; max=${MAXBATCHES:-10}; step=${STAGE1:-3}; played=0
+  while [ $# -gt 0 ] && [ "$played" -lt "$max" ]; do
+    n=$step; [ $((played + n)) -gt "$max" ] && n=$((max - played))
+    chunk=$(echo "$@" | cut -d' ' -f1-$n); shift $n 2>/dev/null || set --
+    echo "sprt: chunk '$chunk' ($played batches played so far)"
+    run_pool "$chunk"
+    played=$((played + n))
+    if python3 scripts/lab/summarize.py --sprt ${DELTA:+--delta $DELTA} --verdict 0 "$DEST" $cfgs; then
+      echo "sprt: decided after $played batches"; break
+    fi
+    [ $# -eq 0 ] || [ "$played" -ge "$max" ] && echo "sprt: still CONTINUE after $played batches (MAXBATCHES=$max)"
+  done
+elif [ "${STAGED:-0}" = 1 ]; then
   # Staged A/B: run the first STAGE1 batches, and only run the rest when some config is still "unclear"
   # (|wins - losses| < VERDICT vs the first config). Clear winners and losers cost ~40 % fewer games.
   set -- $BATCHES; n=${STAGE1:-3}
   first=$(echo "$@" | cut -d' ' -f1-$n); rest=$(echo "$@" | cut -d' ' -f$((n + 1))-)
   run_pool "$first"
-  cfgs=$(node -e 'console.log(Object.keys(JSON.parse(process.argv[1])).join(" "))' "$CONFIGS")
   if python3 scripts/lab/summarize.py --verdict "${VERDICT:-3}" "$DEST" $cfgs; then
     echo "stage 1 verdict clear for every config after $n batches; skipping: $rest"
   else
