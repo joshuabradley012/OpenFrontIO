@@ -1786,3 +1786,23 @@ No new troop spending: targets are redirected, sizes and budgets are the rules' 
 redirected boat, on a bomb/MIRV pick only the flag put on the list, and on a war pick the +4 changed.
 Tests: `tests/playbook/contestLeader.test.ts`. A/B (full games — the cluster is an endgame failure):
 `CONFIGS='{"base":{},"cl":{"contestLeader":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.
+## Aggressive multi-boat opening (`boatOpening`, 2026-08-30, branch `bot/boat-opening`)
+
+Josh's request: open with several boats, not one. While `tick < boatOpeningUntil` (3000) the early-boat rule keeps
+up to `boatOpeningCount` (2, int) transports alive at once instead of the single 20 % boat: whenever fewer of our
+transports are at sea, an extra boat goes through `Military.earlyBoat`'s own picker (no new scorer — the tribe 2×
+ratios, empty-shore scan, boatsNearest/boatsWaterPath ranking and the across-water launch check are all reused)
+with two opening adjustments — an open shore on a landmass we own no tile of is preferred (a bounded 1500-tile
+flood fill from the candidate; +200 ranking tiles on our own landmass — the second-continent beachhead), and every
+boat is capped at `boatShare` of home (a tribe whose 2× wave would not fit is skipped). The reserve, the hold and
+finish gates and boatDedupe still apply (extras go through ctx.boat); the plain first boat, its `boatSent`
+bookkeeping, huntBotsByBoat and seaExpansion are untouched (their boats count toward the opening's cap of live
+transports), the other boat flags' liveness counters are not polluted by extras, and the flag is inert on a small
+landmass (`onSmallLandmass` — the island spawn's plain rules already boat continuously). After `boatOpeningUntil`
+the normal rules resume unchanged. Each extra launch logs `BOAT OPENING n/count out → …` (the fire site: a boat
+the plain rules would not have launched this tick) and fires `boatOpening` via the FireLimiter.
+Params: `boatOpening` (default off), `boatOpeningCount` (int 2), `boatOpeningUntil` (int 3000).
+Tests: tests/playbook/boatOpening.test.ts (Bab-el-Mandeb fixture: two boats out by t200, one on the other
+landmass; plain sends one; extras stop at the cutoff; an inert opening is log-identical to plain).
+A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+Watch it in the GUI: `localStorage.playbookParams = '{"boatOpening":true}'` then load `?bot=1` (PlaybookBotGUI.md).

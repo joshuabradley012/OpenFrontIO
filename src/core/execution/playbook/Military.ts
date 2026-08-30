@@ -68,6 +68,8 @@ const YIELD_MIN_LOST = 1000; // warYield: no verdict on a window that cost fewer
 const YIELD_COST_CAP = 10_000; // warYield: a war that took no tile is remembered at this troops/tile
 const YIELD_COOLDOWN = 600; // warYield: ticks a target retreated from for its price is refused by the scorer (unless it becomes an opportunity)
 const BOMB_FUND_HORIZON = 900; // bombBudget: a Hydrogen plan stands when its price is within this many ticks of income
+const OPENING_OWN_LANDMASS = 200; // boatOpening: ranking penalty (in tiles) on a candidate shore that sits on a landmass we already own tiles of — the extra opening boats are for a second continent
+const OPENING_LANDMASS_TILES = 1500; // boatOpening: cap of the bounded flood fill behind that check (a candidate whose fill never meets us inside it counts as a new landmass)
 /** A bomb maybeBomb's value search picked: where, of what type, at whom, and its value per 100k of gold. */
 export interface BombPick { tile: TileRef; value: number; type: UnitType; enemy: Player; cost: bigint }
 
@@ -1211,8 +1213,28 @@ export class Military {
   }
 
   // ---------------------------------------------------------------- boats
-  /** Playbook 0:05–0:10: one 20 % boat to a tribe across water (2× its troops) or, failing that, the nearest empty shore across water. */
-  earlyBoat(): boolean {
+  /** `boatOpening`: does `t` sit on a landmass we already own tiles on? Breadth-first over land from `t`, capped at
+   *  OPENING_LANDMASS_TILES — a hit inside the bound is our landmass; past it we call it new (a shared continent the
+   *  fill cannot cross in 1500 tiles is a beachhead in every way that matters, and the launch-time across-water
+   *  check has already refused anything a land attack could reach). */
+  private onOurLandmass(t: TileRef): boolean {
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const seen = new Set<TileRef>([t]);
+    const q: TileRef[] = [t];
+    let i = 0;
+    while (i < q.length && seen.size < OPENING_LANDMASS_TILES) {
+      const c = q[i++];
+      if (mg.owner(c) === me) return true;
+      for (const n of mg.neighbors(c)) { if (!seen.has(n) && mg.isLand(n)) { seen.add(n); q.push(n); } }
+    }
+    return false;
+  }
+  /** Playbook 0:05–0:10: one 20 % boat to a tribe across water (2× its troops) or, failing that, the nearest empty shore across water.
+   *  `boatOpening` calls it again with `opening` for the extra opening boats: same picker, but an open shore on a
+   *  landmass we own no tile of is preferred, every boat is capped at boatShare of home, each launch logs
+   *  BOAT OPENING and fires the flag, and the other boat flags' liveness counters are left alone (their
+   *  plain-rule counterfactual does not exist for a boat the plain rule would not have launched). */
+  earlyBoat(opening = false): boolean {
     const me = this.ctx.me;
     if (me.unitCount(UnitType.TransportShip) >= this.ctx.mg.config().boatMaxNumber()) return false;
     const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isShore(t));
@@ -1234,7 +1256,8 @@ export class Military {
     for (const bot of this.ctx.mg.players()) {
       if (bot.type() !== PlayerType.Bot || !bot.isAlive()) continue;
       const want = Math.ceil(bot.troops() * 2) + 500; // a beach landing costs more than a land attack: 2×, not 1.67×
-      if (want > me.troops() * 0.4) continue;
+      // `boatOpening`: an opening boat takes at most boatShare of home — a tribe whose 2× wave would not fit is skipped (the usual ratio, the tighter cap)
+      if (want > me.troops() * (opening ? this.ctx.p.boatShare : 0.4)) continue;
       let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9, slT: TileRef | null = null, slD = 1e9;
       for (const t of bot.borderTiles()) {
         if ((i++ % 5) !== 0 || !this.ctx.mg.isShore(t)) continue;
@@ -1263,20 +1286,32 @@ export class Military {
       cands.push({ tile: t, troops: Math.floor(me.troops() * this.ctx.p.boatShare), d: wp && d > BOAT_MAX_PATH.early ? 1e9 : d, dm, slOk, oldD: dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 200 && Math.abs(y - fy) <= 200 && (x - fx) % 6 === 0 && (y - fy) % 6 === 0, what: "empty shore" });
     }
     cands.sort((a, b) => a.d - b.d);
+    if (opening) {
+      // `boatOpening`: a beachhead on a landmass we own no tile of beats one on ours — re-rank the head of the list
+      // with a penalty on our-landmass candidates (the flood fill is bounded, so only the head is checked)
+      const top = cands.slice(0, 24).map((c) => ({ c, k: c.d + (c.d < 1e9 && this.onOurLandmass(c.tile) ? OPENING_OWN_LANDMASS : 0) }));
+      top.sort((a, b) => a.k - b.k);
+      cands.splice(0, top.length, ...top.map((x) => x.c));
+    }
     // `boatsWaterPath` liveness: what the straight-line ranking (this rule with the flag off) would have launched at
     const slPick = () => cands.filter((o) => o.slOk).sort((a, b) => a.dm - b.dm).slice(0, 16).find((o) => o.troops >= 500 && across(o.tile, o.dm));
     for (const c of cands.slice(0, wp ? 48 : 16)) {
       if (c.d >= 1e9 || c.troops < 500 || !across(c.tile, c.dm)) continue;
       if (this.ctx.boat(c.tile, c.troops, `early boat → ${c.what}, ${c.d} tiles${wp ? " by water" : ""}`) === 0) continue;
-      if (nearest) {
+      if (opening) {
+        // the fire site: this boat launches only because the flag is on — the plain rule already sent its one early boat
+        this.lim.fire("boatOpening", "early");
+        this.ctx.log(`t${this.ctx.mg.ticks()} BOAT OPENING ${this.ctx.sit.boats}/${this.ctx.p.boatOpeningCount} out → ${c.what}, ${c.d} tiles${wp ? " by water" : ""}`);
+      }
+      if (nearest && !opening) {
         // liveness: what the old ranking (middle tile, 30-tile floor) would have launched at
         const old = cands.filter((o) => o.oldOk).sort((a, b) => a.oldD - b.oldD).slice(0, 16).find((o) => o.troops >= 500 && this.q.acrossWater(o.tile));
         if (old === undefined || old.tile !== c.tile) this.lim.fire("boatsNearest", "early");
       }
-      if (wp) { const sl = slPick(); if (sl === undefined || sl.tile !== c.tile) this.lim.fire("boatsWaterPath", "early"); }
+      if (wp && !opening) { const sl = slPick(); if (sl === undefined || sl.tile !== c.tile) this.lim.fire("boatsWaterPath", "early"); }
       return true;
     }
-    if (wp) { const sl = slPick(); if (sl !== undefined && sl.d >= 1e9) this.lim.fire("boatsWaterPath", "early"); } // refused by the cap
+    if (wp && !opening) { const sl = slPick(); if (sl !== undefined && sl.d >= 1e9) this.lim.fire("boatsWaterPath", "early"); } // refused by the cap
     return false;
   }
 
