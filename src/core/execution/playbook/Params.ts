@@ -7,6 +7,7 @@
 // reachable free land). Dropped: openingAllIn/openingKeep (30-game lab: 20 %/10 % clicks beat the all-in, 24 vs 22
 // alive, 800k vs 705k tiles) and homeFloor (declared and defaulted but read nowhere — A1 finding).
 // Removed after losing their 30-game A/Bs (PlaybookBotPlan.md C3): simWars (Estimate.ts), scoredSpend (Spend.ts), bsrReserve, phaseGates — the first two live in git history.
+// Removed after ab1 (PlaybookBotPlan.md "Review-package A/B ab1"): campaigns (Campaign.ts, review #6; 38W/60L, dScore −0.19, p=0.03) — in git history at 85ce33c8e.
 
 export interface PlaybookParams {
   expandContested: number; // share of home troops per click into empty land while a rival borders us
@@ -65,7 +66,6 @@ export interface PlaybookParams {
   drainedNations: boolean; // a nation under its reserve ratio (troops < 0.3 × max) is drained until it regrows to its trigger ratio: fight() takes it at 1.5× (affordable gate and score bonus), and the counter is never sized below the wave it cancels
   retaliateAware: boolean; // nations retaliate only against their largest attacker: a target already under a bigger attack (or marked by one of our allies) is preferred and taken at 1.2× with a wave kept below the bigger one; absorbs the brief's `secondAttacker`
   utility: boolean; // #3: one `troops` rule replaces counter/expand/tribes/wars — every troop option (expand click, tribe click, war wave per candidate, counter) is scored in one currency (expected tiles per troop × curved considerations, Utility.ts) and executed by rank then weight; counters always go, one war per pass, the invariants (reserve, whole-or-nothing wars, one war at a time, hold, sticky target) stay. Default off until the 30-game Medium A/B
-  campaigns: boolean; // #6: a war on a normal target (not collapsed / gap / threat / drained) goes through a Campaign (Campaign.ts): prepare (the wave is escrowed from other spends, a threat post is asked for on that border, no alliance with the target) until the wave is affordable and timed, then wave → follow-ups → consolidate with a cooldown; aborts on a big incoming attack, the target allying with our ally, or the ratio under fightRatio × 0.8 for 300 ticks. Default off until the 30-game Medium A/B
   relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
   steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
   holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
@@ -129,5 +129,4 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   holdHumans: false,
   strictOneWar: false,
   utility: false, // default off until the 30-game Medium A/B
-  campaigns: false, // default off until the 30-game Medium A/B
 };

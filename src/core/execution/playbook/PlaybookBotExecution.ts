@@ -179,10 +179,7 @@ export class PlaybookBotExecution implements Execution {
     // capFloor: never leave home under this share of CAP — Hard nations betray an ally under 20 % of cap on sight
     if (this.sit.mode === "hold" && why !== "counter" && why !== "war") return 0; // holding under the line: no more land until the MIRV-capable rivals are gone
     if (this.sit.hold !== null && why !== "counter") { if (this.log.length < 2000 && this.sit.tick % 300 === 0) this.log.push(`t${this.sit.tick} holding troops home: alliance with ${this.sit.hold.name()} about to lapse`); return 0; }
-    // #6 (`campaigns`): while a campaign prepares, its wave is escrowed — nothing but the war itself or a counter takes the spendable under it
-    const escrow = why !== "war" && why !== "counter" ? this.military.escrow : 0;
-    const room = Math.floor(Math.min(this.sit.spendable - escrow, this.sit.troops - this.sit.cap * capFloor));
-    if (escrow > 0 && room < Math.floor(n)) this.lim.fire("campaigns", "escrow");
+    const room = Math.floor(Math.min(this.sit.spendable, this.sit.troops - this.sit.cap * capFloor));
     const amount = Math.min(Math.floor(n), room);
     // a war goes whole or not at all: a 2× wave trimmed to 0.3× by the reserve is the worst attack in the game
     if (why === "war" && amount < n * 0.9) { if (this.log.length < 2000) this.log.push(`t${this.sit.tick} war held: wants ${Math.round(n / 1000)}k, only ${Math.round(room / 1000)}k spare`); return 0; }
@@ -193,9 +190,7 @@ export class PlaybookBotExecution implements Execution {
   }
   private boat(tile: TileRef, n: number, why: string): number {
     if (this.sit.hold !== null || (this.sit.mode === "hold" && !why.includes("collapsed"))) return 0;
-    const escrow = this.military.escrow; // #6: see send()
-    const amount = Math.min(Math.floor(n), Math.floor(this.sit.spendable - escrow));
-    if (escrow > 0 && amount < Math.floor(n)) this.lim.fire("campaigns", "escrow");
+    const amount = Math.min(Math.floor(n), Math.floor(this.sit.spendable));
     if (amount < 500 || this.player.canBuild(UnitType.TransportShip, tile) === false) return 0;
     this.mg.addExecution(new TransportShipExecution(this.player, tile, amount));
     this.sit.spendable -= amount; this.sit.troops -= amount; this.sit.boats++;

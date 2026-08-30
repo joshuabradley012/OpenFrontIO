@@ -7,7 +7,6 @@ import { MirvExecution } from "../MIRVExecution";
 import { RetreatExecution } from "../RetreatExecution";
 import { TargetPlayerExecution } from "../TargetPlayerExecution";
 import { calculateTerritoryCenter } from "../Util";
-import { ALLY_EXPIRY_MIN, Campaign, CampaignFacts, RETARGET_AFTER } from "./Campaign";
 import { BotContext, FireLimiter } from "./Context";
 import { AttackEstimate, EstimateOptions, estimateAttack } from "./Estimate";
 import { SituationQueries } from "./Situation";
@@ -28,7 +27,7 @@ interface WarPick {
   want: number;
   sim: SimPick | null; // simWars: the estimate the size came from
   bomb: boolean; // open the war with a bomb on their cluster (richer, silo)
-  opportunity: boolean; // collapsed / gap owner / MIRV threat / drained: goes at once, no campaign
+  opportunity: boolean; // collapsed / gap owner / MIRV threat / drained: goes at once (utility ranks it first)
   /** Every candidate the scorer accepted, for the utility layer (`best` first). */
   alts: { r: Player; want: number; sim: SimPick | null; score: number; opportunity: boolean }[];
 }
@@ -481,7 +480,6 @@ export class Military {
   private history = new Map<Player, { tick: number; troops: number; tiles: number; collapsedUntil: number }>();
 
   fight(): void {
-    if (this.ctx.p.campaigns) this.campaignTick();
     const pick = this.warPick();
     if (pick !== null) this.actWar(pick);
   }
@@ -577,7 +575,7 @@ export class Military {
       const underFire = r.incomingAttacks().reduce((acc, a) => acc + a.troops(), 0) / Math.max(1, r.troops());
       const bonus = Math.min(underFire, 1) * 4 + (r.isTraitor() ? 2 : 0) + (r === this.plannedTarget() ? 4 : 0);
       if (shadowed) this.lim.fire("retaliateAware", "score");
-      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ || r === this.prepTarget ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r);
+      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r);
     };
     const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r);
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
@@ -593,7 +591,7 @@ export class Military {
       for (const r of candidates) {
         const sim = this.simPick(r, maxSend, gapOwner, threatHere);
         if (sim === null) continue;
-        const value = sim.tilesPerLoss * 100 + (this.collapsed(r) ? 20 : 0) + (r === gapOwner ? 30 : 0) + (r === threatHere ? 25 : 0) + (r === this.plannedTarget() ? 4 : 0) + (r === this.currentTarget_ || r === this.prepTarget ? 3 : 0) + (r.isTraitor() ? 2 : 0) + trustBonus(r);
+        const value = sim.tilesPerLoss * 100 + (this.collapsed(r) ? 20 : 0) + (r === gapOwner ? 30 : 0) + (r === threatHere ? 25 : 0) + (r === this.plannedTarget() ? 4 : 0) + (r === this.currentTarget_ ? 3 : 0) + (r.isTraitor() ? 2 : 0) + trustBonus(r);
         simAlts.push({ r, want: sim.troops, sim, score: value, opportunity: isOpp(r) });
         if (bestSim === null || value > bestSim.sim.value) { sim.value = value; bestSim = { r, sim }; }
       }
@@ -622,14 +620,13 @@ export class Military {
     return { r: best, want: wantFor(best), sim: null, bomb, opportunity: isOpp(best), alts };
   }
   /** The action half of the war rule: the embargo, the wave (whole or not at all), the log, the calibration record,
-   *  the mark. With `campaigns` on, a normal target goes through its Campaign first. Returns true when a wave went. */
+   *  the mark. Returns true when a wave went. */
   private actWar(pick: WarPick): boolean {
     const me = this.ctx.me, r = pick.r, now = this.ctx.mg.ticks();
     if (pick.sim === null) {
       if (pick.bomb) { this.currentTarget_ = r; this.maybeBomb(now); } // open the war with a bomb on their cluster
       if (pick.want < 1000) return false;
     }
-    if (this.ctx.p.campaigns && !this.campaignAllows(pick)) return false;
     this.currentTarget_ = r;
     if (!me.hasEmbargoAgainst(r) && r.type() !== PlayerType.Nation) { me.addEmbargo(r, false); this.embargoedAt_.set(r, now); }
     const want = this.ctx.send(r.id(), pick.want, "war", 1000, 0.3);
@@ -645,7 +642,6 @@ export class Military {
       this.noteWave(r, want);
       this.mark(r, "war");
     }
-    if (this.campaign !== null && this.campaign.target === r && this.campaign.phase !== "consolidate") { this.campaign.onWave(now, want); this.flushCampaignLog(); }
     return true;
   }
 
@@ -691,7 +687,6 @@ export class Military {
     const me = this.ctx.me, sit = this.ctx.sit, p = this.ctx.p, now = this.ctx.mg.ticks();
     this.counterAttack();
     this.tribeFollowUps();
-    if (p.campaigns) this.campaignTick();
     const threat = this.utilThreat();
     const options: Option[] = [];
     const ex = this.expandOption();
@@ -712,7 +707,7 @@ export class Military {
         const trustC = 0.5 + 0.5 * (1 - (sit.rival.get(a.r)?.trust ?? 0.5));
         const expiryC = sit.expiring.some((o) => o !== a.r && o.type() === PlayerType.Nation) ? 0.7 : 1; // an alliance about to lapse elsewhere wants the army near home
         const scoreC = 0.5 + 0.5 * linear(a.score, 0, 15); // the scorer's bonuses (trust, threat map, relation, shadow, buildings) modulate, they do not gate
-        const commit = (a.r === this.currentTarget_ && now - this.lastWarTick < 1800) || a.r === this.prepTarget ? 1.5 : 1; // the running war, or the campaign being prepared
+        const commit = a.r === this.currentTarget_ && now - this.lastWarTick < 1800 ? 1.5 : 1; // the running war
         const weight = tpt * compensate(a.opportunity ? [marginC, scoreC] : [troopsC, marginC, threat, trustC, expiryC, scoreC]) * commit;
         options.push({ kind: "war", target: a.r, troops: a.want, rank: a.opportunity ? 1 : 2, weight, why: `${est.tilesTaken}t for ${Math.round(a.want / 1000)}k ${est.wins ? "wins" : "open"}, cap ${troopsC.toFixed(2)}, margin ${marginC.toFixed(2)}, border ${threat.toFixed(2)}, trust ${trustC.toFixed(2)}, expiry ${expiryC}, score ${a.score.toFixed(1)}${a.opportunity ? ", opportunity" : ""}${commit > 1 ? ", committed" : ""}` });
       }
@@ -742,88 +737,6 @@ export class Military {
     const chainFirst = ex !== null && ex.troops >= 100 ? "expand" : tribes.length > 0 ? `tribe ${tribes[0].bot.id()}` : war !== null ? `war ${war.r.id()}` : null;
     const key = first === null ? null : first.kind === "expand" ? "expand" : `${first.kind} ${first.target?.id()}`;
     if (key !== null && key !== chainFirst) this.lim.fire("utility", "pick");
-  }
-
-  // ---------------------------------------------------------------- campaigns (#6): the war plan
-  private campaign: Campaign | null = null;
-  private campaignRefused = new Map<Player, number>();
-  /** The target of a campaign in prepare (Economy: a threat post on that border; Diplomacy: no alliance with it). */
-  get prepTarget(): Player | null {
-    return this.ctx.p.campaigns && this.campaign !== null && this.campaign.phase === "prepare" ? this.campaign.target : null;
-  }
-  /** Troops held for the planned wave while a campaign prepares: send()/boat() keep the spendable above it for
-   *  anything that is not the war or a counter. 0 without a campaign in prepare. */
-  get escrow(): number {
-    return this.prepTarget !== null && this.campaign !== null ? this.campaign.want : 0;
-  }
-  private flushCampaignLog(): void {
-    if (this.campaign !== null) for (const l of this.campaign.drain()) this.ctx.log(l);
-  }
-  private campaignFacts(c: Campaign): CampaignFacts {
-    const me = this.ctx.me, t = c.target, sit = this.ctx.sit;
-    const room = Math.floor(Math.min(sit.spendable, sit.troops - sit.cap * 0.3)); // send()'s room for a war (capFloor 0.3)
-    const myAllies = new Set(me.allies());
-    const theirAllies = t.allies();
-    let allyExpiryOK = true;
-    for (const al of me.alliances()) { const o = al.other(me); if (theirAllies.includes(o) && al.expiresAt() - sit.tick < ALLY_EXPIRY_MIN) allyExpiryOK = false; }
-    return {
-      tick: sit.tick,
-      affordable: room >= c.want * 0.9, // send()'s whole-or-nothing test
-      allyExpiryOK,
-      postFacing: this.q.postFacing(t),
-      opportunity: this.drained(t) || (this.collapsed(t) && t.troops() < sit.troops * 0.5),
-      targetAlive: t.isAlive(),
-      targetFriendly: me.isFriendly(t),
-      bigIncoming: sit.incoming.some((a) => a.troops() > sit.troops * 0.15),
-      targetAlliedWithOurAlly: theirAllies.some((a) => myAllies.has(a)),
-      ratio: c.want / Math.max(1, t.troops()),
-      attacking: this.q.outgoingTo(t) !== undefined,
-    };
-  }
-  /** Every war pass: advance the plan (phase changes are logged as CAMPAIGN lines); drop it once its cooldown is over. */
-  private campaignTick(): void {
-    const c = this.campaign;
-    if (c === null) return;
-    if (c.advance(this.campaignFacts(c), this.ctx.p.fightRatio)) { this.flushCampaignLog(); if (c.phase === "consolidate") this.lim.fire("campaigns", "end"); }
-    if (c.done) this.campaign = null;
-  }
-  /** actWar's gate. An opportunity target (collapsed / gap owner / MIRV threat / drained) goes now, as without the
-   *  flag. A normal target opens a campaign — prepare: the wave is escrowed, a post is asked for, no alliance — and
-   *  goes when Campaign.ready says; follow-ups on the campaign target flow; during a consolidate cooldown no new
-   *  campaign opens. Fires whenever the wave the chain would have sent now is delayed. */
-  private campaignAllows(pick: WarPick): boolean {
-    const now = this.ctx.mg.ticks();
-    if (pick.opportunity) return true;
-    let c = this.campaign;
-    if (c !== null && c.phase === "consolidate") { this.lim.fire("campaigns", "cooldown"); return false; }
-    if (c !== null && c.target !== pick.r) {
-      if (c.phase !== "prepare") return true; // a running war follows the pick (the sticky target already prefers the campaign's)
-      if (now - c.since < RETARGET_AFTER && c.target.isAlive() && !this.ctx.me.isFriendly(c.target)) { this.lim.fire("campaigns", "sticky"); return false; } // a young plan holds: the scorer's +3 brings its target back next pass
-      this.ctx.log(`t${now} CAMPAIGN retarget ${c.target.name()} → ${pick.r.name()}`);
-      c = null;
-    }
-    if (c === null) {
-      c = new Campaign(pick.r, pick.want, now);
-      const reason = c.abortReason(this.campaignFacts(c), this.ctx.p.fightRatio);
-      if (reason !== null) {
-        // a plan that would abort on its first tick is not opened: no war on this target until the reason is gone
-        if (now - (this.campaignRefused.get(pick.r) ?? -1e9) >= 600) { this.campaignRefused.set(pick.r, now); this.ctx.log(`t${now} CAMPAIGN no war on ${pick.r.name()}: ${reason}`); }
-        this.lim.fire("campaigns", "refuse");
-        return false;
-      }
-      this.campaign = c;
-      this.flushCampaignLog();
-      this.lim.fire("campaigns", "prepare");
-      return false;
-    }
-    if (c.phase === "prepare") {
-      c.want = pick.want;
-      const { go, why } = c.ready(this.campaignFacts(c));
-      if (!go) { this.lim.fire("campaigns", "wait"); if (now % 300 === 0) this.ctx.log(`t${now} CAMPAIGN waiting on ${c.target.name()}: ${why}`); return false; }
-      this.ctx.log(`t${now} CAMPAIGN go ${c.target.name()}: ${why}`);
-      return true;
-    }
-    return true;
   }
 
   // ---------------------------------------------------------------- the estimator: calibration, simulated wars (simWars)

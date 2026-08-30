@@ -34,7 +34,6 @@ export class Diplomacy {
       const r = req.requestor();
       if (r.type() === PlayerType.Bot) continue;
       if (r === this.military.currentTarget || r === this.plannedTarget_) continue;
-      if (r === this.military.prepTarget) { this.lim.fire("campaigns", "accept"); continue; } // #6: the campaign's target
       if (this.isPrey(r) || this.q.annexable(r)) continue;
       req.accept();
     }
@@ -71,7 +70,6 @@ export class Diplomacy {
     rivals.sort((a, b) => b.troops() - a.troops());
     for (const o of rivals) {
       if (o === this.military.currentTarget || o === this.plannedTarget_) continue;
-      if (o === this.military.prepTarget) { this.lim.fire("campaigns", "request"); continue; } // #6: the campaign's target
       if (this.isPrey(o) || this.q.annexable(o)) continue; // an ally can never be annexed
       if (!me.canSendAllianceRequest(o)) continue;
       // `relationAware`: ask a nation only when its own decision rules would say yes (Rivals.wouldAcceptAlliance) —
@@ -102,8 +100,7 @@ export class Diplomacy {
       let st = this.expiryState.get(other);
       if (!st) { st = { expiresAt: al.expiresAt(), gifted: false, extended: false }; this.expiryState.set(other, st); }
       const { rivals, friends } = this.q.neighbours();
-      let prey = (friends.includes(other) && other.troops() < me.troops() * 0.4 && me.troops() > this.q.cap() * this.ctx.p.fightAbove && rivals.length <= 1) || this.q.annexable(other) || (this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && other.troops() < me.troops() * 0.5 && other.numTilesOwned() < me.numTilesOwned());
-      if (!prey && other === this.military.prepTarget) { prey = true; this.lim.fire("campaigns", "lapse"); } // #6: a campaign's target is never renewed
+      const prey = (friends.includes(other) && other.troops() < me.troops() * 0.4 && me.troops() > this.q.cap() * this.ctx.p.fightAbove && rivals.length <= 1) || this.q.annexable(other) || (this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && other.troops() < me.troops() * 0.5 && other.numTilesOwned() < me.numTilesOwned());
       // A Hard nation renews only if we are as strong as it, a threat to it, or on friendly terms.
       // A gift of 1/7 of its cap makes it friendly (+50): cheap insurance when we are the weaker side.
       // C1 (`nationAware`): "weaker side" = its own attack rules would let it hit us at expiry, not the 0.9× heuristic.
