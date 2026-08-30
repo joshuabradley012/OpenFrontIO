@@ -1100,3 +1100,14 @@ from a 2k boat at a 4-tile enclave to 288k at Sri Lanka's last 859 tiles
 across the strait.
 
 **A/B:** `CONFIGS='{"base":{},"near":{"boatsNearest":true},"finish":{"finishByBoat":true},"both":{"boatsNearest":true,"finishByBoat":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
+
+## `ab2` — calibrated estimator flags (2026-08-29 late, `lab-out/ab2`)
+
+Same harness as ab1 (SPRT + MIRROR, 20-min Medium, 4× cpx62), 94 pairs per config, est scales from calibrate.py on ab1's base (nation loss ×0.868, tribe loss ×0.719, speed ×1.285).
+
+| config | dScore vs base | verdict |
+|---|---|---|
+| simWars (calibrated) | −0.43 | decisive loss — flag deleted (dfacb785f); the calibration makes the wave picker more aggressive, the free-land gate / wave margin were the real problem |
+| hystRetreats (calibrated) | −0.06 | rejected; kept as a flag for the CMA race (hystMargin/hystSlope/hystStrikes now params) |
+| simWars + hystRetreats | −0.52 | decisive loss |
+| strictOneWar | −0.01 (same games as ab1) | rarely fires; unchanged |
