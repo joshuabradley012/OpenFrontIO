@@ -1530,6 +1530,63 @@ wall-clock under parallel runs.
 `CONFIGS='{"base":{},"bb":{"bombBudget":true},"wy":{"warYield":true},"wy250":{"warYield":true,"yieldMaxTroopsPerTile":250},"both":{"bombBudget":true,"warYield":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 — removal form: `CONFIGS='{"base":{},"nobb":{"bombBudget":false},"nowy":{"warYield":false}}'`.
 
+## War ROI cap (`warRoiCap`, 2026-08-30, branch `bot/war-roi`)
+
+Loss cluster 1's bleed ("Why we lose full games", proposal 4): losing rm1 games
+grind wars at 1,400–37,000 troops per tile — `p_base_med0_east-asia.txt` alone
+has `WAR RESULT Australia: +578 tiles, -21469674 troops, 37145 troops/tile` and
+three California wars at 1,190–1,688/tile, re-declared by the sticky target the
+pass each one resolves. One default-off flag on top of the always-on WAR RESULT
+accounting.
+
+**Mechanism.** `Military.noteRoi` folds every resolved non-bot wave's realized
+numbers (WAR RESULT's tiles and troops-not-home) into a per-target ROI: an EMA
+over the last `warRoiWindow` (2) resolved waves (a 0-tile wave enters at
+`max(YIELD_COST_CAP, 4 × warRoiMax)` rather than Infinity), recorded always,
+read only by the flag. `Military.roi(t)` folds the running wave's
+realized-so-far cost (the same `sampleYield` accounting `warYield` reads) in as
+one more sample; the sample is `enough` at `warRoiMinTiles` (50) tiles, or on
+troops alone at `warRoiMinTiles × warRoiMax` lost (a wave that lost 25k for no
+tile has proven the price). Past `warRoiMax` (500 troops/tile) on enough
+sample: (a) `manageRetreats` brings the running wave home through the existing
+retreat path (`RetreatExecution`; hystRetreats untouched for other wars) with
+`WAR ROI <name> X/tile — abandoned (Nk coming home), blacklisted 3000 ticks`
+and fires; counters are exempt (they cancel incoming waves regardless of ROI);
+(b) the target is blacklisted `warRoiCooldown` (3000) ticks — also (fired, one
+per resolve) the moment a wave resolves over the line, since the sticky target
+otherwise re-declares the same dear war within a pass; (c) the scorer treats the blacklist as a veto
+below opportunity rank (collapsed / gap owner / hold-mode threat / drained /
+annexable branches return before it) — a candidate the plain scorer accepts is
+refused with `WAR ROI <name> X/tile — vetoed` and fires — and the sticky
+filter releases a vetoed current target rather than holding every other
+candidate hostage for the cooldown. Off = byte-identical decisions (recording
+only); golden unchanged.
+
+**Tests** (`tests/playbook/warRoiCap.test.ts`): a 3-wide neck at its troop cap
+with every tile under one of two posts realizes ~650–1000 troops/tile — on,
+the wave is abandoned at ~t110 through the retreat path, the veto holds for the
+cooldown (no re-declaration, `vetoed` logged) and the flag fires; off, no WAR
+ROI line and the plain bot grinds the same war; a vetoed sticky target releases
+the filter and the war goes to the other neighbour (off re-selects the vetoed
+one); a collapsed target bypasses the veto; a counter at a vetoed attacker
+still goes and is never ROI-recalled.
+
+**Smoke** (`MIN=6 SPAWN=africa DIFF=medium`, one seed — not evidence): rank 1,
+share 1.00, 56,955 tiles, 44 players, botMs ~350, `fired=warRoiCap:2`. Two
+abandons, both textbook:
+`WAR ROI Niger 668/tile — abandoned` at t1840 after a 1,154/tile wave (the two
+prior Niger waves went 71 and 294); Niger COLLAPSED at t1800 and the bypass
+re-attacked at t1860, killing it in 3 s at 32/tile. `WAR ROI Chad 1947/tile`
+at t3230 (139 tiles for 271k troops); Chad had COLLAPSED and the bypass
+finished it at 59–188/tile. The cap cuts the dear grind and still lets the
+collapse be taken.
+
+**A/B** (full games — the objective is `winner=us`, and the bleed is a
+late-game shape): `CONFIGS='{"base":{},"roi":{"warRoiCap":true},"roi1k":{"warRoiCap":true,"warRoiMax":1000}}' MINUTES=full WORKERS=3 scripts/lab/remote.sh`
+— removal form once on: `CONFIGS='{"base":{},"noroi":{"warRoiCap":false}}'`.
+The four constants (`warRoiMax`, `warRoiMinTiles`, `warRoiWindow`,
+`warRoiCooldown`) are PlaybookParams for the CMA to tune with the flag on.
+
 ## CMA-ES race over the neutral flags' constants (2026-08-30, `lab-out/cma-neutral`, `lab-out/cma-confirm`)
 
 `cmaes.py --spec scripts/lab/specs/neutral-flags.json --fixed '{utility, threatMap, buildSearch, retaliateAware, drainedNations, relationAware, hystRetreats on; est scales 0.868/0.719/1.285}' --pop 14 --gens 8 --race`, 4× cpx62, ~11 min per generation, ~2,900 games. The tuned flags-on mean beat base in 6 of 8 generations (30 mirrored games each: +0.10, +0.17 (p=0.016), +0.14, −0.02, +0.08, +0.20, −0.11, +0.09); the base changed at generation 4 when ac86780e6 flipped the five boat/annex/multiwar flags on.

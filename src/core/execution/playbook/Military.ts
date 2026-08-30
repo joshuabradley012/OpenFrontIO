@@ -173,8 +173,9 @@ export class Military {
   prune(): void {
     const t = this.ctx.mg.ticks(), me = this.ctx.me;
     const dead = (p: Player) => !p.isAlive();
-    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged, this.finishedAt]) for (const p of m.keys()) if (dead(p)) m.delete(p);
+    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged, this.finishedAt, this.roiHist, this.roiVetoUntil]) for (const p of m.keys()) if (dead(p)) m.delete(p);
     for (const [p, until] of this.blacklist) if (t >= until) this.blacklist.delete(p);
+    for (const [p, until] of this.roiVetoUntil) if (t >= until) this.roiVetoUntil.delete(p);
     for (const [p, s] of this.sentAt) if (t - s.tick >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
     for (const [p, at] of this.lastCounter) if (t - at >= 300) this.lastCounter.delete(p);
     for (const [p, at] of this.boatedAt) if (t - at >= 900) this.boatedAt.delete(p);
@@ -746,7 +747,9 @@ export class Military {
     // one enemy at a time, to the end: nations nuke whoever attacks them, and eight half-wars make eight nuclear enemies.
     // The current target stays the only candidate while it lives, borders us, and was hit within the last three minutes.
     // `multiWar`: the sticky target binds the first war only; an extra war is by definition on someone else.
-    if (!extra && this.currentTarget_ && this.currentTarget_.isAlive() && rivals.includes(this.currentTarget_) && this.ctx.mg.ticks() - this.lastWarTick < 1800) {
+    // `warRoiCap`: a vetoed sticky target releases the filter — the scorer refuses it anyway, and holding every
+    // other candidate hostage to a war we just abandoned would idle the army for the whole cooldown.
+    if (!extra && this.currentTarget_ && this.currentTarget_.isAlive() && rivals.includes(this.currentTarget_) && this.ctx.mg.ticks() - this.lastWarTick < 1800 && !this.roiVetoed(this.currentTarget_)) {
       candidates = candidates.filter((r) => r === this.currentTarget_ || this.collapsed(r) || this.drained(r) || r === gapOwner || r === threatHere || annex.has(r));
     }
     if (this.ctx.sit.mode === "hold") candidates = candidates.filter((r) => this.ctx.sit.threats.includes(r)); // the hold is spent removing whoever can fire
@@ -807,7 +810,7 @@ export class Military {
     const steamrollGuard = aware && this.risk.armed(); // a nation can fire or is within half the price of it
     const lastThreat = (r: Player) => this.ctx.sit.threats.length === 1 && this.ctx.sit.threats[0] === r;
     const guard = (r: Player, site: string, line: string): number => { if (!quiet) { this.lim.fire("nationMirvAware", site); const now = this.ctx.mg.ticks(); if (now - (this.lastGuardLog.get(`${site}/${r.id()}`) ?? -1e9) >= 600) { this.lastGuardLog.set(`${site}/${r.id()}`, now); this.ctx.log(`t${now} no war on ${r.name()}: ${line}`); } } return -1; };
-    const score = (r: Player) => {
+    const scoreBase = (r: Player) => {
       const ratio = maxSend / Math.max(1, r.troops());
       if (denialGuard && !lastThreat(r)) { const d = this.risk.denial(r.numTilesOwned()); if (d.share >= d.threshold - 0.01) return guard(r, "denial", `its ${r.numTilesOwned()} tiles would carry our share to ${(d.share * 100).toFixed(1)} % (denial at ${(d.threshold * 100).toFixed(0)} %)`); }
       if (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) return ratio >= 1.5 ? 20 + ratio : -1; // bombed: go now at 1.5×, posts are gone
@@ -835,6 +838,20 @@ export class Military {
       return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r) + yieldBonus(r);
     };
     const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r) || annex.has(r);
+    // `warRoiCap`: the abandon blacklist is a veto below opportunity rank — a candidate the plain scorer accepts
+    // (the opportunity branches return from scoreBase before it matters) is refused while its cooldown runs.
+    const score = (r: Player) => {
+      const s = scoreBase(r);
+      if (s > 0 && !isOpp(r) && this.roiVetoed(r)) {
+        if (!quiet) {
+          this.lim.fire("warRoiCap", "veto");
+          const now = this.ctx.mg.ticks();
+          if (now - (this.lastGuardLog.get(`roi/${r.id()}`) ?? -1e9) >= 600) { this.lastGuardLog.set(`roi/${r.id()}`, now); this.ctx.log(`t${now} WAR ROI ${r.name()} ${Math.round(this.roi(r)?.cost ?? 0)}/tile — vetoed`); }
+        }
+        return -1;
+      }
+      return s;
+    };
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
     // shadowWave's test above) or on an annexable one, else fightRatio
     const wantFor = (r: Player) => { const mult = annex.has(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
@@ -1040,6 +1057,9 @@ export class Military {
         const cost = lost / Math.max(1, c.y.tiles);
         this.ctx.log(`t${now} WAR RESULT ${t.name()}: +${c.y.tiles} tiles, -${lost} troops, ${c.y.tiles === 0 ? "inf" : Math.round(cost)} troops/tile, ${Math.round((now - c.tick) / 10)} s`);
         if (lost >= YIELD_MIN_LOST) this.yieldSeen.set(t, c.y.tiles === 0 ? YIELD_COST_CAP : Math.min(YIELD_COST_CAP, cost));
+        this.calib.delete(t); // before noteRoi: roi() folds a running wave's samples, and this wave just resolved
+        this.noteRoi(t, c.y.tiles, lost);
+        continue;
       }
       this.calib.delete(t);
     }
@@ -1079,6 +1099,67 @@ export class Military {
    *  (Config.attackLogic: altAttackerLoss = 1.3 × defenderTroopLoss × mag/100, defenderTroopLoss = troops/tiles). */
   expectedCost(r: Player): number {
     return this.yieldSeen.get(r) ?? this.q.density(r) * 1.3;
+  }
+
+  // ---------------------------------------------------------------- warRoiCap: realized troops-per-tile per target
+  /** `warRoiCap`: per-target realized ROI — the last warRoiWindow resolved waves' {tiles, lost} (WAR RESULT's
+   *  numbers) and their EMA. Recorded always (like yieldSeen); only the flag reads it. */
+  private roiHist = new Map<Player, { ema: number; win: { tiles: number; lost: number }[] }>();
+  /** `warRoiCap`: tick until which the scorer refuses the target (set on each abandon), below opportunity rank. */
+  private roiVetoUntil = new Map<Player, number>();
+  /** A wave that took no tile enters the EMA at this cap rather than Infinity (which would freeze it); kept above
+   *  warRoiMax so the CMA can move the line past YIELD_COST_CAP without the cap sitting under it. */
+  private roiCostCap(): number { return Math.max(YIELD_COST_CAP, this.ctx.p.warRoiMax * 4); }
+  /** Fold a resolved wave into `t`'s realized ROI, then (flag on) blacklist a target whose ROI is past the line —
+   *  without this the sticky target re-declares the same dear war the pass the WAR RESULT lands. Called after the
+   *  calib record is deleted so roi() does not count the wave twice. */
+  private noteRoi(t: Player, tiles: number, lost: number): void {
+    const cap = this.roiCostCap();
+    const cost = tiles === 0 ? cap : Math.min(cap, lost / tiles);
+    const h = this.roiHist.get(t) ?? { ema: cost, win: [] };
+    if (h.win.length > 0) h.ema = h.ema + (cost - h.ema) / Math.max(1, this.ctx.p.warRoiWindow);
+    h.win.push({ tiles, lost });
+    while (h.win.length > Math.max(1, this.ctx.p.warRoiWindow)) h.win.shift();
+    this.roiHist.set(t, h);
+    if (this.ctx.p.warRoiCap && !this.roiVetoed(t) && this.roiBad(t)) {
+      const now = this.ctx.mg.ticks();
+      this.roiVetoUntil.set(t, now + this.ctx.p.warRoiCooldown);
+      this.lim.fire("warRoiCap", "resolve", 1); // the plain path leaves the target eligible and the sticky rule re-declares
+      this.ctx.log(`t${now} WAR ROI ${t.name()} ${Math.round(this.roi(t)!.cost)}/tile — abandoned, blacklisted ${this.ctx.p.warRoiCooldown} ticks`);
+    }
+  }
+  /** `warRoiCap`: the target's realized ROI — the resolved-wave EMA folded with the running wave's realized-so-far
+   *  cost as one more sample — and the tiles of sample behind it (window + running wave). null with no data.
+   *  `enough` also passes on troops alone (lost ≥ warRoiMinTiles × warRoiMax): a wave that lost that much for no
+   *  tile has proven the price without ever buying one. */
+  roi(t: Player): { cost: number; tiles: number; enough: boolean } | null {
+    const p = this.ctx.p, cap = this.roiCostCap();
+    const h = this.roiHist.get(t);
+    let tiles = 0, lost = 0;
+    if (h) for (const w of h.win) { tiles += w.tiles; lost += w.lost; }
+    let cost = h ? h.ema : null;
+    const c = this.calib.get(t);
+    if (c && c.seen && (c.y.tiles > 0 || c.y.lost > 0)) {
+      const rc = c.y.tiles === 0 ? cap : Math.min(cap, c.y.lost / c.y.tiles);
+      cost = cost === null ? rc : cost + (rc - cost) / Math.max(1, p.warRoiWindow);
+      tiles += c.y.tiles; lost += c.y.lost;
+    }
+    if (cost === null) return null;
+    return { cost, tiles, enough: tiles >= p.warRoiMinTiles || lost >= p.warRoiMinTiles * p.warRoiMax };
+  }
+  /** `warRoiCap`: realized ROI past warRoiMax on enough sample. */
+  private roiBad(t: Player): boolean {
+    const r = this.roi(t);
+    return r !== null && r.enough && r.cost > this.ctx.p.warRoiMax;
+  }
+  /** `warRoiCap`: is `t` under the abandon blacklist right now (false with the flag off)? */
+  private roiVetoed(t: Player): boolean {
+    return this.ctx.p.warRoiCap && this.ctx.mg.ticks() < (this.roiVetoUntil.get(t) ?? -1e9);
+  }
+  /** The opportunity targets the ROI cap never touches: collapsed, the gap owner, a hold-mode threat, drained,
+   *  annexable — the tiles (or the removal) are the point, whatever they cost. */
+  private roiOpportunity(t: Player): boolean {
+    return this.collapsed(t) || t === this.splitOwner || (this.ctx.sit.mode === "hold" && this.ctx.sit.threats.includes(t)) || this.drained(t) || (this.ctx.p.annexWars && this.q.annexable(t));
   }
 
   // ---------------------------------------------------------------- allies that can pile in (trustWars)
@@ -1155,6 +1236,18 @@ export class Military {
           this.ctx.log(`t${this.ctx.mg.ticks()} YIELD retreat from ${t.name()}: ${cost === Infinity ? "inf" : Math.round(cost)} troops/tile (${Math.round(a.troops() / 1000)}k left)`);
           continue;
         }
+      }
+      // `warRoiCap`: a war whose realized ROI (the resolved-wave EMA folded with this wave's realized-so-far) is
+      // past warRoiMax on warRoiMinTiles of sample comes home through the same retreat path and the target is
+      // blacklisted — unless the tiles are the point (roiOpportunity). Counters are exempt above (they cancel
+      // incoming waves regardless of ROI).
+      if (this.ctx.p.warRoiCap && !this.counters.has(t) && this.roiBad(t) && !this.roiOpportunity(t)) {
+        this.retreat(a);
+        const now = this.ctx.mg.ticks();
+        this.roiVetoUntil.set(t, now + this.ctx.p.warRoiCooldown);
+        this.lim.fire("warRoiCap", "retreat", 1);
+        this.ctx.log(`t${now} WAR ROI ${t.name()} ${Math.round(this.roi(t)!.cost)}/tile — abandoned (${Math.round(a.troops() / 1000)}k coming home), blacklisted ${this.ctx.p.warRoiCooldown} ticks`);
+        continue;
       }
       // Retreat only when we are losing: most of the wave is gone while the target has barely bled.
       const losing = a.troops() < st.sent * 0.2 && t.troops() > st.targetTroops * 0.7;
