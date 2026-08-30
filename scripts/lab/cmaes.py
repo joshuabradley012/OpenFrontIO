@@ -541,7 +541,7 @@ def main():
                     "(flags on, calibrated scales, ...) so the tuned params are judged with those settings live; "
                     "'base' (--with-base) stays {} as the drift reference. Keys may not overlap the spec")
     ap.add_argument("--runner", choices=["remote", "local"], default="remote")
-    ap.add_argument("--minutes", type=int, default=20)
+    ap.add_argument("--minutes", type=lambda s: s if s == "full" else int(s), default=20, help="game length in minutes, or full (play until a winner; summarize.py then scores wscore)")
     ap.add_argument("--batches", help="override the grid batches (default med0..med4); must match every generation")
     ap.add_argument("--jobs", type=int, help="local runner: parallel games")
     ap.add_argument("--with-base", action="store_true", help="add 'base': {} to every sweep as a drift reference (30 more games)")

@@ -507,6 +507,43 @@ strength is one axis; a candidate that beats its parent but loses to the
 grandparent is a rock-paper-scissors the ladder cannot show. None found in
 the dry-run data; check it on every real ladder.
 
+## Full games and win scoring (2026-08-30)
+
+Josh's objective is winning full games, not the 20-minute land/rank/crown
+score. `MINUTES=full` plays until `game.getWinner()` (170-minute ceiling —
+WinCheckExecution's limit) and the FINAL line carries `winner=us|other|none`.
+`remote.sh` and `sweep.sh` pass `MINUTES` straight through as `MIN=$MINUTES`
+(no arithmetic on it), and `tests/lab/playbook.lab.ts` maps `MIN=full` to
+170 minutes; `cmaes.py --minutes full` does the same.
+
+Cost: a full game runs up to 170 sim-minutes ≈ 8× a 20-minute game. A
+30-pair mirrored A/B of two configs (`MIRROR=1`, 5 batches × 6 regions × 2
+slots × 2 configs = 120 games) is about 25 min on 4× cpx62.
+
+```bash
+CONFIGS='{"base":{},"x":{"<flag>":true}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh
+python3 scripts/lab/summarize.py --sprt $DEST base x                       # wscore is picked automatically
+python3 scripts/lab/summarize.py --objective winrate --sprt $DEST base x   # SPRT on the paired win difference, δ = 0.15
+```
+
+`summarize.py` (see its docstring) parses `winner=`, adds `wins` / `winrate`
+/ `wscore` columns and scores full-game dirs with
+
+    wscore = score + 1.0 · (winner == us)
+
+A win is worth more than the whole 0.4–2.25 range of the 20-minute score, so
+wins dominate whenever they exist and land/rank only orders the non-wins.
+The objective is chosen per results dir — `wscore` when any game has
+`winner=us|other`, else `score` (20-minute sweeps are unchanged); a dir that
+mixes decided games with games lacking the field warns and uses `wscore`;
+`--objective score|wscore|winrate` overrides. The live-game pairing,
+bootstrap CI, sign test, SPRT, `--verdict` and `--fitness` ("fitness", plus
+`wins`, `winrate`, `wscore`, `per_game_wins`, `per_game_wscore` for
+`cmaes.py`) all run on the chosen objective, and the paired report adds a
+WIN line per config: wins of each, pairs won by A only / B only / both /
+neither, and an exact McNemar-style sign test on the discordant pairs.
+`remote.sh SPRT=1` calls `summarize.py --sprt --verdict 0` unchanged.
+
 ## Bot strength over time: `history.sh` / `history.py`
 
 How strong has the bot been at each milestone, measured with today's harness and
