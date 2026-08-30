@@ -16,6 +16,9 @@ identical pairs, the biggest swings, and the live-game statistics below.
   python3 scripts/lab/summarize.py --at 600 DIR …      # same, but scored from the 10-minute row of each transcript
   python3 scripts/lab/summarize.py --verdict 3 DIR …   # per config: "clear" when |wins - losses| >= 3 vs the baseline, else "unclear"
                                                        # (exit 0 when every config is clear — remote.sh STAGED=1 uses this to skip the rest of the grid)
+  python3 scripts/lab/summarize.py --sprt DIR base cand  # + sequential test (GSPRT) per config: ACCEPT / REJECT / CONTINUE (n more pairs)
+  python3 scripts/lab/summarize.py --sprt --verdict 3 DIR base cand   # exit 0 when every config's SPRT has decided (remote.sh SPRT=1 loop)
+  python3 scripts/lab/summarize.py --cycles DIR cand v-current v3 v2   # non-transitive triples (a beats b beats c beats a)
   python3 scripts/lab/summarize.py --selftest          # inline fixture, exit 0 iff the scoring is as documented here
 
 Score of one game (2026-08-30, replaces the old fitness as the objective):
@@ -40,6 +43,31 @@ mean paired score difference with a bootstrap 95% CI (1000 resamples, seed 0)
 and a two-sided sign test are over live games only, and the verdict is
 "decisive win" / "decisive loss" when the sign test has p < 0.05, else
 "undecided (n_live=…)".
+
+Sequential test (--sprt, 2026-08-29; the Stockfish/fishtest GSPRT applied to
+the paired score difference). Observations are the per-pair differences
+d_i = score(cand) − score(base) over live games in batch order (with mirrored
+slots, see below, the two slots of one (batch, region) are averaged into one
+observation). H0: mean d ≤ 0 against H1: mean d ≥ δ (--delta, default 0.10
+score units ≈ one rank step out of ten, or 10k→16k tiles), α = β = 0.05:
+
+    LLR_n = n · (mean_n − δ/2) · δ / var_n          (var_n = sample variance, floor 1e-4)
+    ACCEPT when LLR ≥ ln((1−β)/α) = +2.944, REJECT when LLR ≤ ln(β/(1−α)) = −2.944, else CONTINUE
+
+The decision is the *first* crossing walking the observations in order (a
+true sequential test — later pairs cannot undo it); CONTINUE also reports how
+many more pairs the current mean and variance would need to reach a bound
+(∞ when the mean sits at δ/2). --verdict with --sprt exits 0 only when every
+config has decided, which is what remote.sh/sweep.sh SPRT=1 loop on.
+For racing inside cmaes.py the same function is called with (d0, d1) =
+(−δ, 0): REJECT there means "worse than the parent by δ".
+
+Mirrored slots (sweep.sh MIRROR=1): every (batch, region) is played twice,
+batch `med0` at SHIFT (default 0) and batch `med0b` at MIRRORSHIFT (default
+150) — the two "slots" of one scenario, the lab's analogue of playing both
+colours. summarize.py pairs `med0b` with `med0` and, when both slots exist
+for both configs, prints a pentanomial summary of the (slot a, slot b)
+outcome pairs: LL, LT/TL, TT or WL, WT/TW, WW.
 """
 import glob
 import json
@@ -60,6 +88,7 @@ FIRED_RE = re.compile(r"\bfired=(\S+)")
 # one per-30-s row of a transcript:  "  600s bots=… tiles=  12345 troops=… rank=3/41 share=0.62"
 ROW_RE = re.compile(r"^\s*(?P<t>\d+)s .*?tiles=\s*(?P<tiles>\d+).*?rank=(?P<rank>\d+)/(?P<players>\d+)(?: share=(?P<share>[\d.]+))?")
 AT = None  # --at SECONDS: score games from the row at that time instead of FINAL
+SPRT = False  # --sprt: add the sequential test to the table / ladder / verdict
 ASSUMED_PLAYERS = 40
 ASSUMED = {}  # config -> games whose player count had to be assumed (reported once)
 BOOT_N = 1000
@@ -309,6 +338,120 @@ def live_stats(a, b):
             "mean_diff": mean, "ci": (lo, hi), "p": p, "verdict": verdict}
 
 
+def split_slot(batch):
+    """'med0' -> ('med0', 'a'); 'med0b' -> ('med0', 'b')  (MIRROR=1 second slot, see the docstring)."""
+    m = re.match(r"^(.*\d)b$", batch)
+    return (m.group(1), "b") if m else (batch, "a")
+
+
+def is_live(a, b, k):
+    return bool(a[k].get("fired")) or outcome(a[k]) != outcome(b[k])
+
+
+def paired_diffs(a, b, live_only=True):
+    """Ordered observations for the sequential test: [(scenario, diff)] of a vs baseline b in batch order.
+    Without mirrored slots one game = one observation; with MIRROR=1 the two slots of a (batch, region) that
+    both configs played are averaged into one observation (live when either slot is live)."""
+    groups = {}
+    for k in sorted(set(a) & set(b)):
+        base, slot = split_slot(k[0])
+        groups.setdefault((base, k[1]), []).append(k)
+    out = []
+    for scen, keys in sorted(groups.items()):
+        live = any(is_live(a, b, k) for k in keys)
+        if live_only and not live:
+            continue
+        out.append((scen, statistics.fmean(score(a[k]) - score(b[k]) for k in keys)))
+    return out
+
+
+def pentanomial(a, b):
+    """Counts of (slot a, slot b) outcome pairs over scenarios both slots of which were played by both configs,
+    or None when no scenario has both slots. Keys: LL, LT, TT (also WL), WT, WW."""
+    groups = {}
+    for k in sorted(set(a) & set(b)):
+        base, slot = split_slot(k[0])
+        groups.setdefault((base, k[1]), {})[slot] = k
+    counts = {"LL": 0, "LT": 0, "TT": 0, "WT": 0, "WW": 0}
+    n = 0
+    for scen, slots in groups.items():
+        if "a" not in slots or "b" not in slots:
+            continue
+        n += 1
+        pts = 0
+        for k in slots.values():
+            d = score(a[k]) - score(b[k])
+            pts += 2 if d > 1e-12 else (0 if d < -1e-12 else 1)
+        counts[["LL", "LT", "TT", "WT", "WW"][pts]] += 1
+    return counts if n else None
+
+
+SPRT_DELTA = 0.10
+SPRT_ALPHA = 0.05
+SPRT_BETA = 0.05
+SPRT_VAR_FLOOR = 1e-4
+
+
+def sprt(diffs, d0=0.0, d1=None, alpha=None, beta=None):
+    """Generalised SPRT on the mean of `diffs` (in order), H0: mean = d0 vs H1: mean = d1, normal approximation
+    with the running sample variance: LLR_n = n (mean − (d0+d1)/2)(d1 − d0) / var_n.
+    Returns {decision: ACCEPT|REJECT|CONTINUE, n, llr, mean, var, n_at, more, bounds}. `n_at` is the observation
+    count at the first crossing; `more` is the number of extra observations the current mean/variance would need
+    (None when the mean sits on the indifference point)."""
+    d1 = SPRT_DELTA if d1 is None else d1
+    alpha = SPRT_ALPHA if alpha is None else alpha
+    beta = SPRT_BETA if beta is None else beta
+    upper, lower = math.log((1 - beta) / alpha), math.log(beta / (1 - alpha))
+    mid, width = (d0 + d1) / 2, d1 - d0
+    res = {"decision": "CONTINUE", "n": len(diffs), "llr": 0.0, "mean": 0.0, "var": 0.0, "n_at": None, "more": None,
+           "bounds": (lower, upper), "d0": d0, "d1": d1}
+    if len(diffs) < 2:
+        res["more"] = 2 - len(diffs)
+        res["mean"] = statistics.fmean(diffs) if diffs else 0.0
+        return res
+    llr = mean = var = 0.0
+    for n in range(2, len(diffs) + 1):
+        window = diffs[:n]
+        mean = statistics.fmean(window)
+        var = max(statistics.variance(window), SPRT_VAR_FLOOR)
+        llr = n * (mean - mid) * width / var
+        if llr >= upper:
+            res.update(decision="ACCEPT", n_at=n)
+            break
+        if llr <= lower:
+            res.update(decision="REJECT", n_at=n)
+            break
+    res.update(llr=llr, mean=mean, var=var)
+    if res["decision"] == "CONTINUE":
+        drift = (mean - mid) * width / var  # LLR per observation at the current estimate
+        if abs(drift) < 1e-12:
+            res["more"] = None
+        else:
+            target = upper if drift > 0 else lower
+            res["more"] = max(1, math.ceil(target / drift) - len(diffs))
+    return res
+
+
+def format_sprt(name, r, penta=None):
+    n = r["n"]
+    if r["decision"] == "CONTINUE":
+        more = "∞ at the current estimate" if r["more"] is None else f"~{r['more']} more pair{'s' if r['more'] != 1 else ''} needed"
+        tail = f"CONTINUE ({more})"
+    else:
+        tail = f"{r['decision']} at n={r['n_at']}"
+    pent = ""
+    if penta:
+        pent = "  pentanomial LL/LT/TT/WT/WW " + "/".join(str(penta[k]) for k in ("LL", "LT", "TT", "WT", "WW"))
+    return (f"  {name:16s} SPRT n {n:3d}  mean {r['mean']:+.3f}  sd {math.sqrt(r['var']):.3f}  LLR {r['llr']:+.2f}"
+            f" [{r['bounds'][0]:+.2f}, {r['bounds'][1]:+.2f}]  H0 d<={r['d0']:g} vs H1 d>={r['d1']:g}  {tail}{pent}")
+
+
+def sprt_report(a, b, name):
+    diffs = [d for _, d in paired_diffs(a, b)]
+    r = sprt(diffs)
+    return r, format_sprt(name, r, pentanomial(a, b))
+
+
 def format_live(n, s):
     return (f"  {n:16s} n_live {s['n_live']:2d}/{s['n']:2d}  W {s['wins']:2d} L {s['losses']:2d} T {s['ties']:2d}"
             f"  dScore {s['mean_diff']:+.3f} [{s['ci'][0]:+.3f}, {s['ci'][1]:+.3f}]  p={s['p']:.3f}  {s['verdict']}")
@@ -330,6 +473,10 @@ def print_table(d, names):
         print(f"\nlive games vs {base} (fired non-empty or outcome differs; score = land+rank+crown; sign test, bootstrap 95% CI):")
         for n in names[1:]:
             print(format_live(n, live_stats(data[n], data[base])))
+        if SPRT:
+            print(f"\nsequential test vs {base} (GSPRT on the paired score difference, live pairs in batch order; see --sprt):")
+            for n in names[1:]:
+                print(sprt_report(data[n], data[base], n)[1])
     missing = {n: 30 - len(data[n]) for n in names if len(data[n]) < 30}
     if missing:
         print("\nwarning: fewer than 30 games for " + ", ".join(f"{n} ({30 - m})" for n, m in missing.items()))
@@ -388,16 +535,65 @@ def print_ladder(d, names):
     print(f"\nlive games of {cand} vs each version:")
     for j in range(1, n):
         print(format_live(names[j], live_stats(data[cand], data[names[j]])))
+    if SPRT:
+        print(f"\nsequential test of {cand} vs each version:")
+        for j in range(1, n):
+            print(sprt_report(data[cand], data[names[j]], names[j])[1])
+    print("\ntransitivity (--cycles):")
+    print_cycles(d, names, data)
     note = assumed_note()
     if note:
         print("\n" + note)
 
 
+def beats(a, b):
+    """a beats b when it wins more (batch, region) pairs than it loses (paired() on alive, tiles)."""
+    w, l, _, _ = paired(a, b)
+    return w > l
+
+
+def cycles(data, names):
+    """Non-transitive triples: (x, y, z) with x beats y, y beats z, z beats x. Cheap check that the Bradley–Terry
+    ladder's single strength axis is not hiding a rock-paper-scissors between versions (a candidate that beats its
+    parent but loses to the grandparent)."""
+    out = []
+    n = len(names)
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if len({i, j, k}) < 3 or not (i < j and i < k):
+                    continue  # each cycle once, starting from its lowest index
+                x, y, z = names[i], names[j], names[k]
+                if beats(data[x], data[y]) and beats(data[y], data[z]) and beats(data[z], data[x]):
+                    out.append((x, y, z))
+    return out
+
+
+def print_cycles(d, names, data=None):
+    data = data or {n: load(d, n) for n in names}
+    cyc = cycles(data, names)
+    if not cyc:
+        print(f"no non-transitive triples among {len(names)} configs (every triple orders consistently by paired wins)")
+    for x, y, z in cyc:
+        wxy = paired(data[x], data[y])[:2]; wyz = paired(data[y], data[z])[:2]; wzx = paired(data[z], data[x])[:2]
+        print(f"cycle: {x} beats {y} ({wxy[0]}-{wxy[1]}), {y} beats {z} ({wyz[0]}-{wyz[1]}), {z} beats {x} ({wzx[0]}-{wzx[1]})")
+    return len(cyc)
+
+
 def verdict(d, names, thresh):
-    """Staged A/B helper: 'clear' when |wins - losses| >= thresh vs the baseline. Exit code 0 iff all clear."""
+    """Staged A/B helper: 'clear' when |wins - losses| >= thresh vs the baseline. Exit code 0 iff all clear.
+    With --sprt: 'clear' = the sequential test has decided (ACCEPT / REJECT), 'unclear' = CONTINUE."""
     data = {n: load(d, n) for n in names}
     base = names[0]
     all_clear = True
+    if SPRT:
+        for n in names[1:]:
+            r, line = sprt_report(data[n], data[base], n)
+            clear = r["decision"] != "CONTINUE"
+            all_clear = all_clear and clear
+            print(f"{n} {'clear' if clear else 'unclear'} {r['decision']} n={r['n']} mean={r['mean']:+.3f} llr={r['llr']:+.2f}"
+                  + ("" if clear else f" more={'inf' if r['more'] is None else r['more']}") + f" games={len(data[n])}")
+        return 0 if all_clear else 1
     for n in names[1:]:
         w, l, same, _ = paired(data[n], data[base])
         clear = abs(w - l) >= thresh
@@ -477,12 +673,60 @@ def selftest():
     check(0.1 <= lo <= 0.25 <= hi <= 0.4, f"bootstrap CI [{lo:.3f}, {hi:.3f}] brackets the mean")
     w, l, same, _ = paired(cand, base)
     check((w, l, same) == (1, 0, 2), f"old paired W/L/identical = {w}/{l}/{same} (expected 1/0/2)")
+
+    # --- sequential test fixtures: a clear win, a clear loss, an undecided series
+    rng = random.Random(3)
+    win = [0.25 + rng.gauss(0, 0.1) for _ in range(60)]
+    r = sprt(win)
+    check(r["decision"] == "ACCEPT" and r["n_at"] <= 20, f"SPRT clear win: {r['decision']} at n={r['n_at']} (mean {r['mean']:+.3f})")
+    loss = [-0.25 + rng.gauss(0, 0.1) for _ in range(60)]
+    r = sprt(loss)
+    check(r["decision"] == "REJECT" and r["n_at"] <= 20, f"SPRT clear loss: {r['decision']} at n={r['n_at']}")
+    und = [0.05 + 0.3 * (1 if i % 2 else -1) for i in range(12)]  # mean exactly δ/2 = 0.05: no drift
+    r = sprt(und)
+    check(r["decision"] == "CONTINUE" and r["more"] is None, f"SPRT undecided at the indifference point: {r['decision']}, more={r['more']}")
+    und2 = [0.45, -0.3] * 4  # mean 0.075, sd 0.4: a small positive drift that needs far more pairs
+    r = sprt(und2)
+    check(r["decision"] == "CONTINUE" and isinstance(r["more"], int) and r["more"] >= 1, f"SPRT small noisy sample: {r['decision']}, ~{r['more']} more")
+    r = sprt([0.3])
+    check(r["decision"] == "CONTINUE" and r["more"] == 1, "SPRT with one observation continues")
+    r = sprt([-0.3 + rng.gauss(0, 0.05) for _ in range(30)], d0=-0.1, d1=0.0)
+    check(r["decision"] == "REJECT", f"SPRT racing form (d0=-δ, d1=0) rejects a member 0.3 below the parent: {r['decision']}")
+    r = sprt([0.0 + rng.gauss(0, 0.05) for _ in range(30)], d0=-0.1, d1=0.0)
+    check(r["decision"] == "ACCEPT", f"SPRT racing form keeps a member level with the parent: {r['decision']}")
+    lo_b, hi_b = r["bounds"]
+    check(abs(hi_b - 2.944) < 1e-3 and abs(lo_b + 2.944) < 1e-3, f"SPRT bounds ±{hi_b:.3f}")
+
+    # --- mirrored slots: med0 + med0b pair into one observation; pentanomial counts
+    check(split_slot("med0b") == ("med0", "b") and split_slot("med0") == ("med0", "a") and split_slot("g3b") == ("g3", "b"),
+          "split_slot: med0b is slot b of med0")
+    base2 = dict(base); cand2 = dict(cand)
+    for r_ in ("africa", "australia", "east-asia"):
+        base2[("med0b", r_)] = base[("med0", r_)]
+        cand2[("med0b", r_)] = cand[("med0", r_)]
+    # slot b of australia: candidate loses instead of winning -> the scenario's observation is the mean of the two
+    cand2[("med0b", "australia")] = parse_line(SELFTEST_BASE[1].replace("tiles=10000", "tiles=5000").replace("rank=20", "rank=25"))
+    obs = paired_diffs(cand2, base2)
+    check([s_ for s_, _ in obs] == [("med0", "africa"), ("med0", "australia")], f"mirrored observations: {[s_ for s_, _ in obs]}")
+    d_b = (math.log10(5000) / 5 + 1 - 24 / 38) - 1.3
+    check(abs(obs[1][1] - (d_aus + d_b) / 2) < 1e-9, f"mirrored australia observation = mean of the slots ({obs[1][1]:+.4f})")
+    pent = pentanomial(cand2, base2)
+    check(pent == {"LL": 0, "LT": 0, "TT": 3, "WT": 0, "WW": 0}, f"pentanomial (africa TT, australia WL=TT, east-asia TT): {pent}")
+    check(pentanomial(cand, base) is None, "pentanomial is None without mirrored slots")
+
+    # --- cycles: rock-paper-scissors between three configs on three scenarios
+    def g(tiles):
+        return {("med0", f"r{i}"): parse_line(SELFTEST_BASE[0].replace("tiles=100000", f"tiles={t}")) for i, t in enumerate(tiles)}
+    trio = {"x": g([3, 2, 1]), "y": g([1, 3, 2]), "z": g([2, 1, 3])}  # x beats z 2-1, z beats y 2-1, y beats x 2-1
+    cyc = cycles(trio, ["x", "y", "z"])
+    check(cyc == [("x", "z", "y")], f"cycle x>z>y>x found: {cyc}")
+    check(cycles({"x": trio["x"], "y": trio["x"], "z": trio["x"]}, ["x", "y", "z"]) == [], "no cycle among identical configs")
     print("selftest " + ("passed" if ok else "FAILED"))
     return 0 if ok else 1
 
 
 def main(argv):
-    global AT
+    global AT, SPRT, SPRT_DELTA, SPRT_ALPHA, SPRT_BETA
     mode = "table"
     thresh = 3
     old = False
@@ -491,8 +735,16 @@ def main(argv):
             AT = int(argv[1]); argv = argv[2:]
         elif argv[0] == "--verdict":
             mode = "verdict"; thresh = int(argv[1]); argv = argv[2:]
-        elif argv[0] in ("--fitness", "--ladder"):
+        elif argv[0] in ("--fitness", "--ladder", "--cycles"):
             mode = argv[0][2:]; argv = argv[1:]
+        elif argv[0] == "--sprt":
+            SPRT = True; argv = argv[1:]
+        elif argv[0] == "--delta":
+            SPRT_DELTA = float(argv[1]); argv = argv[2:]
+        elif argv[0] == "--alpha":
+            SPRT_ALPHA = float(argv[1]); argv = argv[2:]
+        elif argv[0] == "--beta":
+            SPRT_BETA = float(argv[1]); argv = argv[2:]
         elif argv[0] == "--old-fitness":
             old = True; argv = argv[1:]
         elif argv[0] == "--selftest":
@@ -521,6 +773,11 @@ def main(argv):
             print("--ladder needs a candidate and at least one version")
             return 2
         print_ladder(d, names)
+    elif mode == "cycles":
+        if len(names) < 3:
+            print("--cycles needs at least three configs")
+            return 2
+        print_cycles(d, names)
     else:
         print_table(d, names)
     return 0
