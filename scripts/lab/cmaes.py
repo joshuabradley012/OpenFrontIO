@@ -267,6 +267,25 @@ def parse_spec(args):
     return spec
 
 
+def parse_fixed(args, spec):
+    """--fixed: the settings every member (and 'mean') plays with, on top of DEFAULT_PLAYBOOK. Checked against
+    Params.ts like the spec; a key that is also tuned is an error (which value would win is ambiguous)."""
+    if not args.fixed:
+        return {}
+    fixed = json.load(open(args.fixed)) if os.path.exists(args.fixed) else json.loads(args.fixed)
+    if not isinstance(fixed, dict):
+        raise SystemExit("--fixed must be a JSON object")
+    clash = sorted(set(fixed) & set(spec))
+    if clash:
+        raise SystemExit(f"--fixed keys also in the spec: {', '.join(clash)} — tune them or fix them, not both")
+    defaults = default_playbook()
+    for k in fixed:
+        if defaults is not None and k not in defaults:
+            print(f"warning: --fixed key '{k}' is not in DEFAULT_PLAYBOOK (Params.ts) — the bot ignores it")
+    print(f"fixed for every member: {json.dumps(fixed)}")
+    return fixed
+
+
 def to_params(spec, x):
     out = {}
     for (name, (lo, hi, _, is_int)), xi in zip(spec.items(), x):
@@ -518,6 +537,9 @@ def main():
     ap.add_argument("--spec", help="JSON {name: [lo, hi, init, 'int'?]} or {name: {lo, hi, init, int}}")
     ap.add_argument("--param", action="append", help="name=lo:hi[:init][:int] (repeatable; replaces the built-in spec)")
     ap.add_argument("--init", help="JSON (file or string) of starting values, e.g. the current DEFAULT_PLAYBOOK subset")
+    ap.add_argument("--fixed", help="JSON (file or string) merged under every member's config and the 'mean' reference "
+                    "(flags on, calibrated scales, ...) so the tuned params are judged with those settings live; "
+                    "'base' (--with-base) stays {} as the drift reference. Keys may not overlap the spec")
     ap.add_argument("--runner", choices=["remote", "local"], default="remote")
     ap.add_argument("--minutes", type=int, default=20)
     ap.add_argument("--batches", help="override the grid batches (default med0..med4); must match every generation")
@@ -543,6 +565,7 @@ def main():
 
     spec = parse_spec(args)
     check_spec(spec)
+    fixed = parse_fixed(args, spec)
     names_spec = list(spec.keys())
     n = len(names_spec)
     os.makedirs(args.out, exist_ok=True)
@@ -578,7 +601,7 @@ def main():
             if args.games_growth and cma.sigma < args.grow_below:
                 batches += [b for b in args.extra_batches.split() if b not in batches]
         names = [f"g{g}p{i}" for i in range(len(pop))]
-        configs = {nm: to_params(spec, x) for nm, x in zip(names, pop)}
+        configs = {nm: {**fixed, **to_params(spec, x)} for nm, x in zip(names, pop)}
         record = {
             "gen": g,
             "spec": {k: {"lo": v[0], "hi": v[1], "init": v[2], "int": v[3]} for k, v in spec.items()},
@@ -587,12 +610,13 @@ def main():
             "minutes": args.minutes,
             "batches": batches,
             "runner": "dry-run" if args.dry_run else args.runner,
+            "fixed": fixed,
         }
         json.dump(record, open(gen_file(args.out, g), "w"), indent=1)
         results_dir = os.path.join(args.out, f"gen_{g}")
         sweep_configs = dict(configs)
         if args.reeval_mean:
-            sweep_configs["mean"] = to_params(spec, cma.mean)
+            sweep_configs["mean"] = {**fixed, **to_params(spec, cma.mean)}
         if args.with_base:
             sweep_configs["base"] = {}
         grown = " (grown grid)" if len(batches) > len(base_batches) else ""
@@ -636,7 +660,7 @@ def main():
             ensure(sweep_configs, batches)
         obj, fit = score_record(record, results_dir, list(sweep_configs), names, configs, args)
         cma.tell(pop, obj)
-        record.update({"mean_params": to_params(spec, cma.mean), "state_after": cma.state()})
+        record.update({"mean_params": {**fixed, **to_params(spec, cma.mean)}, "state_after": cma.state()})
         json.dump(record, open(gen_file(args.out, g), "w"), indent=1)
         best = record["best"]
         extras = "".join(f", {x} {fit[x]['fitness']:.3f}" for x in ("mean", "base") if x in fit)

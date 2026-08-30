@@ -17,7 +17,6 @@ const SIM_MARGIN = 0.2; // simWars: the wave must end with this share of itself 
 const SIM_OPPORTUNITY_LOSS_PER_TILE = 150; // simWars: even a collapsed / gap-owner / threat target is not worth more than this per tile
 const HYST_EVERY = 100; // hystRetreats: ticks between re-estimates of a running war
 const HYST_HORIZON = 600; // hystRetreats: the 'continue' branch is judged one minute ahead
-const HYST_STRIKES = 2; // hystRetreats: consecutive losing re-estimates before the wave comes home
 const HYST_TILE_WORTH = 60; // hystRetreats: what a tile of the target is worth in troops — the non-wilderness bar of simMaxLossPerTile. The wilderness discount belongs to opening a war, not to abandoning one
 const RETREAT_MALUS = 0.75; // AttackExecution.retreat(25) against a player: the share of a recalled wave that gets home
 interface SimPick { troops: number; est: AttackEstimate; tilesPerLoss: number; value: number }
@@ -31,7 +30,6 @@ interface WarPick {
   /** Every candidate the scorer accepted, for the utility layer (`best` first). */
   alts: { r: Player; want: number; sim: SimPick | null; score: number; opportunity: boolean }[];
 }
-const FREE_LAND_TROOPS_PER_TILE = 20; // utility: mag/5 = 16–24 troops a tile of terra nullius (the wave's own losses)
 const UTIL_EST_EVERY = 50; // utility: ticks an option's estimate is cached
 /** One war or tribe wave under calibration bookkeeping (EST at the send, ACT when the attack is gone). */
 interface CalibRecord { wave: number; tick: number; sent: number; tiles0: number; ours0: number; others: number; last: number; seen: boolean; retreating: boolean }
@@ -436,7 +434,7 @@ export class Military {
     if (this.ctx.p.threatMap) {
       const tm = this.q.rivals.threat, attacking = new Set(me.incomingAttacks().map((a) => a.attacker()));
       let pre: Player | null = null;
-      for (const r of this.ctx.sit.rivals) { if (attacking.has(r) || this.q.postFacing(r)) continue; const s = tm.exposedTo(r, 1.5, Math.max(2000, this.ctx.sit.troops * 0.03)); if (s && (pre === null || tm.maxThreat(r) > tm.maxThreat(pre))) pre = r; }
+      for (const r of this.ctx.sit.rivals) { if (attacking.has(r) || this.q.postFacing(r)) continue; const s = tm.exposedTo(r, this.ctx.p.threatPreRatio, Math.max(2000, this.ctx.sit.troops * 0.03)); if (s && (pre === null || tm.maxThreat(r) > tm.maxThreat(pre))) pre = r; }
       if (pre !== this.prePosition && pre !== null) this.ctx.log(`t${this.ctx.mg.ticks()} PRE-POSITION post vs ${pre.name()}: ${Math.round(tm.maxThreat(pre) / 1000)}k unanswered on our border`);
       this.prePosition = pre;
     }
@@ -498,7 +496,7 @@ export class Military {
     // crown, not survival: a war is on when we can afford 2× someone's whole army out of the spendable troops,
     // not only when troops reach 70 % of a cap that cities keep raising
     // `drainedNations`: a drained nation is affordable at 1.5× — it cannot answer until it regrows past its reserve ratio
-    const affordableAt = (r: Player) => r.troops() * (this.drained(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio) + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare;
+    const affordableAt = (r: Player) => r.troops() * (this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : this.ctx.p.fightRatio) + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare;
     const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
     if (affordable && !nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) this.lim.fire("drainedNations", "affordable");
     if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return null; // a 1.67× push that keeps home healthy is always taken
@@ -543,7 +541,7 @@ export class Military {
     const endgame = this.ctx.mg.ticks() >= 15000 || this.ctx.sit.mode === "push"; // 25:00 or the push — land now is worth more than troops later
     // review #5 (`threatMap`): prefer a rival whose army is committed on its other borders (+3 × busyElsewhere) and
     // avoid opening a war on a border where we are already contested (−2 × Σ vulnerability / troops)
-    const threatBonus = (r: Player) => { if (!this.ctx.p.threatMap) return 0; const tm = this.q.rivals.threat; const b = 3 * tm.busyElsewhere(r) - (2 * tm.vulnerability(r)) / Math.max(1, this.ctx.sit.troops); if (b !== 0 && this.ctx.mg.ticks() - this.threatFired >= 100) { this.threatFired = this.ctx.mg.ticks(); this.ctx.fire("threatMap"); } return b; };
+    const threatBonus = (r: Player) => { if (!this.ctx.p.threatMap) return 0; const tm = this.q.rivals.threat; const b = this.ctx.p.threatBusyWeight * tm.busyElsewhere(r) - (this.ctx.p.threatVulnWeight * tm.vulnerability(r)) / Math.max(1, this.ctx.sit.troops); if (b !== 0 && this.ctx.mg.ticks() - this.threatFired >= 100) { this.threatFired = this.ctx.mg.ticks(); this.ctx.fire("threatMap"); } return b; };
     const trustBonus = (r: Player) => { const b = this.ctx.p.trustWars ? 2 * (1 - (this.ctx.sit.rival.get(r)?.trust ?? 0.5)) : 0; if (b !== 0 && b !== 1) this.ctx.fire("trustWars"); return b; }; // C1: a rival that broke faith is the better target
     // At cap every troop above the line is wasted growth, so commit more and accept a thinner edge.
     const maxSend = Math.floor(me.troops() * (atCap || endgame ? 0.7 : this.ctx.p.fightMaxShare));
@@ -551,7 +549,7 @@ export class Military {
     const richer = (r: Player) => this.q.cap() >= this.ctx.mg.config().maxTroops(r) * 2 && this.ctx.sit.gold >= 1_000_000n; // we replace losses, they cannot
     const attackingUs = new Set(me.incomingAttacks().map((a) => a.attacker()));
     // `retaliateAware`: the smaller attacker is invisible to `retaliate`; a 1.2× wave that stays under the bigger one
-    const shadow = (r: Player) => { const w = this.shadowWave(r); return w >= Math.ceil(r.troops() * 1.2) + 1000; };
+    const shadow = (r: Player) => { const w = this.shadowWave(r); return w >= Math.ceil(r.troops() * this.ctx.p.retalRatio) + 1000; };
     // `relationAware`: a nation still Friendly to us (a lapsed ally, a gift) drops to Distrustful on the first hit, not
     // Hostile — no `hated` hunt at 3× our troops, no embargo; Neutral is a coin toss (its raw value is not visible)
     const relationBonus = (r: Player) => { if (!this.ctx.p.relationAware) return 0; const rel = this.ctx.sit.rival.get(r)?.relation ?? null; const b = rel === Relation.Friendly ? 2 : rel === Relation.Neutral ? 0.5 : 0; if (b !== 0) this.lim.fire("relationAware", "score"); return b; };
@@ -560,11 +558,11 @@ export class Military {
       if (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) return ratio >= 1.5 ? 20 + ratio : -1; // bombed: go now at 1.5×, posts are gone
       if (r === gapOwner) return ratio >= 1.2 ? 30 + ratio : -1; // they are cutting our land in two: reconnect before the piece is handed over
       if (r === threatHere) return ratio >= 1.5 ? 25 + ratio : -1; // a MIRV-capable rival next door during the hold
-      if (this.drained(r)) { this.lim.fire("drainedNations", "score"); return ratio >= 1.5 ? 18 + ratio : -1; } // under its reserve ratio: it cannot answer until it regrows
+      if (this.drained(r)) { this.lim.fire("drainedNations", "score"); return ratio >= this.ctx.p.drainRatio ? 18 + ratio : -1; } // under its reserve ratio: it cannot answer until it regrows
       const shadowed = shadow(r);
-      if (shadowed && ratio >= 1.2 && ratio < minRatio) this.lim.fire("retaliateAware", "gate");
+      if (shadowed && ratio >= this.ctx.p.retalRatio && ratio < minRatio) this.lim.fire("retaliateAware", "gate");
       // at cap, a neighbour already attacking us is a fair fight at 1:1 — the counter-attack cancels its wave anyway
-      if (ratio < (atCap && attackingUs.has(r) ? 1.0 : shadowed ? Math.min(minRatio, 1.2) : richer(r) ? Math.min(minRatio, 1.5) : minRatio)) return -1;
+      if (ratio < (atCap && attackingUs.has(r) ? 1.0 : shadowed ? Math.min(minRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(minRatio, 1.5) : minRatio)) return -1;
       // Playbook: never attack a big, thinly held empire — that is a troop sink. Prefer small and dense.
       if (ratio < 3 && r.numTilesOwned() > me.numTilesOwned() * 1.5 && this.q.density(r) < 40) return -1;
       const buildings = r.units(UnitType.City).length * 3 + r.units(UnitType.Port).length * 2 + r.units(UnitType.MissileSilo).length * 3;
@@ -580,7 +578,7 @@ export class Military {
     const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r);
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
     // shadowWave's test above), else fightRatio
-    const wantFor = (r: Player) => { const mult = this.drained(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : shadow(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
+    const wantFor = (r: Player) => { const mult = this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
     let best: Player | null = null, bestS = 0;
     if (this.ctx.p.simWars) {
       // #4 (B1 restored on calibrated numbers): the estimator picks the target and the size. For each candidate the
@@ -638,7 +636,7 @@ export class Military {
       this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×) sim: ${pick.sim.est.tilesTaken}t for ${Math.round(pick.sim.est.attackerLoss / 1000)}k in ${pick.sim.est.ticks} ticks${pick.sim.est.wins ? "" : ", still going at the horizon"}`);
       this.noteWave(r, want, pick.sim.est);
     } else {
-      this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×)${this.drained(r) ? " drained" : this.shadowWave(r) >= Math.ceil(r.troops() * 1.2) + 1000 ? " as the smaller attacker" : ""}`);
+      this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×)${this.drained(r) ? " drained" : this.shadowWave(r) >= Math.ceil(r.troops() * this.ctx.p.retalRatio) + 1000 ? " as the smaller attacker" : ""}`);
       this.noteWave(r, want);
       this.mark(r, "war");
     }
@@ -690,7 +688,7 @@ export class Military {
     const threat = this.utilThreat();
     const options: Option[] = [];
     const ex = this.expandOption();
-    if (ex !== null && ex.troops >= 100) options.push({ kind: "expand", target: null, troops: ex.troops, rank: 2, weight: (1 / FREE_LAND_TROOPS_PER_TILE) * compensate([threat]), why: `${ex.contested ? "contested" : "free"} land at ${FREE_LAND_TROOPS_PER_TILE}/tile, border ${threat.toFixed(2)}` });
+    if (ex !== null && ex.troops >= 100) options.push({ kind: "expand", target: null, troops: ex.troops, rank: 2, weight: (1 / p.utilFreeLandCost) * compensate([threat]), why: `${ex.contested ? "contested" : "free"} land at ${p.utilFreeLandCost}/tile, border ${threat.toFixed(2)}` });
     const tribes = this.tribeOptions();
     for (const { bot, want } of tribes) {
       const est = this.utilEstimate(bot, want);
@@ -702,12 +700,12 @@ export class Military {
       for (const a of war.alts) {
         const est = a.sim !== null ? a.sim.est : this.utilEstimate(a.r, a.want);
         const tpt = this.tilesPerTroop(est, a.want);
-        const troopsC = logistic(sit.capShare, p.fightAbove, 10); // fightAbove is the midpoint, not a gate
+        const troopsC = logistic(sit.capShare, p.utilCapMid, p.utilCapSteep); // utilCapMid (= fightAbove by default) is the midpoint, not a gate
         const marginC = (est.wins ? 1 : 0.8) * (0.6 + 0.4 * linear(est.troopsLeft / a.want, 0, 0.5)); // what the wave has left over; an estimate still open at the horizon is judged on the same footing, discounted
         const trustC = 0.5 + 0.5 * (1 - (sit.rival.get(a.r)?.trust ?? 0.5));
         const expiryC = sit.expiring.some((o) => o !== a.r && o.type() === PlayerType.Nation) ? 0.7 : 1; // an alliance about to lapse elsewhere wants the army near home
-        const scoreC = 0.5 + 0.5 * linear(a.score, 0, 15); // the scorer's bonuses (trust, threat map, relation, shadow, buildings) modulate, they do not gate
-        const commit = a.r === this.currentTarget_ && now - this.lastWarTick < 1800 ? 1.5 : 1; // the running war
+        const scoreC = 0.5 + 0.5 * linear(a.score, 0, p.utilScoreFull); // the scorer's bonuses (trust, threat map, relation, shadow, buildings) modulate, they do not gate
+        const commit = a.r === this.currentTarget_ && now - this.lastWarTick < 1800 ? p.utilCommit : 1; // the running war
         const weight = tpt * compensate(a.opportunity ? [marginC, scoreC] : [troopsC, marginC, threat, trustC, expiryC, scoreC]) * commit;
         options.push({ kind: "war", target: a.r, troops: a.want, rank: a.opportunity ? 1 : 2, weight, why: `${est.tilesTaken}t for ${Math.round(a.want / 1000)}k ${est.wins ? "wins" : "open"}, cap ${troopsC.toFixed(2)}, margin ${marginC.toFixed(2)}, border ${threat.toFixed(2)}, trust ${trustC.toFixed(2)}, expiry ${expiryC}, score ${a.score.toFixed(1)}${a.opportunity ? ", opportunity" : ""}${commit > 1 ? ", committed" : ""}` });
       }
@@ -857,7 +855,7 @@ export class Military {
     const est = estimateAttack(this.ctx.mg, this.ctx.me, t, a.troops(), { horizonTicks: HYST_HORIZON, stopBelow: 1, ...this.estOpts(t) });
     let maxBsr = 0;
     for (const [r, v] of this.ctx.sit.rival) if (r !== t && !this.ctx.me.isFriendly(r) && v.bsr > maxBsr) maxBsr = v.bsr;
-    const margin = 0.1 + 0.2 * Math.max(0, Math.min(2, maxBsr - 1));
+    const margin = this.ctx.p.hystMargin + this.ctx.p.hystSlope * Math.max(0, Math.min(2, maxBsr - 1));
     const cont = est.troopsLeft * RETREAT_MALUS + est.tilesTaken * HYST_TILE_WORTH; // continue wins while a tile costs under HYST_TILE_WORTH / RETREAT_MALUS = 80 troops
     const ret = a.troops() * RETREAT_MALUS;
     const lost = !est.wins && a.troops() < t.troops() * this.ctx.p.retreatBelowRatio;
@@ -884,7 +882,7 @@ export class Military {
       const losing = a.troops() < st.sent * 0.2 && t.troops() > st.targetTroops * 0.7;
       const posts = t.units(UnitType.DefensePost).length > 0 && a.troops() < st.sent * 0.5 && t.troops() > st.targetTroops * 0.9;
       if (this.ctx.p.hystRetreats) {
-        // #4: every HYST_EVERY ticks judge continue vs retreat; HYST_STRIKES losing verdicts in a row (or a wave lost
+        // #4: every HYST_EVERY ticks judge continue vs retreat; hystStrikes losing verdicts in a row (or a wave lost
         // outright) bring it home. The literal thresholds are the oscillation the field spent years removing.
         let h = this.hyst.get(a.id());
         if (!h) { h = { lastCheck: this.ctx.mg.ticks(), strikes: 0 }; this.hyst.set(a.id(), h); }
@@ -892,7 +890,7 @@ export class Military {
         h.lastCheck = this.ctx.mg.ticks();
         const v = this.hystJudge(a, t);
         h.strikes = v.keep ? 0 : h.strikes + 1;
-        const go = v.lost || h.strikes >= HYST_STRIKES;
+        const go = v.lost || h.strikes >= this.ctx.p.hystStrikes;
         if (go !== (losing || posts)) this.ctx.fire("hystRetreats");
         if (go) {
           this.retreat(a);

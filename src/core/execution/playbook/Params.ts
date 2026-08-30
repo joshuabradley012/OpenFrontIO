@@ -69,6 +69,24 @@ export interface PlaybookParams {
   relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
   steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
   holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
+  // Constants of the ab1-neutral flags, exposed so cmaes.py can tune them with the flag on (scripts/lab/specs/neutral-flags.json).
+  // Defaults = the hand-picked values, so nothing moves until a spec says so. Only read while the flag is on.
+  utilCapMid: number; // utility: midpoint of the troops/cap logistic on a war option (fightAbove was the midpoint)
+  utilCapSteep: number; // utility: steepness of that logistic (10 = a clear step over ±0.2)
+  utilCommit: number; // utility: weight multiplier for the running war's target (sticky war)
+  utilFreeLandCost: number; // utility: troops a tile of terra nullius costs the expand click (mag/5 = 16–24)
+  utilScoreFull: number; // utility: the scorer's value at which its consideration saturates (0.5 + 0.5 × linear(score, 0, full))
+  threatBusyWeight: number; // threatMap: war-scorer bonus per unit of the rival's busyElsewhere
+  threatVulnWeight: number; // threatMap: war-scorer penalty per Σ vulnerability / our troops
+  threatPreRatio: number; // threatMap: theirs/ours on a segment at which a pre-positioned post is asked for
+  buildCapGoldPerTroop: number; // buildSearch: gold-equivalent of one troop of cap in the objective (BuildSearch.CAP_GOLD_PER_TROOP)
+  buildHorizon: number; // buildSearch: the opening/consolidate plan horizon in ticks (war capped at 4000, endgame at the 25:00 clock)
+  retalRatio: number; // retaliateAware: the wave as the smaller attacker, × the target's troops
+  drainRatio: number; // drainedNations: the wave on a drained nation, × its troops (affordable gate, scorer gate, size)
+  drainBelow: number; // drainedNations: a nation under this × its max troops counts as drained (nations' reserveRatio lower bound)
+  hystMargin: number; // hystRetreats: 'continue' must beat 'retreat' by this share
+  hystSlope: number; // hystRetreats: ... plus this × clamp(maxBsr − 1, 0, 2) on the other borders
+  hystStrikes: number; // hystRetreats: consecutive losing re-estimates before the wave comes home (int)
   strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
 }
 
@@ -129,4 +147,20 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   holdHumans: false,
   strictOneWar: false,
   utility: false, // default off until the 30-game Medium A/B
+  utilCapMid: 0.7,
+  utilCapSteep: 10,
+  utilCommit: 1.5,
+  utilFreeLandCost: 20,
+  utilScoreFull: 15,
+  threatBusyWeight: 3,
+  threatVulnWeight: 2,
+  threatPreRatio: 1.5,
+  buildCapGoldPerTroop: 20,
+  buildHorizon: 6000,
+  retalRatio: 1.2,
+  drainRatio: 1.5,
+  drainBelow: 0.3,
+  hystMargin: 0.1,
+  hystSlope: 0.2,
+  hystStrikes: 2,
 };

@@ -52,6 +52,7 @@ export interface EconModel {
   rank: number; // land rank among non-bots (99 = unknown)
   idleAtCap: boolean;
   regenScale: number; // Config.troopIncreaseRate's player multiplier (Human 1, Medium nation 0.95, Bot 0.5)
+  capGoldPerTroop?: number; // params.buildCapGoldPerTroop (CAP_GOLD_PER_TROOP when absent)
 }
 
 export interface PlanStep {
@@ -106,15 +107,15 @@ const MIN_PAYBACK = 200;
 /** Opening and consolidate: a 10-minute block; war: 4000 ticks (a war resolves inside that); endgame: what is
  *  left of the 25:00 clock (guide: nothing bought after 25:00 pays back), at least 1000 and never more than the
  *  opening block (the endgame phase can start at 6:00 when we are top three under an enemy silo). */
-export function horizonForPhase(phase: Phase, tick: number): number {
+export function horizonForPhase(phase: Phase, tick: number, block = 6000): number {
   switch (phase) {
     case "opening":
     case "consolidate":
-      return 6000;
+      return block;
     case "war":
-      return 4000;
+      return Math.min(block, 4000);
     case "endgame":
-      return Math.min(6000, Math.max(1000, 15000 - tick));
+      return Math.min(block, Math.max(1000, 15000 - tick));
   }
 }
 
@@ -240,7 +241,7 @@ function leafValue(n: Node, m: EconModel, end: number): number {
   const rem = Math.max(0, end - n.tick);
   const gold = n.gold + n.goldRate * rem;
   const troops = regen(n.troops, n.cap, rem, m.regenScale);
-  return gold + troops * CAP_GOLD_PER_TROOP + n.worth;
+  return gold + troops * (m.capGoldPerTroop ?? CAP_GOLD_PER_TROOP) + n.worth;
 }
 
 /** Iterative-deepening depth-first branch-and-bound over build orders from `state` to `state.tick + horizon`. Children
@@ -253,7 +254,7 @@ export function search(state: EconState, m: EconModel, horizon: number, budget =
   const idleValue = leafValue(root, m, end);
   // the most one purchase can add at the root: a full cap step, the best income line over the horizon, or the biggest worth
   const maxGain = Math.max(
-    m.capPerLevel * CAP_GOLD_PER_TROOP,
+    m.capPerLevel * (m.capGoldPerTroop ?? CAP_GOLD_PER_TROOP),
     portLevelRate(m, state.portLevels, state.seaShips, true) * NEW_PORT_BONUS * horizon,
     railRate(m, state.factories + 1) * horizon,
     SILO_WORTH * 1.69, SAM_CITIES * SAM_CITY_WORTH, THREAT_POST_WORTH,

@@ -359,7 +359,7 @@ export class Rivals {
   drainedUntil(p: Player, t: number): number {
     const mg = this.ctx.mg;
     const max = Math.max(1, mg.config().maxTroops(p));
-    if (p.troops() < max * NATION_RULES.reserveRatio[0]) {
+    if (p.troops() < max * this.ctx.p.drainBelow) { // drainBelow = NATION_RULES.reserveRatio[0] by default
       const need = max * NATION_RULES.triggerRatio[0] - p.troops();
       const rate = Math.max(1, mg.config().troopIncreaseRate(p));
       const until = t + Math.min(3000, Math.ceil(need / rate));

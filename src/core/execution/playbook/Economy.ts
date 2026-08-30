@@ -366,7 +366,7 @@ export class Economy {
       maxCityUnits: this.cityUnitCap(),
       maxPortUnits: p.maxPortUnits,
       portLevelBeforeSecond: p.portLevelBeforeSecond,
-      enemySilos, rank: myRank, idleAtCap, regenScale: 1,
+      enemySilos, rank: myRank, idleAtCap, regenScale: 1, capGoldPerTroop: p.buildCapGoldPerTroop,
     };
     const modelRate = Number(cfg.goldAdditionRate(me)) + portLevels * portLevelRate(model, 0, mg.unitCount(UnitType.TradeShip), partnerTile !== null);
     const state: EconState = {
@@ -378,7 +378,7 @@ export class Economy {
     if (seaFull && portLevels >= 20) state.portUnits = p.maxPortUnits; // chain rule: nothing more on a full sea
     // re-plan every 100 ticks, when gold jumped by half (a lane paid, a war ended), or after a purchase
     if (this.plan === null || ticks - this.planTick >= 100 || gold >= this.planGold * 1.5 + 100_000) {
-      this.plan = search(state, model, horizonForPhase(this.ctx.sit.phase, ticks));
+      this.plan = search(state, model, horizonForPhase(this.ctx.sit.phase, ticks, p.buildHorizon));
       this.planTick = ticks; this.planGold = gold; this.lastPlanNodes = this.plan.nodes;
       if (ticks - this.lastPlanLog >= 300) { this.lastPlanLog = ticks; this.ctx.log(`t${ticks} PLAN h=${this.plan.horizon} +${((this.plan.value - this.plan.idleValue) / 1e6).toFixed(1)}M over idle, income ${Math.round(state.goldRate)}/t: ${describePlan(this.plan)} (${this.plan.nodes} nodes)`); }
     }
