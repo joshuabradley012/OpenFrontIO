@@ -23,6 +23,7 @@ import {
   PlayerInfo,
   PlayerType,
   TerraNullius,
+  UnitType,
 } from "../../src/core/game/Game";
 import { TileRef } from "../../src/core/game/GameMap";
 import { GameConfig } from "../../src/core/Schemas";
@@ -51,6 +52,14 @@ export class PlaybookTestConfig extends TestConfig {
   }
 }
 
+/** PlaybookTestConfig with the production blast radii (atom 12/30, hydrogen 80/100): the bot's bomb value search
+ *  ranks a cluster by what the blast covers, and TestConfig's 1-tile blast never covers more than one building. */
+export class PlaybookNukesConfig extends PlaybookTestConfig {
+  nukeMagnitudes(t: UnitType) {
+    return Config.prototype.nukeMagnitudes.call(this, t);
+  }
+}
+
 /** Inclusive rectangle [x0, y0, x1, y1] of tiles handed to a player after it spawns. A spawn circle is 52
  *  tiles and falls to a real attack in a few ticks; rule tests need territories the size of a real border. */
 export type Rect = [number, number, number, number];
@@ -74,6 +83,8 @@ export interface PlaybookSetupOptions {
   tiles?: Rect;
   rivals?: RivalSpec[];
   config?: Partial<GameConfig>;
+  /** Production blast radii (PlaybookNukesConfig) instead of TestConfig's 1-tile blast. */
+  realNukes?: boolean;
   gameID?: string;
 }
 
@@ -106,7 +117,7 @@ export async function playbookSetup(
     { ...opts.config },
     [],
     undefined,
-    PlaybookTestConfig,
+    opts.realNukes ? PlaybookNukesConfig : PlaybookTestConfig,
     false,
   );
   const [sx, sy] = opts.spawn ?? [50, 50];

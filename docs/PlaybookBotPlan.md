@@ -1401,3 +1401,131 @@ still cheaper than most wars per tile. Logs `FALLOUT expand: ~N irradiated
 tiles …` every 600 ticks; fires per click. Tests: `tests/playbook/takeFallout.test.ts`.
 
 A/B (removal form once on by default): `CONFIGS='{"base":{},"nofo":{"takeFallout":false}}'`.
+
+## Bomb fund and war yield (`bombBudget`, `warYield`, 2026-08-30, branch `bot/bombs-yield`)
+
+Josh, from the GUI: (1) the bot rarely saves for a bomb; (2) it never asks what
+a push is returning. The 45-game data agrees: 1,071 atom bombs to 7 hydrogen
+bombs, first bomb ~9:00 — `Economy.build` spends on cities and ports first and
+`maybeBomb` buys whatever is left above `bombReserve` (250k); nothing measured
+a war's return (waves are sized by ratio to the target's army), and 8,048
+`war held: wants X, only Y spare` lines show the whole-war rule refusing waves
+constantly. Two default-off flags and one always-on log line.
+
+**`WAR RESULT` (always on, no flag).** Every war or tribe wave already opens a
+calibration record (`noteWave`, the EST/ACT pair); the record now samples the
+war every 100 ticks (`sampleYield`): the target's tile drop since the last
+sample, credited to us in proportion to our attack's share of the troops
+attacking it (all of it while ours is the only one; a final sample after ours
+is gone uses its last troop count against whoever is still on the target), and
+the troops the attack lost (its troop delta, the follow-ups merged into it
+counted as sent). When the attack is gone or the target dead, every non-bot war
+logs `WAR RESULT <name>: +T tiles, -L troops, X troops/tile, D s` — L = the
+wave minus what came home (a recalled wave brings `RETREAT_MALUS` = 75 % of its
+survivors), X = L / T (`inf` when no tile was taken), D in seconds. The
+measured X is remembered per target (`yieldSeen`, when L ≥ 1000). This is the
+accounting Josh asked for and the future scorer's training data; the golden
+hash changed for these lines alone (a 3-minute africa transcript is
+byte-identical after stripping them). The attribution is conservative: a war
+beside other attackers gets only its share of the target's losses, and a target
+that expands elsewhere while we hit it under-counts.
+
+**`bombBudget`.** `Military.bombPlan(ticks)` (computed once per tick) is the
+NEXT bomb we are saving for: with a silo owned, maybeBomb's target set
+(`bombEnemies` — the war target, attackers over 5 % of our troops, Diplomacy's
+planned target, the collapsed, the threats to a crown; when `endgameV2` gold
+can never reach the MIRV price, the largest un-allied neighbour; idle at ≥ 90 %
+of cap with no attack out, the neighbour with the most buildings we could take
+at 1.2×) and maybeBomb's value search (`bombSearch`: the structure whose blast
+covers the most building value per 100k of the bomb's price, never under a SAM,
+32 tiles clear of friends, a Hydrogen only 105 clear on an owner of ≥ 8,000
+tiles) run with the price ignored: a Hydrogen pick stands when 5M is within
+`BOMB_FUND_HORIZON` = 900 ticks of income (an EMA of gold deltas per pass,
+windfalls entering at ≤ 3× the running rate), else the best Atom. `Economy.build`
+holds the plan's price (`bombFund`) out of every discretionary buy — the first
+three city levels, ports past the first and port levels, rail, SAM level-ups
+and the second SAM, warships, the spare-gold city — and out of the `buildSearch`
+planner's gold; the hard overrides go first as before (a post where a non-bot
+attack lands, the threat post, the first SAM, the silo, the cap-needed city at
+`capFullShare`). With a plan the fund replaces the old flat 1M "bomb reserve"
+of step 8 (the silo escrow stays on top). `maybeBomb` then buys the planned
+bomb the pass gold covers it — no `bombReserve` add-on, and net of what
+`build()` committed this pass (`Economy.spentThisPass`: the executions deduct
+next tick, and the old rule could bomb with gold a post had just spent) — and
+logs `BOMB FUND: saving Nk for Hydrogen|Atom at <target> (have Gk, +Ik/min)`
+every 600 ticks while saving, at once when the plan changes. Fires (one count
+per site per 100 ticks) when the fund alone defers a buy the chain would have
+made, and on every bomb bought that the old rule would not have afforded
+(gold < price + reserve). Bomb prices are flat (`Config`: atom 750k, hydrogen
+5M; only the MIRV escalates, 25M + 15M per launch on the map). Off, the
+maybeBomb path is the same code composed the old way (byte-identical).
+
+**`warYield`.** (a) `manageRetreats`: a running non-bot, non-counter war whose
+cost over the last two samples (200 ticks, ≥ 1,000 troops lost;
+`Military.runningCost`) exceeds `yieldMaxTroopsPerTile` (new param, default
+120 = 6× free land's ~20 a tile) comes home — unless the target is collapsed,
+annexable (`annexWars`) or the gap owner, where the tiles are the point — with
+`YIELD retreat from <name>: X troops/tile (Nk left)`; the target is then
+refused by the scorer for `YIELD_COOLDOWN` = 600 ticks unless it becomes an
+opportunity (without it the sticky target re-declared the same war the pass the
+wave was home — the test caught it). Fires per retreat. (b) The war scorer adds
+`4 × clamp(1 − expectedCost / yieldMaxTroopsPerTile, 0, 1)`, expectedCost =
+the target's last measured troops/tile against us (`yieldSeen`), else its
+troops/tiles density × 1.3 — `Config.attackLogic`: `altAttackerLoss = 1.3 ×
+defenderTroopLoss × (mag / 100) × traitorMod` with `defenderTroopLoss =
+defender.troops() / defender.numTilesOwned()` and mag 80–120 by terrain (×5
+under a post), 40 % of the per-tile loss; the other 60 % is the
+`within(defender/attacker, 0.6, 2) × mag × 0.8` term that does not depend on
+density. Fires when the bonus changes the pick.
+
+**Tests.** `tests/playbook/bombBudget.test.ts` (big_plains with the production
+blast radii — `PlaybookSetupOptions.realNukes`, a new harness option; the
+1-tile TestConfig blast never covers two buildings): with a silo, R as the war
+target and 900k, off buys three city levels and never bombs; on buys the first
+city out of what is above the fund and the atom in the same pass (fires: the
+old rule wanted 1M), then holds the second city for the next fund; at 500k on
+logs `BOMB FUND` (again 600 ticks later), buys nothing, and bombs the pass the
+fund is covered; a 16-city cluster on a 29k-tile neighbour plans the Hydrogen
+at 4.95M with income measured (nothing else bought, the bomb goes ~500 ticks
+later) and the Atom pair at 1M; an incoming attack gets its post before the
+fund and the bomb waits for the 50k. `tests/playbook/warYield.test.ts`: a
+3-wide L-shaped neck of 720 tiles held at its troop cap under two posts (~700
+troops a tile, no literal rule fires for 200+ ticks) — off ends with WAR RESULT
+at > 120/tile and no YIELD; on retreats with the YIELD line after ≥ 200 ticks,
+fires, logs WAR RESULT and stays home; the same neck held by 12k troops (~35 a
+tile) runs to the end; of two identical neighbours the scorer avoids the one
+whose tiles measured 300 last time. Golden regenerated for the WAR RESULT lines
+(the only diff).
+
+**Smoke** (`MIN=12 SPAWN=africa DIFF=medium`, one seed — not evidence):
+
+| config | rank | tiles | bombs (atom / hydrogen, first) | WAR RESULT n / median troops/tile | YIELD retreats | botMs |
+| --- | --- | --- | --- | --- | --- | --- |
+| `{}` | 1 (leader, 141,786 tiles) | 141,786 | 8 / 0, first t4480 | 37 / 104 (10 wars at `inf`: no tile credited) | — | 1,592 |
+| `bombBudget` | 3 | 79,394 | 8 / 0, first t4520 | 29 / 118 | — | 1,333 (fired 21) |
+| `bombBudget` + `warYield` (120) | 12 | 18,828 | 0 (no silo ever bought) | 6 / 141 | 1: Ireland at t1980, 238/tile, 76k left | 837 (fired 1) |
+| `bombBudget` + `warYield` at 250 | 7 | 39,232 | 3 / 0, first t6310 | 17 / 190 | 2: Latvia 401/tile, Ireland 299/tile | 919 (fired 2) |
+
+The finding is the `warYield` row: the one yield retreat — from Ireland at
+t1980, 238 troops/tile with 76k of a 631k wave left — is a war the `{}` game
+finished 30 ticks later (`WAR RESULT Ireland: +2415 tiles, -561813 troops, 233
+troops/tile`) on its way to the crown; the recalled wave met Ireland's counter,
+the game went defensive (11 pieces by t3000) and never bought a silo. At 250
+the same seed still loses two wars it would have won. The measured prices in
+the winning `{}` game (median 104, the decisive wars 140–270 a tile) say the
+brief's 120 is below what a winning push costs on Medium; the A/B should carry
+`yieldMaxTroopsPerTile` 250–400 alongside 120, and the rule should probably
+spare a wave that is nearly spent (the retreat malus on 76k is cheaper than the
+233/tile it was still paying, but the tiles were about to fall). `bombBudget`
+alone: the same 8 atoms (the first 40 ticks later), 21 deferrals fired, rank 3
+vs 1 on this seed — the fund held city levels the leader bought; no cluster
+qualified for a hydrogen (≥ 8,000 tiles and 105 clear of friends: on africa
+the neighbours are allies or small). The income EMA reads 8–11M/min late in
+the game (trade-ship lumps every pass, each clipped at 3× the running rate but
+compounding), so any hydrogen cluster that qualifies will be planned; harmless
+here, worth a cap if hydrogen plans start starving the economy. botMs are
+wall-clock under parallel runs.
+
+**A/B** (both flags, then each alone; the removal form once on by default):
+`CONFIGS='{"base":{},"bb":{"bombBudget":true},"wy":{"warYield":true},"wy250":{"warYield":true,"yieldMaxTroopsPerTile":250},"both":{"bombBudget":true,"warYield":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+— removal form: `CONFIGS='{"base":{},"nobb":{"bombBudget":false},"nowy":{"warYield":false}}'`.

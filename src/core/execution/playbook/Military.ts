@@ -56,7 +56,19 @@ interface WarPick {
 const MULTI_WAR_SLOTS = 3; // multiWar: wars plus counters running at once
 const UTIL_EST_EVERY = 50; // utility: ticks an option's estimate is cached
 /** One war or tribe wave under calibration bookkeeping (EST at the send, ACT when the attack is gone). */
-interface CalibRecord { wave: number; tick: number; sent: number; tiles0: number; ours0: number; others: number; last: number; seen: boolean; retreating: boolean }
+interface CalibRecord { wave: number; tick: number; sent: number; tiles0: number; ours0: number; others: number; last: number; seen: boolean; retreating: boolean; y: YieldRecord }
+/** War accounting (always on, log only unless `warYield`): sampled every YIELD_EVERY ticks from trackCalibration.
+ *  `tiles` = the target's tile drops while our attack is its only incoming (attributable to us), `lost` = the
+ *  attack's troop delta plus the follow-ups merged into it; `win` keeps the last YIELD_WINDOW samples. */
+interface YieldRecord { tick: number; tiles: number; lost: number; tilesAt: number; troopsAt: number; sentAt: number; win: { tiles: number; lost: number }[] }
+const YIELD_EVERY = 100; // warYield: ticks between samples of a running war's return
+const YIELD_WINDOW = 2; // warYield: samples the running cost is judged on (200 ticks)
+const YIELD_MIN_LOST = 1000; // warYield: no verdict on a window that cost fewer troops than this
+const YIELD_COST_CAP = 10_000; // warYield: a war that took no tile is remembered at this troops/tile
+const YIELD_COOLDOWN = 600; // warYield: ticks a target retreated from for its price is refused by the scorer (unless it becomes an opportunity)
+const BOMB_FUND_HORIZON = 900; // bombBudget: a Hydrogen plan stands when its price is within this many ticks of income
+/** A bomb maybeBomb's value search picked: where, of what type, at whom, and its value per 100k of gold. */
+export interface BombPick { tile: TileRef; value: number; type: UnitType; enemy: Player; cost: bigint }
 
 export class Military {
   private currentTarget_: Player | null = null;
@@ -717,10 +729,11 @@ export class Military {
       });
     }
     if (candidates.length === 0) return null;
-    const { score, isOpp, wantFor, richer } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
-    let best: Player | null = null, bestS = 0;
+    const { score, isOpp, wantFor, richer, yieldBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom);
+    let best: Player | null = null, bestS = 0, best0: Player | null = null, bestS0 = 0;
     const alts: WarPick["alts"] = [];
-    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } }
+    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } const sc0 = sc - yieldBonus(r); if (sc0 > bestS0) { bestS0 = sc0; best0 = r; } }
+    if (this.ctx.p.warYield && best !== best0) this.lim.fire("warYield", "pick"); // the cheaper tile changed the pick
     if (best === null) {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
       return null;
@@ -751,6 +764,8 @@ export class Military {
     // `relationAware`: a nation still Friendly to us (a lapsed ally, a gift) drops to Distrustful on the first hit, not
     // Hostile — no `hated` hunt at 3× our troops, no embargo; Neutral is a coin toss (its raw value is not visible)
     const relationBonus = (r: Player) => { if (!this.ctx.p.relationAware) return 0; const rel = this.ctx.sit.rival.get(r)?.relation ?? null; const b = rel === Relation.Friendly ? 2 : rel === Relation.Neutral ? 0.5 : 0; if (b !== 0 && !quiet) this.lim.fire("relationAware", "score"); return b; };
+    // `warYield`: a tile that will cost few troops is worth up to +4 (zero from yieldMaxTroopsPerTile up)
+    const yieldBonus = (r: Player) => this.ctx.p.warYield ? 4 * clamp(1 - this.expectedCost(r) / this.ctx.p.yieldMaxTroopsPerTile, 0, 1) : 0;
     const score = (r: Player) => {
       const ratio = maxSend / Math.max(1, r.troops());
       if (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) return ratio >= 1.5 ? 20 + ratio : -1; // bombed: go now at 1.5×, posts are gone
@@ -758,6 +773,7 @@ export class Military {
       if (r === threatHere) return ratio >= 1.5 ? 25 + ratio : -1; // a MIRV-capable rival next door during the hold
       if (annex.has(r)) return ratio >= 1.2 ? 25 + ratio : -1; // `annexWars`: encircled — we come from most of its border, it cannot be reinforced
       if (this.drained(r)) { if (!quiet) this.lim.fire("drainedNations", "score"); return ratio >= this.ctx.p.drainRatio ? 18 + ratio : -1; } // under its reserve ratio: it cannot answer until it regrows
+      if (this.ctx.p.warYield && this.ctx.mg.ticks() - (this.yieldRetreatAt.get(r) ?? -1e9) < YIELD_COOLDOWN) return -1; // `warYield`: its tiles were too dear a minute ago
       const shadowed = shadow(r);
       if (shadowed && ratio >= this.ctx.p.retalRatio && ratio < minRatio && !quiet) this.lim.fire("retaliateAware", "gate");
       // at cap, a neighbour already attacking us is a fair fight at 1:1 — the counter-attack cancels its wave anyway
@@ -773,13 +789,13 @@ export class Military {
       const underFire = r.incomingAttacks().reduce((acc, a) => acc + a.troops(), 0) / Math.max(1, r.troops());
       const bonus = Math.min(underFire, 1) * 4 + (r.isTraitor() ? 2 : 0) + (r === this.plannedTarget() ? 4 : 0);
       if (shadowed && !quiet) this.lim.fire("retaliateAware", "score");
-      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r);
+      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r) + yieldBonus(r);
     };
     const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r) || annex.has(r);
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
     // shadowWave's test above) or on an annexable one, else fightRatio
     const wantFor = (r: Player) => { const mult = annex.has(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
-    return { score, isOpp, wantFor, richer };
+    return { score, isOpp, wantFor, richer, yieldBonus };
   }
   /** `lapseToAttack`: would the war rule take `p` if it were an unfriendly neighbour right now? The same gates as
    *  warPick — affordable out of spendable × fightMaxShare (or an opportunity, or troops above fightAbove × cap),
@@ -950,7 +966,7 @@ export class Military {
     const e = estimateAttack(this.ctx.mg, this.ctx.me, t, troops, { horizonTicks: CALIB_HORIZON, ...this.estOpts(t) });
     const wave = ++this.calibSeq;
     const others = t.incomingAttacks().filter((a) => a.attacker() !== this.ctx.me).length;
-    this.calib.set(t, { wave, tick: now, sent: troops, tiles0: t.numTilesOwned(), ours0: this.ctx.me.numTilesOwned(), others, last: troops, seen: false, retreating: false });
+    this.calib.set(t, { wave, tick: now, sent: troops, tiles0: t.numTilesOwned(), ours0: this.ctx.me.numTilesOwned(), others, last: troops, seen: false, retreating: false, y: { tick: now, tiles: 0, lost: 0, tilesAt: t.numTilesOwned(), troopsAt: troops, sentAt: troops, win: [] } });
     this.ctx.log(`t${now} EST ${t.name()} wave=${wave} troops=${troops} tilesEst=${e.tilesTaken} lossEst=${Math.round(e.attackerLoss)} ticksEst=${e.ticks} wins=${e.wins} class=${Military.klass(t)} others=${others}`);
   }
   private noteFollowUp(t: Player, troops: number): void { const c = this.calib.get(t); if (c) c.sent += troops; }
@@ -963,7 +979,7 @@ export class Military {
     const now = this.ctx.mg.ticks();
     for (const [t, c] of this.calib) {
       const a = this.q.outgoingTo(t);
-      if (a !== undefined) { c.seen = true; c.last = a.troops(); if (a.retreating()) c.retreating = true; continue; }
+      if (a !== undefined) { c.seen = true; c.last = a.troops(); if (a.retreating()) c.retreating = true; if (now - c.y.tick >= YIELD_EVERY) this.sampleYield(c, t, a.troops()); continue; }
       if (!c.seen && now - c.tick <= 12) continue;
       const tiles = Math.max(0, c.tiles0 - t.numTilesOwned());
       // never observed: over before the first 10-tick pass (a small tribe, logged as end=fast with the loss unknown)
@@ -972,8 +988,53 @@ export class Military {
       const end = !c.seen ? "fast" : !t.isAlive() ? "dead" : c.retreating ? "retreat" : "done";
       const left = c.seen ? c.last : c.sent;
       this.ctx.log(`t${now} ACT ${t.name()} wave=${c.wave} tiles=${tiles} ours=${this.ctx.me.numTilesOwned() - c.ours0} loss=${Math.max(0, Math.round(c.sent - left))} ticks=${now - c.tick} sent=${c.sent} left=${Math.round(left)} class=${Military.klass(t)} end=${end}`);
+      if (t.type() !== PlayerType.Bot && c.seen) {
+        // WAR RESULT (always on): the war's return — tiles attributable to us, troops that did not come back (a
+        // recalled wave gets RETREAT_MALUS of its survivors home), the price of a tile, the war's length
+        this.sampleYield(c, t, left, true);
+        const lost = Math.max(0, Math.round(c.sent - left * (end === "retreat" ? RETREAT_MALUS : 1)));
+        const cost = lost / Math.max(1, c.y.tiles);
+        this.ctx.log(`t${now} WAR RESULT ${t.name()}: +${c.y.tiles} tiles, -${lost} troops, ${c.y.tiles === 0 ? "inf" : Math.round(cost)} troops/tile, ${Math.round((now - c.tick) / 10)} s`);
+        if (lost >= YIELD_MIN_LOST) this.yieldSeen.set(t, c.y.tiles === 0 ? YIELD_COST_CAP : Math.min(YIELD_COST_CAP, cost));
+      }
       this.calib.delete(t);
     }
+  }
+
+  /** The target's most recent measured troops/tile against us (WAR RESULT), read by the `warYield` scorer. */
+  private yieldSeen = new Map<Player, number>();
+  /** `warYield`: tick of the last YIELD retreat per target — the scorer refuses it for YIELD_COOLDOWN ticks unless it
+   *  becomes an opportunity, or the sticky target would re-declare the same dear war the pass the wave is home. */
+  private yieldRetreatAt = new Map<Player, number>();
+  /** One sample of a running war: the target's tile drop since the last sample, ours in proportion to our attack's
+   *  share of the troops attacking it (all of it while ours is the only one; `final`: after ours is gone, its last
+   *  troop count against whoever is still on the target), and the troops the attack lost since then (the
+   *  follow-ups merged into it count as sent). */
+  private sampleYield(c: CalibRecord, t: Player, troopsNow: number, final = false): void {
+    const y = c.y, now = this.ctx.mg.ticks();
+    let ours = final ? troopsNow : 0, all = final ? troopsNow : 0;
+    for (const x of t.incomingAttacks()) { all += x.troops(); if (x.attacker() === this.ctx.me) ours += x.troops(); }
+    const share = all > 0 ? ours / all : 1;
+    const tiles = Math.round(Math.max(0, y.tilesAt - t.numTilesOwned()) * share);
+    const lost = Math.max(0, y.troopsAt + (c.sent - y.sentAt) - troopsNow);
+    y.tiles += tiles; y.lost += lost;
+    y.win.push({ tiles, lost }); if (y.win.length > YIELD_WINDOW) y.win.shift();
+    y.tilesAt = t.numTilesOwned(); y.troopsAt = troopsNow; y.sentAt = c.sent; y.tick = now;
+  }
+  /** `warYield`: the running cost of the war on `t` over the last YIELD_WINDOW samples, or null before the window
+   *  is full or while it cost fewer than YIELD_MIN_LOST troops (Infinity = troops lost, no tile taken). */
+  runningCost(t: Player): number | null {
+    const c = this.calib.get(t);
+    if (!c || c.y.win.length < YIELD_WINDOW) return null;
+    let tiles = 0, lost = 0;
+    for (const w of c.y.win) { tiles += w.tiles; lost += w.lost; }
+    if (lost < YIELD_MIN_LOST) return null;
+    return tiles === 0 ? Infinity : lost / tiles;
+  }
+  /** `warYield`: what a tile of `r` is expected to cost us — its last measured troops/tile, else its density × 1.3
+   *  (Config.attackLogic: altAttackerLoss = 1.3 × defenderTroopLoss × mag/100, defenderTroopLoss = troops/tiles). */
+  expectedCost(r: Player): number {
+    return this.yieldSeen.get(r) ?? this.q.density(r) * 1.3;
   }
 
   // ---------------------------------------------------------------- allies that can pile in (trustWars)
@@ -1035,6 +1096,18 @@ export class Military {
       }
       let st = this.attackStart.get(a.id());
       if (!st) { st = { sent: a.troops(), targetTroops: t.troops() }; this.attackStart.set(a.id(), st); }
+      // `warYield`: a war buying its tiles too dear (the last 200 ticks over yieldMaxTroopsPerTile) comes home —
+      // unless the target is collapsing, encircled or cutting our land in two, where the tiles are the point
+      if (this.ctx.p.warYield && !this.counters.has(t)) {
+        const cost = this.runningCost(t);
+        if (cost !== null && cost > this.ctx.p.yieldMaxTroopsPerTile && !this.collapsed(t) && !(this.ctx.p.annexWars && this.q.annexable(t)) && t !== this.splitOwner) {
+          this.retreat(a);
+          this.yieldRetreatAt.set(t, this.ctx.mg.ticks());
+          this.lim.fire("warYield", "retreat", 1);
+          this.ctx.log(`t${this.ctx.mg.ticks()} YIELD retreat from ${t.name()}: ${cost === Infinity ? "inf" : Math.round(cost)} troops/tile (${Math.round(a.troops() / 1000)}k left)`);
+          continue;
+        }
+      }
       // Retreat only when we are losing: most of the wave is gone while the target has barely bled.
       const losing = a.troops() < st.sent * 0.2 && t.troops() > st.targetTroops * 0.7;
       const posts = t.units(UnitType.DefensePost).length > 0 && a.troops() < st.sent * 0.5 && t.troops() > st.targetTroops * 0.9;
@@ -1318,14 +1391,55 @@ export class Military {
   }
 
   // ---------------------------------------------------------------- nukes
-  maybeBomb(ticks: number): void {
+  /** `spent`: gold Economy.build committed this pass (deducted next tick) — read with `bombBudget` on only. */
+  maybeBomb(ticks: number, spent = 0n): void {
     const me = this.ctx.me;
     if (me.units(UnitType.MissileSilo).length === 0) return;
     if (ticks - this.lastBombTick < this.ctx.p.bombEvery) return;
     const atomCost = this.ctx.mg.config().unitInfo(UnitType.AtomBomb).cost(this.ctx.mg, me);
     const hCost = this.ctx.mg.config().unitInfo(UnitType.HydrogenBomb).cost(this.ctx.mg, me);
     const gold = me.gold();
-    // targets: whoever we fight or who fights us; else the neighbour with the most buildings that is not allied
+    if (this.ctx.p.bombBudget) {
+      // `bombBudget`: the planned bomb goes the moment the fund covers it — no reserve on top; while it does not,
+      // Economy.build is holding the price out of every discretionary buy (bombFund)
+      const plan = this.bombPlan(ticks);
+      if (plan === null) return;
+      if (gold - spent < plan.cost) {
+        const key = `${plan.type}/${plan.enemy.id()}`;
+        if (ticks - this.lastFundLog >= 600 || key !== this.lastFundKey) { this.lastFundLog = ticks; this.lastFundKey = key; this.ctx.log(`t${ticks} BOMB FUND: saving ${Math.round(Number(plan.cost) / 1000)}k for ${plan.type === UnitType.HydrogenBomb ? "Hydrogen" : "Atom"} at ${plan.enemy.name()} (have ${Math.round(Number(gold - spent) / 1000)}k, +${Math.round((this.income.rate * 600) / 1000)}k/min)`); }
+        return;
+      }
+      const { rich } = this.bombEnemies(gold, true); // the buy path's side effects: a crown / idle-at-cap pick becomes the war target
+      if (gold - spent < plan.cost + BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve)) this.lim.fire("bombBudget", "bomb", 1); // the old rule would not have afforded this bomb yet
+      this.launch(plan, ticks);
+      return;
+    }
+    const { enemies, rich } = this.bombEnemies(gold, true);
+    if (enemies.size === 0) return;
+    const reserve = BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve);
+    const best = this.bombSearch(enemies, rich, (type) => gold >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve);
+    if (best === null) return;
+    this.launch(best, ticks);
+  }
+  private lastFundLog = -1e9;
+  private lastFundKey = "";
+  /** Fire the bomb `best` describes: out of every ready silo's reach counts toward a silo level (Economy.build). */
+  private launch(best: BombPick, ticks: number): void {
+    const me = this.ctx.me;
+    if (me.canBuild(best.type, best.tile) === false) { this.bombOutOfRange_++; return; }
+    this.bombOutOfRange_ = 0;
+    this.ctx.mg.addExecution(new ConstructionExecution(me, best.type, best.tile));
+    this.lastBombTick = ticks;
+    this.bombed.set(best.tile, (this.bombed.get(best.tile) ?? 0) + 1);
+    this.bombs++;
+    this.ctx.log(`t${ticks} BOMB ${best.type} at ${this.ctx.mg.x(best.tile)},${this.ctx.mg.y(best.tile)}`);
+  }
+  /** Bomb targets: whoever we fight or who fights us, Diplomacy's planned target, the collapsed, the threats to a
+   *  crown; when `endgameV2` gold can never reach the MIRV price (`rich`), the largest un-allied neighbour; idle at
+   *  cap with no attack out, the neighbour with the most buildings we could then take at 1.2×. `mutate` lets those
+   *  last two picks become the war target (the buy path); the `bombBudget` plan reads the same set without it. */
+  private bombEnemies(gold: bigint, mutate: boolean): { enemies: Set<Player>; rich: boolean } {
+    const me = this.ctx.me;
     const enemies = new Set<Player>();
     if (this.currentTarget_ && this.currentTarget_.isAlive() && !me.isFriendly(this.currentTarget_)) enemies.add(this.currentTarget_);
     for (const inc of me.incomingAttacks()) { const a = inc.attacker(); if (a.type() !== PlayerType.Bot && !me.isFriendly(a) && inc.troops() > me.troops() * 0.05) enemies.add(a); }
@@ -1339,45 +1453,80 @@ export class Military {
       // gold that can never reach the MIRV price is spent on hydrogen bombs at the strongest un-allied neighbour
       const { rivals } = this.q.neighbours();
       const pick = rivals.filter((r) => me.canAttackPlayer(r)).sort((a, b) => b.numTilesOwned() - a.numTilesOwned())[0];
-      if (pick) { enemies.add(pick); if (!this.currentTarget_ || !this.currentTarget_.isAlive()) this.currentTarget_ = pick; }
+      if (pick) { enemies.add(pick); if (mutate && (!this.currentTarget_ || !this.currentTarget_.isAlive())) this.currentTarget_ = pick; }
     }
     if (enemies.size === 0 && me.troops() > this.q.cap() * 0.9 && me.outgoingAttacks().length === 0) {
       // idle at cap: open a war — bomb the neighbour with the most buildings we could then take at 1.2×
       const { rivals } = this.q.neighbours();
       const pick = rivals.filter((r) => me.canAttackPlayer(r) && r.troops() * 1.2 < me.troops() * this.ctx.p.fightMaxShare).sort((a, b) => b.units(UnitType.City).length - a.units(UnitType.City).length)[0];
-      if (pick) { enemies.add(pick); this.currentTarget_ = pick; }
+      if (pick) { enemies.add(pick); if (mutate) this.currentTarget_ = pick; }
     }
-    if (enemies.size === 0) return;
-    let best: { tile: TileRef; value: number; type: UnitType } | null = null;
+    return { enemies, rich };
+  }
+  /** maybeBomb's value search: over every structure of `enemies` not yet bombed, outside a SAM umbrella (the SAM
+   *  always hits) and 32 tiles clear of our own or allied land, the bomb — Hydrogen only 105 tiles clear of friends
+   *  on an owner of ≥ 8000 tiles (3000 when `rich`), and only the types `allow` accepts — whose blast covers the most
+   *  building value (city 3, silo / SAM 4, else 2, × level) per 100k of its price; null when nothing reaches value 4. */
+  private bombSearch(enemies: Set<Player>, rich: boolean, allow: (type: UnitType) => boolean): BombPick | null {
+    const atomCost = this.ctx.mg.config().unitInfo(UnitType.AtomBomb).cost(this.ctx.mg, this.ctx.me);
+    const hCost = this.ctx.mg.config().unitInfo(UnitType.HydrogenBomb).cost(this.ctx.mg, this.ctx.me);
+    let best: BombPick | null = null;
     for (const enemy of enemies) {
       const structures = enemy.units([UnitType.City, UnitType.Port, UnitType.Factory, UnitType.MissileSilo, UnitType.SAMLauncher, UnitType.DefensePost]);
       const sams = enemy.units(UnitType.SAMLauncher);
       for (const u of structures) {
         const tile = u.tile();
         if ((this.bombed.get(tile) ?? 0) >= 1) continue;
-        // never inside a SAM umbrella (the SAM always hits), never near our own or allied land
         if (sams.some((s) => this.ctx.mg.euclideanDistSquared(s.tile(), tile) <= (this.ctx.mg.config().samRange(s.level()) + 5) ** 2)) continue;
         if (!this.clearOfFriends(tile, 32)) continue;
         for (const type of [UnitType.HydrogenBomb, UnitType.AtomBomb]) {
           const cost = type === UnitType.HydrogenBomb ? hCost : atomCost;
-          if (gold < cost + BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve)) continue;
+          if (!allow(type)) continue;
           if (type === UnitType.HydrogenBomb && (!this.clearOfFriends(tile, 105) || enemy.numTilesOwned() < (rich ? 3000 : 8000))) continue;
           const r = this.ctx.mg.config().nukeMagnitudes(type).outer;
           let value = 0;
           for (const o of structures) if (this.ctx.mg.euclideanDistSquared(o.tile(), tile) <= r * r) value += (o.type() === UnitType.City ? 3 : o.type() === UnitType.MissileSilo || o.type() === UnitType.SAMLauncher ? 4 : 2) * o.level();
           const perGold = value / Number(cost / 100_000n);
-          if (value >= 4 && (best === null || perGold > best.value)) best = { tile, value: perGold, type };
+          if (value >= 4 && (best === null || perGold > best.value)) best = { tile, value: perGold, type, enemy, cost };
         }
       }
     }
-    if (best === null) return;
-    if (me.canBuild(best.type, best.tile) === false) { this.bombOutOfRange_++; return; }
-    this.bombOutOfRange_ = 0;
-    this.ctx.mg.addExecution(new ConstructionExecution(me, best.type, best.tile));
-    this.lastBombTick = ticks;
-    this.bombed.set(best.tile, (this.bombed.get(best.tile) ?? 0) + 1);
-    this.bombs++;
-    this.ctx.log(`t${ticks} BOMB ${best.type} at ${this.ctx.mg.x(best.tile)},${this.ctx.mg.y(best.tile)}`);
+    return best;
+  }
+  // ---------------------------------------------------------------- bombBudget: the planned bomb and its fund
+  private planCache: { tick: number; plan: BombPick | null } | null = null;
+  private income = { tick: -1, gold: 0n, rate: 0 };
+  /** Observed income per tick: an EMA over the passes of the gold gained since the last one (a pass where gold
+   *  fell — a purchase — is skipped; a windfall — conquest gold, a lane paying out — enters at no more than 3× the
+   *  running rate, so one lump does not promise a hydrogen bomb). ~100-tick memory at one sample per 10 ticks. */
+  private noteIncome(ticks: number): void {
+    const I = this.income, gold = this.ctx.me.gold();
+    if (I.tick >= 0 && ticks > I.tick && gold > I.gold) { const r = Number(gold - I.gold) / (ticks - I.tick); I.rate = I.rate <= 0 ? r : I.rate * 0.9 + Math.min(r, I.rate * 3) * 0.1; }
+    I.tick = ticks; I.gold = gold;
+  }
+  /** `bombBudget`: the NEXT bomb we are saving for, or null (no silo, no target, no cluster worth a bomb) — the best
+   *  pick of maybeBomb's value search with the price ignored; a Hydrogen pick stands when 5M is within ~90 s of
+   *  income at the current rate (BOMB_FUND_HORIZON), else the best Atom. Computed once per tick (Economy.build
+   *  escrows its price, maybeBomb buys it). Read-only: the buy path's side effects wait for the launch. */
+  bombPlan(ticks: number): BombPick | null {
+    if (this.planCache !== null && this.planCache.tick === ticks) return this.planCache.plan;
+    this.noteIncome(ticks);
+    const me = this.ctx.me, gold = me.gold();
+    let plan: BombPick | null = null;
+    if (me.units(UnitType.MissileSilo).length > 0) {
+      const { enemies, rich } = this.bombEnemies(gold, false);
+      if (enemies.size > 0) {
+        const any = this.bombSearch(enemies, rich, () => true);
+        if (any !== null && any.type === UnitType.HydrogenBomb && gold + BigInt(Math.round(this.income.rate * BOMB_FUND_HORIZON)) >= any.cost) plan = any;
+        else plan = any !== null && any.type === UnitType.AtomBomb ? any : this.bombSearch(enemies, rich, (type) => type === UnitType.AtomBomb);
+      }
+    }
+    this.planCache = { tick: ticks, plan };
+    return plan;
+  }
+  /** `bombBudget`: gold Economy.build keeps out of every discretionary buy — the planned bomb's price, or 0n. */
+  bombFund(ticks: number): bigint {
+    return this.bombPlan(ticks)?.cost ?? 0n;
   }
   clearOfFriends(tile: TileRef, r: number): boolean {
     const x = this.ctx.mg.x(tile), y = this.ctx.mg.y(tile);

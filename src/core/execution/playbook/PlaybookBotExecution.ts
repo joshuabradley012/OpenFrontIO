@@ -250,7 +250,7 @@ export class PlaybookBotExecution implements Execution {
     } },
     { name: "sea expansion", every: 100, run: () => { if (this.sit.tick >= 600) this.military.seaExpansion(); } },
     { name: "finish by boat", every: 100, run: () => { if (this.p.finishByBoat && this.sit.tick >= 1200) this.military.finishByBoat(); } }, // `finishByBoat`: the remnant a land war cannot reach
-    { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick); } },
+    { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick, this.economy.spentThisPass); } },
     { name: "mirv", every: 100, run: () => this.military.maybeMIRV() },
     { name: "prune", every: 300, run: () => { this.military.prune(); this.q.prune(); } }, // the per-player maps would otherwise grow for the whole game
   ];

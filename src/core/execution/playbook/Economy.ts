@@ -6,7 +6,7 @@ import { ConstructionExecution } from "../ConstructionExecution";
 import { UpgradeStructureExecution } from "../UpgradeStructureExecution";
 import { closestTile } from "../Util";
 import { BuildKind, describePlan, EconModel, EconState, horizonForPhase, Plan, portLevelRate, search } from "./BuildSearch";
-import { BotContext } from "./Context";
+import { BotContext, FireLimiter } from "./Context";
 import { Military } from "./Military";
 import { SituationQueries } from "./Situation";
 
@@ -15,12 +15,15 @@ export class Economy {
   private lastSamTick = -1e9;
   private lastWarshipTick = -1e9;
   private postFailed_ = new Map<Player, number>();
+  private lim: FireLimiter;
 
   constructor(
     private ctx: BotContext,
     private q: SituationQueries,
     private military: Military,
-  ) {}
+  ) {
+    this.lim = new FireLimiter(ctx);
+  }
 
   /** Rivals we failed to place a threat post against, by tick (cleared by Diplomacy.onAllianceEnded). */
   get postFailed(): Map<Player, number> {
@@ -61,6 +64,7 @@ export class Economy {
       if (gold < cost(UnitType.City)) return false;
       if (me.canBuild(UnitType.City, this.pendingAnchor) === false) { R.failed++; return false; }
       this.ctx.mg.addExecution(new ConstructionExecution(me, UnitType.City, this.pendingAnchor));
+      this.spentThisPass += cost(UnitType.City);
       this.pendingAnchorTick = this.ctx.mg.ticks();
       this.ctx.log(`t${this.ctx.mg.ticks()} rail anchor city`);
       return true;
@@ -71,6 +75,7 @@ export class Economy {
     if (infill === null && R.failed < 1e9 && !this.ctx.mg.railNetwork().stationManager().findStation(R.factory)) { R.failed++; return false; }
     if (infill !== null) {
       this.ctx.mg.addExecution(new ConstructionExecution(me, UnitType.City, infill));
+      this.spentThisPass += cost(UnitType.City);
       R.infilled++;
       this.ctx.log(`t${this.ctx.mg.ticks()} rail infill city #${R.infilled}`);
       return true;
@@ -192,7 +197,13 @@ export class Economy {
     const mirvPriceNow = this.ctx.mg.config().unitInfo(UnitType.MIRV).cost(this.ctx.mg, me);
     const mirvFund = this.ctx.mg.ticks() >= 12000 && myRank <= 3 && me.units(UnitType.MissileSilo).length > 0 && me.units(UnitType.MIRV).length === 0 && me.troops() >= this.q.cap() * 0.4 && mirvPriceNow <= 40_000_000n ? mirvPriceNow : 0n; // past 40M the MIRV is a hoard, not a plan
     const seaFull = this.ctx.mg.unitCount(UnitType.TradeShip) >= this.ctx.p.seaFullShips || this.ctx.mg.ticks() >= 15000; // guide: nothing bought after 25:00 pays back
-    const upgrade = (u: Unit) => { this.ctx.mg.addExecution(new UpgradeStructureExecution(me, u.id())); this.ctx.log(`t${ticks} level ${u.type()} → ${u.level() + 1}`); };
+    this.spentThisPass = 0n;
+    const upgrade = (u: Unit) => { this.ctx.mg.addExecution(new UpgradeStructureExecution(me, u.id())); this.spentThisPass += cost(u.type()); this.ctx.log(`t${ticks} level ${u.type()} → ${u.level() + 1}`); };
+    // `bombBudget`: the planned bomb's price (Military.bombPlan — silo owned, a bomb target, a cluster worth it) is
+    // held out of every discretionary buy below; `spare(site, avail, need)` is the affordability test with the fund
+    // taken out, and fires when the fund alone is what defers the buy
+    const fund = this.ctx.p.bombBudget ? this.military.bombFund(ticks) : 0n;
+    const spare = (site: string, avail: bigint, need: bigint): boolean => { const ok = avail - fund >= need; if (!ok && avail >= need) this.lim.fire("bombBudget", site); return ok; };
 
     // 1. defence: a post where a non-bot attack lands, or facing a threat / a boxed-in nation about to betray
     const incoming = me.incomingAttacks().find((a) => a.attacker().type() !== PlayerType.Bot);
@@ -220,8 +231,8 @@ export class Economy {
       else {
         const targetLevel = myRank === 1 ? 3 : 2;
         const low = sams.find((sm) => sm.level() < targetLevel && me.canUpgradeUnit(sm));
-        if (low && (capFull || gold >= cost(UnitType.SAMLauncher) * 2n)) { upgrade(low); return; }
-        if (sams.length < samTarget && gold >= cost(UnitType.SAMLauncher) + 500_000n) {
+        if (low && (capFull || gold >= cost(UnitType.SAMLauncher) * 2n) && spare("sam", gold, cost(UnitType.SAMLauncher))) { upgrade(low); return; }
+        if (sams.length < samTarget && spare("sam", gold, cost(UnitType.SAMLauncher) + 500_000n)) {
           const far = this.sampleTerritory(30).find((t) => sams.every((sm) => this.ctx.mg.euclideanDistSquared(sm.tile(), t) > 60 * 60) && me.canBuild(UnitType.SAMLauncher, t) !== false);
           if (far !== undefined && this.tryBuild(UnitType.SAMLauncher, far)) { this.lastSamTick = ticks; return; }
         }
@@ -229,9 +240,9 @@ export class Economy {
     }
     // #7 buildSearch: the planner replaces steps 3–9 (posts under attack, the first SAM under an enemy silo, mirvFund
     // and the silo escrow stayed above / are passed in)
-    if (this.ctx.p.buildSearch) { this.buildBySearch(ticks, gold, mirvFund, cost, cities, cityUnits, ports, portLevels, capFull, rivals, enemySilos, myRank, seaFull, cityCapHit, upgrade); return; }
+    if (this.ctx.p.buildSearch) { this.buildBySearch(ticks, gold, mirvFund + fund, cost, cities, cityUnits, ports, portLevels, capFull, rivals, enemySilos, myRank, seaFull, cityCapHit, upgrade); if (fund > 0n && this.lastPlanCost > 0 && Number(gold - mirvFund) >= this.lastPlanCost && Number(gold - mirvFund - fund) < this.lastPlanCost) this.lim.fire("bombBudget", "plan"); return; } // bombBudget: the planner sees the gold net of the fund
     // 3. first three city levels
-    if (cities < 3 && gold >= cost(UnitType.City)) {
+    if (cities < 3 && spare("city", gold, cost(UnitType.City))) {
       const tile = this.railInfillTile() ?? this.interiorTile(UnitType.City);
       if (tile !== null && this.tryBuild(UnitType.City, tile)) return;
     }
@@ -241,7 +252,7 @@ export class Economy {
       // first port: facing a partner if one exists; otherwise on any ocean coast from 2:30 — nations build ports by minute 3–5 and a port earns 7× base income once they do
       const firstTile = partnerTile ?? (cities >= 1 && ticks >= this.ctx.p.portWithoutPartnerTick ? this.oceanShoreTile() : null);
       if (ports.length === 0 && firstTile !== null && this.tryBuild(UnitType.Port, firstTile)) { this.firstPortTick = ticks; return; }
-      if (ports.length > 0) {
+      if (ports.length > 0 && spare("port", gold - mirvFund, cost(UnitType.Port))) { // ports past the first, and port levels, wait for the bomb fund
         const bestPort = [...ports].sort((a, b) => b.level() - a.level())[0];
         const wantLevel = bestPort.level() < this.ctx.p.portLevelBeforeSecond || ports.length >= this.ctx.p.maxPortUnits || partnerTile === null;
         // level the port unless a city is affordable and troops are near cap (then the city comes first, below)
@@ -252,7 +263,8 @@ export class Economy {
     // 5. rail line: landlocked, or an ally borders us, or the sea is full
     const deadPorts = ports.length > 0 && me.units(UnitType.TradeShip).length === 0 && ticks - this.firstPortTick > 900;
     const wantRail = cities >= 3 && ((ports.length === 0 && partnerTile === null && this.ctx.mg.ticks() >= 1500) || deadPorts || (friends.length > 0 && this.ctx.mg.ticks() >= 1800) || (ports.length > 0 && this.ctx.mg.ticks() >= 1800) || seaFull) && me.unitsOwned(UnitType.Factory) < 6;
-    if (wantRail && this.buildRail(gold - mirvFund, cost)) return;
+    if (wantRail && this.buildRail(gold - mirvFund - fund, cost)) return;
+    if (wantRail && fund > 0n && gold - mirvFund >= cost(UnitType.City) && gold - mirvFund - fund < cost(UnitType.City)) this.lim.fire("bombBudget", "rail"); // coarse: the fund took the rail's next city / factory out of reach
     if (!wantRail && cities >= 3 && ticks % 1200 < 10) this.ctx.log(`t${ticks} no rail wanted: ports=${ports.length} partner=${partnerTile !== null} friends=${friends.length} seaFull=${seaFull}`);
     // 6. silos, nation-style: the first at four city units or 10:00 (whichever comes first, once a port or factory pays),
     //    a second at twelve, a third at twenty; a level when a bomb target sat out of range
@@ -280,10 +292,13 @@ export class Economy {
     }
     // 8. spare gold: keep a bomb fund once we own a silo, otherwise a city level. Never hoard.
     const atWar = (this.military.currentTarget !== null && this.military.currentTarget.isAlive() && !me.isFriendly(this.military.currentTarget)) || me.incomingAttacks().some((a) => a.attacker().type() !== PlayerType.Bot);
-    const reserve = me.units(UnitType.MissileSilo).length > 0 && (atWar || idleAtCap) ? 1_000_000n : siloReserve;
+    const oldReserve = me.units(UnitType.MissileSilo).length > 0 && (atWar || idleAtCap) ? 1_000_000n : siloReserve;
+    // `bombBudget`: the planned bomb's price replaces the flat 1M (the silo escrow stays on top of it)
+    const reserve = fund > 0n ? fund + siloReserve : oldReserve;
+    const spareR = (site: string, need: bigint): boolean => { const ok = gold - reserve - mirvFund >= need; if (!ok && gold - oldReserve - mirvFund >= need) this.lim.fire("bombBudget", site); return ok; };
     // 9. a warship per four ports when gold is spare: it sinks landing boats and guards the trade lanes
     const warships = me.units(UnitType.Warship);
-    if (ports.length > 0 && this.ctx.mg.ticks() >= 9000 && warships.length < Math.ceil(ports.length / 6) && ticks - this.lastWarshipTick >= 600 && gold - reserve - mirvFund >= cost(UnitType.Warship) + 500_000n && !this.ctx.mg.config().isUnitDisabled(UnitType.Warship)) {
+    if (ports.length > 0 && this.ctx.mg.ticks() >= 9000 && warships.length < Math.ceil(ports.length / 6) && ticks - this.lastWarshipTick >= 600 && spareR("warship", cost(UnitType.Warship) + 500_000n) && !this.ctx.mg.config().isUnitDisabled(UnitType.Warship)) {
       const port = ports[warships.length % ports.length];
       for (let a = 0; a < 8; a++) {
         const x = this.ctx.mg.x(port.tile()) + Math.round(Math.cos((a / 8) * Math.PI * 2) * 20), y = this.ctx.mg.y(port.tile()) + Math.round(Math.sin((a / 8) * Math.PI * 2) * 20);
@@ -291,12 +306,13 @@ export class Economy {
         const t = this.ctx.mg.ref(x, y);
         if (!this.ctx.mg.isOcean(t) || me.canBuild(UnitType.Warship, t) === false) continue;
         this.ctx.mg.addExecution(new ConstructionExecution(me, UnitType.Warship, t));
+        this.spentThisPass += cost(UnitType.Warship);
         this.lastWarshipTick = ticks;
         this.ctx.log(`t${ticks} build Warship`);
         return;
       }
     }
-    if (gold - reserve - mirvFund >= cost(UnitType.City)) {
+    if (spareR("city", cost(UnitType.City))) {
       const rt = cityCapHit ? null : this.railInfillTile();
       if (rt !== null && this.tryBuild(UnitType.City, rt)) { this.rail.infilled++; return; }
       const city = cityUnits.find((c) => me.canUpgradeUnit(c));
@@ -314,6 +330,7 @@ export class Economy {
   private blocked = new Map<BuildKind, number>(); // kind → tick a tile picker failed (excluded for a while, see the model's cost)
   private lastPlanLog = -1e9;
   private lastFire = -1e9;
+  private lastPlanCost = 0; // bombBudget: the price of the planner's due first buy (0 = none), for the fund's liveness counter
   /** Nodes expanded by the last search (deterministic; timing is measured outside the core). */
   lastPlanNodes = 0;
   /** Observed income per tick: an EMA over the build() calls of (gold gained + gold spent) / ticks. Before the first
@@ -383,6 +400,7 @@ export class Economy {
       if (ticks - this.lastPlanLog >= 300) { this.lastPlanLog = ticks; this.ctx.log(`t${ticks} PLAN h=${this.plan.horizon} +${((this.plan.value - this.plan.idleValue) / 1e6).toFixed(1)}M over idle, income ${Math.round(state.goldRate)}/t: ${describePlan(this.plan)} (${this.plan.nodes} nodes)`); }
     }
     const first = this.plan.first;
+    this.lastPlanCost = first !== null && first.at <= ticks ? first.cost : 0;
     const chain = this.chainKind(goldB - mirvFund, cost, cities, ports, portLevels, partnerTile !== null, ticks, seaFull, friends.length);
     const family = (k: BuildKind | null) => k === null ? null : k === "city" || k === "cityLevel" ? "cap" : k === "portLevel" ? "port" : k;
     const buy = first !== null && first.at <= ticks && gold >= first.cost && (first.kind === "silo" || gold >= siloReserve + first.cost);
@@ -404,9 +422,13 @@ export class Economy {
     else { this.blocked.set(kind, ticks); this.ctx.log(`t${ticks} PLAN ${kind}: no tile / nothing to level, off the menu for a while`); }
     this.plan = null; // re-plan on the next pass either way
   }
+  /** Gold committed by this build() pass (the executions deduct it next tick): maybeBomb reads it with `bombBudget`
+   *  on, so a post bought this pass is not spent twice. */
+  spentThisPass = 0n;
   tryBuild(type: UnitType, tile: TileRef): boolean {
     if (this.ctx.me.canBuild(type, tile) === false) return false;
     this.ctx.mg.addExecution(new ConstructionExecution(this.ctx.me, type, tile));
+    this.spentThisPass += this.ctx.mg.config().unitInfo(type).cost(this.ctx.mg, this.ctx.me);
     this.ctx.log(`t${this.ctx.mg.ticks()} build ${type}`);
     return true;
   }
