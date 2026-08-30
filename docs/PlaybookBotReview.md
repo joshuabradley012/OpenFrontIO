@@ -4,6 +4,8 @@ _OpenFront · branch playbook-bot · dc98ec741 · 29 Aug 2026_
 
 _Ported from the artifact on 2026-08-30; this file is now the source of truth._
 
+> **Status (30 Aug 2026).** This is the review that started the rebuild; it describes the bot as it was at `dc98ec741` (one 1,430-line class). Everything it recommends was built — see `PlaybookBotPlan.md` for the packages and results. What the lab then decided differs from the review in three places: (1) the forward-simulated war gate (recommendation 1, `simWars`) lost decisively twice, uncalibrated and calibrated, and was deleted — `Config.attackLogic` charges the attacker against the defender's *whole* army, so the estimate's precision did not translate into better target choice; (2) utility-scored spending (recommendation 2, `scoredSpend`) bought fewer ports than the ladder and was dropped; (3) the single biggest gain was not on the list at all — a bug the new rule tests exposed (retreats never executed; fixing it is worth ten of eleven crowns on a 45-game ladder). The tuning advice (recommendation 8) held up, with one correction from the full-game gate: constants that win at 20 minutes can lose whole games, so the objective is now full-game wins (`MIN=full`, `wscore`).
+
 What the bot is today, how it compares with how StarCraft, Age of Empires, Risk and generals.io bots are built, and what to change next — ordered by expected payoff per hour.
 
 **Verdict** — The bot is an AoE2-style priority rule list with a good blackboard and a single troop arbiter. That is the right shape for a hobby RTS bot; the strain is in _how decisions are scored_, not in the loop.

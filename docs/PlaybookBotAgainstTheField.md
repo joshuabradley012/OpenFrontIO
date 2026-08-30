@@ -2,6 +2,8 @@
 
 _Ported from the artifact on 2026-08-30; this file is now the source of truth._
 
+> **Status (30 Aug 2026).** A snapshot at `6f949877c`; the "Implementation status" and "A/B results" sections below record what happened next. Since then: `campaigns` and `simWars` (calibrated) were deleted after decisive losses; `hystRetreats` was rejected; the neutral flags (`utility`, `threatMap`, `buildSearch`, `retaliateAware`, `relationAware`, `drainedNations`, `markTargets`) remain in `Params.ts`, default off; the CMA-tuned constants that beat base by +0.21 at 20 minutes **lost full games** (9 vs 19 of 36) and were not graduated — see `PlaybookBotPlan.md` "Full-game gate". The bug table's items were fixed (`retreatBelowRatio` and the dead cadence params are gone or wired; the "seven flags default off" handoff line was corrected). The "three PROVISIONAL defaults" (opportunity 1) were resolved on a 45-game shifted-grid ladder: retreats confirmed decisively and folded; `trustWars`/`nationAware` neutral-to-positive and kept on. Line counts: the bot is now ~4,600 lines across 13 modules.
+
 What the playbook-bot branch built, how established game-AI engines make the same decisions, and where the gap is worth closing.
 
 _Branch playbook-bot at 6f949877c · 65 commits · +8,861 lines · 2026-08-29_
