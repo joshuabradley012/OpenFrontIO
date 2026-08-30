@@ -70,6 +70,8 @@ export interface PlaybookParams {
   steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
   holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
   strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
+  annexWars: boolean; // Situation.annexable samples the target's border (ours-adjacent ≥ 40 %, third-party-or-unowned ≤ 15 %, a coast or map edge no longer disqualifies, never an ally) and an annexable unfriendly neighbour is a war opportunity in warPick (1.2× wave, scored 25 + ratio, passes the affordability / sticky / one-war gates); no alliance is requested from or accepted with an annexable player; default off until the 30-game Medium A/B
+  lapseToAttack: boolean; // manageExpiries lets an ally lapse when Military.wouldTarget (the war scorer run as if it were unfriendly) accepts it and its score beats every current unfriendly candidate's, whatever the number of rivals; never while a stronger unfriendly neighbour (> 0.6× our troops) borders us unless the ally is annexable; default off until the 30-game Medium A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -130,4 +132,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   strictOneWar: false,
   utility: false, // default off until the 30-game Medium A/B
   campaigns: false, // default off until the 30-game Medium A/B
+  annexWars: false, // default off until the 30-game Medium A/B
+  lapseToAttack: false, // default off until the 30-game Medium A/B
 };

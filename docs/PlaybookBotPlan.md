@@ -1056,3 +1056,86 @@ new one. Golden hash unchanged with the flag off.
 **A/B:** `CONFIGS='{"base":{},"x":{"campaigns":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 (and `{"utility":true,"campaigns":true}` for the pair — the review suggested
 #3 / #5 / #6 as one package).
+
+## Annexations and alliances (`annexWars`, `lapseToAttack`, 2026-08-29, branch `bot/annex-alliances`)
+
+Two things Josh saw in games: the bot fails to get annexations and then gets
+split, and it renews alliances it should let expire so it can attack the ally.
+In the code: `Situation.annexable()` returned false the moment the target had
+one ocean-shore or map-edge border tile, so a coastal player could never be
+annexed, and when it did pass it only set expand's `ringing` — it never became
+a war (only the gap owner did). `manageExpiries` let an ally lapse only if it
+was under 0.4× our troops *and* we were above `fightAbove` *and* we had at
+most one other unfriendly neighbour (or annexable, or an endgame rule) — so a
+weak ally that is the obvious next conquest was renewed whenever a second
+rival existed.
+
+**`annexWars`.** (a) `annexable()` samples the target's border (every third
+tile) and classes each sample as ours-adjacent, other (touching a third
+party's or unowned land) or coast-or-edge (ocean shore, map edge, lake-only
+shore — nobody reinforces through it). Annexable = ours-adjacent ≥ 40 % and
+other ≤ 15 % of the samples and smaller than us. The test is geometry only:
+the consumers apply "not our ally" (warPick's rivals and Diplomacy's
+request/accept lists are unfriendly by construction) and `manageExpiries`
+reads it for an ally on purpose, to let that alliance lapse. The old rule runs
+unchanged with the flag off; `annexableChanged(p)` says whether the two
+disagree (the liveness counter). (b) In `warPick` an annexable unfriendly
+neighbour is an opportunity like the gap owner: it passes the affordability
+gate, the sticky-target filter and the one-war limit, scores 25 + ratio at
+ratio ≥ 1.2 (we attack from most of its border and it cannot be reinforced),
+and the wave is 1.2× its troops + 1000 (`ANNEX WAR <name>` beside the ATTACK
+line; `simWars` gets the same +25 and the opportunity loss bar). With
+`campaigns` it goes at once (an opportunity, no prepare); with `utility` the
+alt carries `annex` and rank 1. (c) Diplomacy neither requests nor accepts an
+alliance with an annexable player (it already did; the wider definition now
+reaches coastal players). Fires on each ANNEX WAR wave and on a refusal or a
+lapse the old rule would not have made. The scorer of `warPick` was lifted
+into `Military.warScorer(gapOwner, threatHere, annex, quiet)` so the next
+flag could reuse it; golden unchanged.
+
+**`lapseToAttack`.** `Military.wouldTarget(p): { ok, score }` runs warPick's
+gates on `p` as if it were an unfriendly neighbour — affordable out of
+spendable × fightMaxShare (or an opportunity, or troops above fightAbove ×
+cap), the early 2.5× prey filter, reachability, the hold — and the same
+scorer (ratio ≥ fightRatio from maxSend, posts / density / size rules, every
+bonus) with the flag counters muted. In `manageExpiries`, after the
+`campaigns` prep-target check and before the gift, an ally that `wouldTarget`
+accepts and whose score beats every current unfriendly neighbour's
+`wouldTarget` score becomes the planned target whatever `rivals.length` is —
+unless an unfriendly neighbour with troops > 0.6× ours borders us and the ally
+is not annexable. Logged `let alliance lapse to attack <name> (score …)`;
+fires on each such lapse. The old prey rule, `relationAware`'s prey pick and
+the `campaigns` lapse are untouched and run first.
+
+**Tests.** `tests/playbook/annexWars.test.ts`: a 4 × 4 target on the ocean
+shore of `half_land_half_ocean` with the rest of the land ours is annexable
+on, not off (the ANNEX target line says `coastal`); the same on a big_plains
+map edge; a third party on 17 % of the border refuses; an encircled neighbour
+at 1.8× (under fightRatio, not affordable) gets a 1.2× ANNEX WAR wave on and
+nothing off; nothing under 1.2×; no alliance request to, and no acceptance
+from, an annexable player (off: both go). `tests/playbook/lapseToAttack.test.ts`:
+a 10 × 10 ally at ~0.2× our troops with two unfriendly strips north and south
+— off renews (`onlyOneAgreedToExtend()` after our AllianceExtensionExecution),
+on lets it lapse, logs the score, fires once, and the war rule takes it when
+the alliance ends; a neighbour above 0.6× keeps the alliance; an ally the
+ratio gate refuses is renewed. Sizes, not troop counts, fix the ratios: every
+player grows toward its cap inside the 600-tick alliance.
+
+**Proof.** 3-minute africa/Medium lab game before and after, flags off:
+identical except botMs/gameMs (`/tmp/lab-annex/{before,after}.txt`); golden
+unchanged. Smokes, both flags on vs off (one game each, Medium):
+africa 8 min — identical (rank 2, 46,567 tiles, nothing fired: the only annex
+target of the old rule was a tribe and no ally met the scorer in the window);
+north-america 12 min — on rank 1 / 92,024 tiles, off rank 3 / 84,160
+(`lapseToAttack` fired 4: Quebec at 3350, Nunavut, Norway, Texas — the first
+three lapsed and were attacked, Texas lapsed at 5436 and was not); east-asia 12 min — on rank 25 / 97 tiles, off rank 3 /
+68,384, with *nothing* fired: the divergence is the wider annex ring in
+`expandOption` (two coastal tribes ringed at 780 / 1280, so the click share
+was 0.2 not 0.1 — now counted as a fire), the game then went a different way
+and a 2× war on Siberia at 4060 met Bhutan's 927k pile-in and a 60-piece
+split. One game is not evidence either way; it is why the A/B exists.
+Also seen (pre-existing): with two allies in their windows, `manageExpiries`
+logs `let alliance with … lapse` for both every 50 ticks — `plannedTarget_`
+holds one player, so each pass re-plans the other.
+
+**A/B:** `CONFIGS='{"base":{},"annex":{"annexWars":true},"lapse":{"lapseToAttack":true},"both":{"annexWars":true,"lapseToAttack":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
