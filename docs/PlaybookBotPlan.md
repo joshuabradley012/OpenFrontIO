@@ -1730,3 +1730,34 @@ Outcomes: 48 won · 37 alive-but-lost · 4 died · 7 hit the cap (6 as rank 1). 
 Loss clusters (41): **MIRVed down after leading — 19** (steamroll rule in 80 of 85 MIRVED-by lines; the bot's own `MIRV RISK steamroll` detector fires minutes earlier, then the game builds ~3 SAMs); **lost the endgame race at rank 2–3 — 13**; **plateaued behind a runaway — 5**; died 4. Losses peak at 33 min (wins at 61) holding 0.3 of peak; the 10-minute states of wins and losses are nearly identical — games are decided in the mid-game. Wins average 27 silos/97 SAMs vs 6.8/12 in losses. War efficiency is similar; the failure is growth stalling + MIRV exposure, plus no leader-contest behaviour (a rank-3 bot spends the last 5 minutes boating a 1,500-tile weakling while the leader closes to 80 %).
 
 Ranked proposals (each a default-off flag + full-game A/B): 1) `samOnRisk` — on `MIRV RISK steamroll`, divert gold to a SAM wall + counter-silos (touches ~half the losses); 2) `contestLeader` — rank ≤ 3 with a runaway leader → boats/nukes at the leader, not "weak X"; 3) `plateauBreak` — <5 % tile growth over 5 min while rank > 1 → forced cross-water expansion or war on the largest adjacent non-ally; 4) `warRoiCap` — abort wars beyond ~500 troops/tile realized; 5) `webDefense` — ally/post against a mutual-ally border web before 10:00. Script: scratchpad loss_analysis.py (re-run on every sweep).
+
+## Web defence (`webDefense`, 2026-08-30, branch `bot/web-defense`)
+
+Loss cluster 4 (the alliance-web rush; the shape is `lab-out/rm1/p_base_med8b_north-russia.txt`): Sudan+Bhutan+Namibia
+mutually allied on our border, every war vetoed by the trustWars pile-in rule (`no war on Sudan: its ally Bhutan could
+send 605k`), then the ex-ally Namibia lapses and betrays with 711k vs our 208k — dead at 9:15.
+
+`webDefense` (default off): before `webUntil` (6000 = 10:00), a **border web** is ≥ 2 of our non-ally neighbours who
+are allied WITH EACH OTHER (connected components of the alliance graph over `sit.rivals`) whose combined nation-rule
+sendable troops (`RivalView.nationWouldSend`, what trustWars already computes) exceed `webRatio` (2.0) × our troops.
+Detection lives in `SituationQueries.web` (10-tick cadence, `sit.web`), logged `WEB <names> could send …k at our …k`
+(rate-limited 600 ticks). Response, in priority order through the existing rules' budgets:
+
+1. **Diplomacy.requestAlliances** asks the web member most likely to accept FIRST every pass (relationAware's
+   `wouldAcceptAlliance` when that flag is on, else the strongest sender) instead of the generic strongest-first
+   order — and that member is not kept as prey: an alliance into the web is the defence, and the plain path kept
+   the weak member as food while its allies could pile in (fires when the prey skip is overridden).
+2. **Economy's threat-post rule** treats every web member as a threat: posts on those borders before the other
+   spending, on the existing budget (gold, the 6-post cap, the `postFailed` cooldown, one post facing each rival);
+   fires when the chosen threat is a web member the plain rule would not have picked.
+3. **The reserve** reads the web's combined sendable where the threatMap/reserve logic reads a max: the same
+   `clamp(1 + threatReserveGain × pressure / troops, 1, 2)` shape as the threatMap mult, and the larger of the two
+   wins (bounded ×2 as today); fires when the web input raised the mult.
+
+Params (CMA-tunable): `webRatio` (2.0), `webUntil` (int, 6000). Tests: `tests/playbook/webDefense.test.ts` — a
+two-ally web fixture shows the post + alliance-request priority + doubled reserve under the flag and none of it
+without; no trigger when the neighbours are not allied with each other, none after `webUntil`.
+
+**A/B** (full games — the cluster kills, it does not cost 20-minute land):
+`CONFIGS='{"base":{},"web":{"webDefense":true}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`,
+judged on `summarize.py`'s `wscore` / paired WIN line.

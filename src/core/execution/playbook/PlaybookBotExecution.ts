@@ -138,22 +138,30 @@ export class PlaybookBotExecution implements Execution {
       collapsed: nb.rivals.filter((r) => this.military.collapsed(r)), // cheap (a map lookup per rival); its 100-tick snapshot keeps the original tick alignment
       expiring: [],
       hold: null,
-      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(),
+      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null,
     };
     if (this.slow === null || t % 10 === 0) this.slow = this.readSlow(t, troops);
     this.sit.threats = this.slow.threats; this.sit.expiring = this.slow.expiring; this.sit.hold = this.slow.hold; this.sit.mode = this.slow.mode;
     this.q.enrichRivals(this.sit); // B2: per-rival view
+    if (this.p.webDefense) this.sit.web = this.q.web(this.sit); // `webDefense`: the mutual-ally border web, read by the reserve, the threat-post rule and requestAlliances
+    let mult = 1;
     if (this.p.threatMap) {
       // review #5: the reserve follows the pressure nobody at home answers (Σ max(0, theirs − ours) over unfriendly
       // segments), from the flat share up to twice it — bsrReserve scaled one reserve by the max bsr and lost its A/B.
       // Never below the flat share: the brief's 0.5 floor made every calm minute a 15 % reserve and the sea-expansion
       // rule shipped the army to collapsed players on other continents (africa 6-min smoke: 8.8k tiles vs 44k)
       const tm = this.q.rivals.threat;
-      const mult = Math.min(2, Math.max(1, 1 + (this.p.threatReserveGain * tm.undefended) / Math.max(1, troops)));
-      this.sit.reserve = this.sit.reserve * mult; this.sit.spendable = Math.max(0, troops - this.sit.reserve);
+      mult = Math.min(2, Math.max(1, 1 + (this.p.threatReserveGain * tm.undefended) / Math.max(1, troops)));
       if (mult !== 1 && t % 100 === 0) this.ctx.fire("threatMap");
       if (t % 600 === 0 && tm.segments.length > 0) this.ctx.log(`t${t} ${tm.summary()} reserve ×${mult.toFixed(2)}`);
     }
+    if (this.sit.web !== null) {
+      // `webDefense`: the web's combined sendable is the pressure input where the reserve reads a max — the same
+      // clamp(1 + gain × pressure / troops, 1, 2) shape as the threatMap reserve, and the larger of the two wins
+      const wm = Math.min(2, Math.max(1, 1 + (this.p.threatReserveGain * this.sit.web.send) / Math.max(1, troops)));
+      if (wm > mult) { mult = wm; this.lim.fire("webDefense", "reserve"); }
+    }
+    if (mult !== 1) { this.sit.reserve = this.sit.reserve * mult; this.sit.spendable = Math.max(0, troops - this.sit.reserve); }
     this.q.enrichPhase(this.sit); // B2: phase (reads spendable)
   }
   private readSlow(t: number, troops: number): NonNullable<typeof this.slow> {
