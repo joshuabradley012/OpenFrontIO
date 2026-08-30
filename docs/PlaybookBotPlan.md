@@ -1863,3 +1863,27 @@ Tests: tests/playbook/boatOpening.test.ts (Bab-el-Mandeb fixture: two boats out 
 landmass; plain sends one; extras stop at the cutoff; an inert opening is log-identical to plain).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 Watch it in the GUI: `localStorage.playbookParams = '{"boatOpening":true}'` then load `?bot=1` (PlaybookBotGUI.md).
+## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)
+
+Loss cluster 3 above: 40 of the 41 losses stop growing by minute 33 (wins keep growing to 61) — the bot sits at
+rank 2–3 behind a runaway with nothing forcing it back into the game. The flag samples our tile count every 300
+ticks (`Military.plateauRule`, a ring buffer); a **plateau** = alive, rank > 1 among non-bots, tiles grew <
+`plateauGrowth` (0.05) over `plateauWindow` (3000) ticks, no outgoing non-bot attack, and not in `hold` mode (the
+finish rule owns that posture). On detection it escalates **once per window**, in order:
+
+1. **Forced sea expansion** — `seaExpansion(forced)`: the capShare gates ("land first while free", "under attack")
+   are skipped and every distance cap is ×1.5 — a reachable free/weak shore across water beats sitting still.
+2. **Forced war** — through `warPick`/`actWar`: the affordability gate is skipped and the ratio floor drops to 1×
+   (the affordable ratio, even below `fightAbove`), and the pick switches to the **largest** adjacent non-ally the
+   gates accept. Every other invariant stays: whole-or-nothing, the reserve, capFloor 0.3, the posts (1.5×) and
+   thin-empire (3×) gates.
+3. **Boxed in by allies** — no unfriendly neighbour at all: the weakest adjacent alliance lapses at its next
+   expiry (`Diplomacy.planLapse`, the plannedTarget mechanism `lapseToAttack` also uses).
+
+The plateau rule runs after wars and sea expansion in the tick's table, so an action taken here is one the plain
+rules declined that same tick — it logs `PLATEAU t… tiles a→b (x % in w ticks) rank r: <action>` and fires
+`plateauBreak` per forced action. Params: `plateauWindow` (int ticks), `plateauGrowth` (share). Tests:
+`tests/playbook/plateauBreak.test.ts`.
+
+A/B (judge on full games — the plateau is a full-game failure mode):
+`CONFIGS='{"base":{},"plat":{"plateauBreak":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`

@@ -41,6 +41,13 @@ export class Diplomacy {
   get plannedTarget(): Player | null {
     return this.plannedTarget_;
   }
+  /** `plateauBreak`: the plateau rule decided this ally's alliance lapses at its next expiry — the same mechanism
+   *  as a prey lapse: manageExpiries skips the renewal for the planned target, forgetPlannedTarget cleans up. */
+  planLapse(p: Player): void {
+    if (this.plannedTarget_ === p) return;
+    this.plannedTarget_ = p;
+    this.plannedLapsedAt = -1;
+  }
 
   // ---------------------------------------------------------------- alliances
   acceptAlliances(): void {

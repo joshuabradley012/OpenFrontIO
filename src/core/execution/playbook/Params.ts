@@ -118,6 +118,9 @@ export interface PlaybookParams {
   contestLeader: boolean; // loss cluster 2 (rm1: 13/41 losses ended rank 2–3 while the winner ran to 80 % and we boated 1,500-tile weaklings): while we are rank ≤ contestRank by tiles among non-bots, the leader is not us or a friend, its tiles exceed contestLeadRatio × ours and it is still growing (two tile samples 300 ticks apart), the boats seaExpansion / huntBotsByBoat already send are re-aimed from "weak X" / tribe targets at the leader's coastline (its ports/cities shore, same sizes and gates), maybeBomb / maybeMIRV treat the leader as a priority target like `threats`, and the war scorer adds +4 when it borders us; redirects targets, never sizes. Default off until the 30-game Medium A/B
   contestRank: number; // contestLeader: contest only while our tile rank among non-bot players is ≤ this (int)
   contestLeadRatio: number; // contestLeader: the leader's tiles must exceed this × ours
+  plateauBreak: boolean; // loss cluster 3 (rm1 loss analysis: 40 of 41 losses stop growing by minute 33, wins keep growing to 61): our tile count is sampled every 300 ticks; alive, rank > 1 among non-bots, growth < plateauGrowth over plateauWindow ticks, no outgoing non-bot attack and not in hold mode = a plateau, escalated once per window — a forced sea expansion (capShare gates off, 1.5× the distance caps), else a forced war on the largest adjacent non-ally through warPick/actWar (affordability gate and the ratio floor relaxed to 1×; whole-or-nothing, reserve and capFloor stay), else (boxed in by allies) the weakest adjacent alliance lapses at its next expiry. Default off until the 30-game Medium A/B
+  plateauWindow: number; // plateauBreak: ticks of flat growth before the escalation, and between escalations (int, a multiple of the 300-tick sample)
+  plateauGrowth: number; // plateauBreak: tile growth over the window below which we count as plateaued
   multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
 }
 
@@ -191,6 +194,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   webDefense: false, // default off until the full-game A/B (docs/PlaybookBotPlan.md "Web defence")
   webRatio: 2.0,
   webUntil: 6000,
+  plateauBreak: false, // default off until the 30-game Medium A/B
+  plateauWindow: 3000, // 5 minutes: the loss curves flatten over minutes, not seconds
+  plateauGrowth: 0.05,
   multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
   contestLeader: false, // default off until the 30-game Medium A/B
   contestRank: 3,

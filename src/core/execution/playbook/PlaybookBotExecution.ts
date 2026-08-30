@@ -283,6 +283,9 @@ export class PlaybookBotExecution implements Execution {
     } },
     { name: "sea expansion", every: 100, run: () => { if (this.sit.tick >= 600) this.military.seaExpansion(); } },
     { name: "finish by boat", every: 100, run: () => { if (this.p.finishByBoat && this.sit.tick >= 1200) this.military.finishByBoat(); } }, // `finishByBoat`: the remnant a land war cannot reach
+    // `plateauBreak`: growth stalled behind a leader — escalate. After wars and sea expansion in the table, so an
+    // action taken here is one the plain rules declined this same tick; step (3) hands the ally to lapse to Diplomacy.
+    { name: "plateau", every: 300, run: () => { const lapse = this.military.plateauRule(); if (lapse !== null) this.diplomacy.planLapse(lapse); } },
     { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick, this.economy.spentThisPass); } },
     { name: "mirv", every: 100, run: () => this.military.maybeMIRV(this.economy.spentThisPass) }, // after "build" in the same tick: its buys are not yet deducted
     // always-on diagnostics: the nations' MIRV rules against us (logged on change) and every enemy MIRV aimed at our land
