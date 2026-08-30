@@ -1,6 +1,6 @@
 // Military: expansion, tribe harvesting, counter-attacks, wars and retreats, boats, bombs, MIRV, split watch.
 
-import { Attack, Player, PlayerType, UnitType } from "../../game/Game";
+import { Attack, Game, Player, PlayerType, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { MirvExecution } from "../MIRVExecution";
@@ -57,6 +57,27 @@ export class Military {
       return false;
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------- housekeeping
+  /** Every 300 ticks: drop entries about dead players, finished attacks and windows that have passed. Each map's
+   *  reader treats a missing entry exactly like a stale one, so this changes no decision. `bombed` is kept: a
+   *  structure bombed once is never bombed again, by design. */
+  prune(): void {
+    const t = this.ctx.mg.ticks(), me = this.ctx.me;
+    const dead = (p: Player) => !p.isAlive();
+    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged]) for (const p of m.keys()) if (dead(p)) m.delete(p);
+    for (const [p, until] of this.blacklist) if (t >= until) this.blacklist.delete(p);
+    for (const [p, at] of this.sentAt) if (t - at >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
+    for (const [p, at] of this.lastCounter) if (t - at >= 300) this.lastCounter.delete(p);
+    for (const [p, at] of this.boatedAt) if (t - at >= 900) this.boatedAt.delete(p);
+    for (const [p, at] of this.pileInLogged) if (t - at >= 600) this.pileInLogged.delete(p);
+    for (const [p, at] of this.embargoedAt_) if (t - at > 1200 && !me.hasEmbargoAgainst(p)) this.embargoedAt_.delete(p);
+    const running = new Set(me.outgoingAttacks().map((a) => a.id()));
+    for (const id of this.attackStart.keys()) if (!running.has(id)) this.attackStart.delete(id);
+    const targets = new Set(me.outgoingAttacks().map((a) => a.target()));
+    for (const p of this.waves.keys()) if (!targets.has(p)) this.waves.delete(p); // read only while an attack on that tribe runs
+    for (const p of this.counters) if (dead(p)) this.counters.delete(p);
   }
 
   // ---------------------------------------------------------------- boats in the mid and late game
@@ -156,21 +177,12 @@ export class Military {
    *  The engine hands a surrounded piece to the surrounding player, so a split is a countdown. */
   watchSplit(): void {
     const me = this.ctx.me;
-    const tiles = me.tiles();
-    if (tiles.size < 200) { this.splitOwner = null; return; }
-    const seen = new Set<TileRef>();
-    const clusters: TileRef[][] = [];
-    for (const t of me.borderTiles()) {
-      if (seen.has(t)) continue;
-      const cl: TileRef[] = []; const q = [t]; seen.add(t);
-      while (q.length > 0) { const c = q.pop()!; cl.push(c); for (const n of this.ctx.mg.neighbors(c)) { if (seen.has(n) || this.ctx.mg.owner(n) !== me) continue; seen.add(n); q.push(n); } }
-      clusters.push(cl);
-      if (clusters.length > 8) break;
-    }
+    if (me.numTilesOwned() < 200) { this.splitOwner = null; return; }
+    const clusters = Military.pieces(this.ctx.mg, me);
     if (clusters.length <= 1) { if (this.splitOwner !== null) this.ctx.log(`t${this.ctx.mg.ticks()} territory reconnected`); this.splitOwner = null; this.splitTile = null; return; }
-    clusters.sort((a, b) => b.length - a.length);
-    const main = clusters[0], other = clusters[1];
-    // nearest pair of tiles between the two pieces (sampled), then the owner of the midpoint
+    clusters.sort((a, b) => b.tiles - a.tiles);
+    const main = clusters[0].border, other = clusters[1].border;
+    // nearest pair of border tiles between the two pieces (sampled), then the owner of the midpoint
     let best = 1e18, bt: TileRef | null = null, bo: TileRef | null = null;
     for (let i = 0; i < main.length; i += Math.max(1, Math.floor(main.length / 60))) for (let j = 0; j < other.length; j += Math.max(1, Math.floor(other.length / 60))) {
       const d = this.ctx.mg.euclideanDistSquared(main[i], other[j]); if (d < best) { best = d; bt = main[i]; bo = other[j]; }
@@ -181,9 +193,61 @@ export class Military {
     const owner = this.ctx.mg.owner(mid);
     const who = owner.isPlayer() ? (owner as Player) : null;
     if (this.splitSince < 0) this.splitSince = this.ctx.mg.ticks();
-    if (who !== this.splitOwner) this.ctx.log(`t${this.ctx.mg.ticks()} SPLIT: ${clusters.length} pieces, second piece ${other.length}+ border tiles, gap ${Math.round(Math.sqrt(best))} tiles held by ${who ? who.name() : "nobody"}`);
+    if (who !== this.splitOwner) this.ctx.log(`t${this.ctx.mg.ticks()} SPLIT: ${clusters.length} pieces, second piece ${clusters[1].tiles} tiles, gap ${Math.round(Math.sqrt(best))} tiles held by ${who ? who.name() : "nobody"}`);
     this.splitOwner = who && who !== me && !me.isFriendly(who) ? who : null;
     this.splitTile = this.ctx.mg.isLand(mid) && !this.ctx.mg.hasOwner(mid) ? mid : null;
+  }
+  /** The 4-connected pieces of `p`'s territory — exact, from the border alone. Each row's owned tiles form runs
+   *  whose ends are border tiles (a run end has a non-owned tile beside it), so the runs come from the sorted border
+   *  tiles of the row plus the map's left/right edges (an edge tile is not a border tile: GameMap.isBorder); runs
+   *  in neighbouring rows that overlap in x are one piece (union-find). A row with no border tile is either empty or
+   *  owned wall to wall. Cost O(border log border) against O(tiles) for a flood fill; tile counts are exact. */
+  static pieces(mg: Game, p: Player): { tiles: number; border: TileRef[] }[] {
+    const w = mg.width(), h = mg.height(), pid = p.smallID();
+    const rows = new Map<number, TileRef[]>();
+    for (const t of p.borderTiles()) { const y = mg.y(t); let r = rows.get(y); if (!r) { r = []; rows.set(y, r); } r.push(t); }
+    if (rows.size === 0) return [];
+    const owned = (x: number, y: number) => mg.ownerID(mg.ref(x, y)) === pid;
+    // runs: [x0, x1, id] per row; border tiles keep the run they lie in
+    const parent: number[] = [];
+    const find = (i: number): number => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    const union = (a: number, b: number) => { a = find(a); b = find(b); if (a !== b) parent[b] = a; };
+    const runTiles: TileRef[][] = [], runLen: number[] = [];
+    let prev: [number, number, number][] = [];
+    for (let y = 0; y < h; y++) { // every row: a wall-to-wall row has no border tile at all (map edges are not borders)
+      const cur: [number, number, number][] = [];
+      const bt = rows.get(y);
+      if (bt === undefined) {
+        if (owned(0, y)) { const id = parent.length; parent.push(id); runTiles.push([]); runLen.push(w); cur.push([0, w - 1, id]); }
+      } else {
+        bt.sort((a, b) => a - b);
+        let open = owned(0, y) ? 0 : -1, tiles: TileRef[] = [];
+        for (const t of bt) {
+          const x = mg.x(t);
+          if (x > 0 && !owned(x - 1, y)) { open = x; tiles = []; }
+          tiles.push(t);
+          if (x === w - 1 || !owned(x + 1, y)) { const id = parent.length; parent.push(id); runTiles.push(tiles); runLen.push(x - open + 1); cur.push([open, x, id]); open = -1; tiles = []; }
+        }
+        if (open >= 0) { const id = parent.length; parent.push(id); runTiles.push(tiles); runLen.push(w - open); cur.push([open, w - 1, id]); }
+      }
+      // two-pointer merge with the row above
+      let i = 0, j = 0;
+      while (i < prev.length && j < cur.length) {
+        const a = prev[i], b = cur[j];
+        if (a[0] <= b[1] && b[0] <= a[1]) union(a[2], b[2]);
+        if (a[1] < b[1]) i++; else j++;
+      }
+      prev = cur;
+    }
+    const out = new Map<number, { tiles: number; border: TileRef[] }>();
+    for (let id = 0; id < parent.length; id++) {
+      const root = find(id);
+      let c = out.get(root);
+      if (!c) { c = { tiles: 0, border: [] }; out.set(root, c); }
+      c.tiles += runLen[id];
+      for (const t of runTiles[id]) c.border.push(t);
+    }
+    return [...out.values()];
   }
 
   // ---------------------------------------------------------------- expansion

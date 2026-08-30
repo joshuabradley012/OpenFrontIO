@@ -315,14 +315,25 @@ export class Economy {
     }
     return best;
   }
+  /** The sampled tile deepest inside our land that `type` can be built on. The 40 samples' distances to the border
+   *  come from one walk of the border (one x/y decode per border tile for all samples, not 40 closestTile walks),
+   *  ranked once per tick and shared by the SAM / city / silo calls of a build pass. Same pick as before: the
+   *  largest distance among the samples canBuild accepts, the earliest sample on a tie. */
+  private interiorRank: { tick: number; ranked: TileRef[] } | null = null;
   interiorTile(type: UnitType = UnitType.City): TileRef | null {
-    const border = this.ctx.me.borderTiles();
-    let best: TileRef | null = null, bestD = -1;
-    for (const t of this.sampleTerritory(40)) {
-      const [, d] = closestTile(this.ctx.mg, border, t);
-      if (d > bestD && this.ctx.me.canBuild(type, t) !== false) { bestD = d; best = t; }
+    const t = this.ctx.mg.ticks();
+    if (this.interiorRank === null || this.interiorRank.tick !== t) {
+      const mg = this.ctx.mg, samples = this.sampleTerritory(40);
+      const sx = samples.map((s) => mg.x(s)), sy = samples.map((s) => mg.y(s)), d = samples.map(() => Infinity);
+      for (const b of this.ctx.me.borderTiles()) {
+        const bx = mg.x(b), by = mg.y(b);
+        for (let i = 0; i < samples.length; i++) { const m = Math.abs(bx - sx[i]) + Math.abs(by - sy[i]); if (m < d[i]) d[i] = m; }
+      }
+      const order = samples.map((_, i) => i).sort((a, b) => d[b] - d[a] || a - b);
+      this.interiorRank = { tick: t, ranked: order.map((i) => samples[i]) };
     }
-    return best;
+    for (const s of this.interiorRank.ranked) if (this.ctx.me.canBuild(type, s) !== false) return s;
+    return null;
   }
   oceanShoreTile(): TileRef | null {
     const me = this.ctx.me;

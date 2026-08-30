@@ -4,7 +4,7 @@
 //
 // Exposure only: nothing here changes behaviour until a consumer (C1) reads `sit.rival`.
 
-import { Difficulty, GameMode, Player, PlayerType, Relation } from "../../game/Game";
+import { Difficulty, GameMode, Player, PlayerType, Relation, TerraNullius } from "../../game/Game";
 import { BotContext } from "./Context";
 import type { Situation } from "./Situation";
 
@@ -192,6 +192,23 @@ export class Rivals {
     return (p.troops() * share) / Math.max(1, ourTroops);
   }
 
+  // ---------------------------------------------------------------- housekeeping
+  /** `p.nearby()` walks the rival's whole border; memoised per rival for `nearbyEvery` ticks like the bot's own
+   *  neighbours() (Situation.ts). nearbyEvery = 1 is the uncached behaviour. */
+  private nearbyCache = new Map<Player, { tick: number; players: (Player | TerraNullius)[] }>();
+  private nearbyOf(p: Player): (Player | TerraNullius)[] {
+    const t = this.ctx.mg.ticks(), every = Math.max(1, this.ctx.p.nearbyEvery);
+    let c = this.nearbyCache.get(p);
+    if (!c || t - c.tick >= every) { c = { tick: t, players: p.nearby() }; this.nearbyCache.set(p, c); }
+    return c.players;
+  }
+  /** Drop what is kept about players no longer on the map (called every 300 ticks). Trust survives a lapse of
+   *  contact on purpose: a neighbour that broke faith and comes back is still the one that broke faith. */
+  prune(): void {
+    for (const m of [this.nearbyCache, this.trustOf, this.expiry, this.ring, this.nationCache, this.border]) for (const p of m.keys()) if (!p.isAlive()) m.delete(p);
+    for (const p of this.nearbyCache.keys()) if (!this.ring.has(p) && !this.expiry.has(p)) this.nearbyCache.delete(p);
+  }
+
   // ---------------------------------------------------------------- nation rules (AiAttackBehavior re-implemented)
   /** troopSendCap for `p` (AiAttackBehavior.ts:903-949): Infinity unless Hard/Impossible FFA, where it is
    *  troops − ceil(retain × strongest unfriendly non-bot neighbour's troops), raised to the incoming total if under attack. */
@@ -202,7 +219,7 @@ export class Rivals {
     const retain = NATION_RULES.retain[mg.config().gameConfig().difficulty];
     if (retain === undefined) return Infinity;
     let maxNeighborTroops = 0;
-    for (const n of p.nearby()) {
+    for (const n of this.nearbyOf(p)) {
       // asIfUnallied: we are read as the unfriendly neighbour we become once the alliance lapses
       if (n.isPlayer() && (!p.isFriendly(n) || (asIfUnallied && n === this.ctx.me)) && n.type() !== PlayerType.Bot && n.troops() > maxNeighborTroops) maxNeighborTroops = n.troops();
     }

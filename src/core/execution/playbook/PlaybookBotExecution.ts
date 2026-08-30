@@ -97,6 +97,11 @@ export class PlaybookBotExecution implements Execution {
   private lastMode: "grow" | "hold" | "push" = "grow";
   private prevAllies = new Set<Player>();
   private prevIncoming = new Set<string>();
+  /** The slow parts of the situation (a scan of every player for MIRV threats, the expiring alliances, the expiry
+   *  hold with its nation-rule border walk) are computed on the 10-tick cadence every consumer runs on — send(),
+   *  boat() and the rules all fire on multiples of 10 — and reused in between. Decision-identical (golden test). */
+  private slow: { tick: number; threats: Player[]; expiring: Player[]; hold: Player | null; mode: "grow" | "hold" | "push" } | null = null;
+  private lastHoldFire = -1e9;
   private readSituation(): void {
     const me = this.player;
     const troops = me.troops(), cap = this.q.cap();
@@ -111,27 +116,35 @@ export class PlaybookBotExecution implements Execution {
       incoming, incomingBots: me.incomingAttacks().length - incoming.length, outgoing,
       tribeAttacks: outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() === PlayerType.Bot).length,
       boats: me.units(UnitType.TransportShip).length,
-      collapsed: nb.rivals.filter((r) => this.military.collapsed(r)),
-      expiring: me.alliances().filter((al) => al.expiresAt() - t < 450).map((al) => al.other(me)),
+      collapsed: nb.rivals.filter((r) => this.military.collapsed(r)), // cheap (a map lookup per rival); its 100-tick snapshot keeps the original tick alignment
+      expiring: [],
       hold: null,
-      share: 0, threats: [], mode: "grow", phase: "opening", rival: new Map(),
+      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(),
     };
+    if (this.slow === null || t % 10 === 0) this.slow = this.readSlow(t, troops);
+    this.sit.threats = this.slow.threats; this.sit.expiring = this.slow.expiring; this.sit.hold = this.slow.hold; this.sit.mode = this.slow.mode;
+    this.q.enrichRivals(this.sit); // B2: per-rival view
+    this.q.enrichPhase(this.sit); // B2: phase (reads spendable)
+  }
+  private readSlow(t: number, troops: number): NonNullable<typeof this.slow> {
+    const me = this.player;
+    const share = this.sit.share;
+    const expiring = me.alliances().filter((al) => al.expiresAt() - t < 450).map((al) => al.other(me));
     // the finish: nations MIRV anyone over 65 % of the map on Medium (55 % Hard), allies included. Under that line
     // while a rival can still fire; remove the rivals; then push for the win.
-    this.sit.share = me.numTilesOwned() / Math.max(1, this.mg.numLandTiles());
     const diff = this.mg.config().gameConfig().difficulty;
     const denial = diff === Difficulty.Easy ? 0.75 : diff === Difficulty.Medium ? 0.65 : diff === Difficulty.Hard ? 0.55 : 0.5;
-    this.sit.threats = this.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot && !me.isOnSameTeam(p) && p.units(UnitType.MissileSilo).length > 0 && (p.gold() >= 20_000_000n || p.units(UnitType.MIRV).length > 0));
-    if (this.p.finishRule && this.sit.share >= denial - 0.03) this.sit.mode = this.sit.threats.length > 0 ? "hold" : "push";
-    else if (this.p.finishRule && this.sit.share >= 0.45 && this.sit.threats.length === 0) this.sit.mode = "push";
-    if (this.sit.mode !== this.lastMode) { if (this.log.length < 2000) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${this.sit.mode}: share ${(this.sit.share * 100).toFixed(0)} %, ${this.sit.threats.length} MIRV-capable rivals${this.sit.threats.length ? " (" + this.sit.threats.map((x) => x.name()).join(", ") + ")" : ""}`); this.lastMode = this.sit.mode; }
+    const threats = this.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot && !me.isOnSameTeam(p) && p.units(UnitType.MissileSilo).length > 0 && (p.gold() >= 20_000_000n || p.units(UnitType.MIRV).length > 0));
+    let mode: "grow" | "hold" | "push" = "grow";
+    if (this.p.finishRule && share >= denial - 0.03) mode = threats.length > 0 ? "hold" : "push";
+    else if (this.p.finishRule && share >= 0.45 && threats.length === 0) mode = "push";
+    if (mode !== this.lastMode) { if (this.log.length < 2000) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${mode}: share ${(share * 100).toFixed(0)} %, ${threats.length} MIRV-capable rivals${threats.length ? " (" + threats.map((x) => x.name()).join(", ") + ")" : ""}`); this.lastMode = mode; }
     // A Hard nation renews only if we look as strong as it at expiry: 45 s before an alliance with a stronger
     // neighbour lapses, the army stays home so the check sees all of it.
     // C1 (`nationAware`): hold only for a nation whose own attack rules would let it hit us at expiry
-    this.sit.hold = this.sit.expiring.find((o) => o.type() === PlayerType.Nation && (this.p.nationAware ? this.q.rivals.couldAttackAtExpiry(o, troops).can : o.troops() > troops * 0.85)) ?? null;
-    if (this.p.nationAware && t % 100 === 0) { const heur = this.sit.expiring.find((o) => o.type() === PlayerType.Nation && o.troops() > troops * 0.85) ?? null; if (heur !== this.sit.hold) this.ctx.fire("nationAware"); }
-    this.q.enrichRivals(this.sit); // B2: per-rival view
-    this.q.enrichPhase(this.sit); // B2: phase (reads spendable)
+    const nationHold = expiring.find((o) => o.type() === PlayerType.Nation && (this.p.nationAware ? this.q.rivals.couldAttackAtExpiry(o, troops).can : o.troops() > troops * 0.85)) ?? null;
+    if (this.p.nationAware && t % 100 === 0) { const heur = expiring.find((o) => o.type() === PlayerType.Nation && o.troops() > troops * 0.85) ?? null; if (heur !== nationHold) this.ctx.fire("nationAware"); }
+    return { tick: t, threats, expiring, hold: nationHold, mode };
   }
   /** The one place troops leave home. Never below the reserve; returns what was actually sent (0 = nothing). */
   private send(targetID: string | null, n: number, why: string, min = 500, capFloor = 0): number {
@@ -186,6 +199,7 @@ export class PlaybookBotExecution implements Execution {
     { name: "sea expansion", every: 100, run: () => { if (this.sit.tick >= 600) this.military.seaExpansion(); } },
     { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick); } },
     { name: "mirv", every: 100, run: () => this.military.maybeMIRV() },
+    { name: "prune", every: 300, run: () => { this.military.prune(); this.q.prune(); } }, // the per-player maps would otherwise grow for the whole game
   ];
 
   tick(ticks: number): void {
@@ -200,6 +214,7 @@ export class PlaybookBotExecution implements Execution {
     }
     this.readSituation();
     this.diplomacy.acceptAlliances();
+    this.q.invalidateNeighbours(); // an accepted request is a friend from this tick on
     this.events();
     for (const r of this.rules) if (ticks % r.every === 0) r.run();
   }
