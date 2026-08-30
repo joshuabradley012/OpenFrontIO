@@ -1,0 +1,32 @@
+{
+  "note": "History milestone rules = playbook-bot c1dec6bb9 (2026-08-29): first bot with its own spawn picker: situation snapshot, reserve-enforcing send/boat, rule table, alliance-ended events. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "c1dec6bb9",
+  "params": {
+    "__bot": "rules"
+  },
+  "results": {
+    "games": 58,
+    "alive": 49,
+    "crowns": 10,
+    "top3": 26,
+    "medianTiles": 54402.5,
+    "medianTilesCI": [
+      27112,
+      96896
+    ],
+    "meanTiles": 78592,
+    "score": 1.5774,
+    "scoreCI": [
+      1.4131,
+      1.7255
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 27,
+      "losses": 31,
+      "dScore": -0.2456,
+      "p": 0.694
+    }
+  }
+}

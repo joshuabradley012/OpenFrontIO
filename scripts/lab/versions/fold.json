@@ -1,0 +1,32 @@
+{
+  "note": "History milestone fold = playbook-bot c47fcac82 (2026-08-29): dead flags removed (simWars, scoredSpend, bsrReserve, phaseGates), retreats folded (ladder1 1 vs 11 crowns), no feature flags left. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "c47fcac82",
+  "params": {
+    "__bot": "fold"
+  },
+  "results": {
+    "games": 58,
+    "alive": 58,
+    "crowns": 10,
+    "top3": 30,
+    "medianTiles": 95013.0,
+    "medianTilesCI": [
+      74923,
+      118680
+    ],
+    "meanTiles": 109848,
+    "score": 1.7852,
+    "scoreCI": [
+      1.6633,
+      1.9042
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 33,
+      "losses": 25,
+      "dScore": -0.0378,
+      "p": 0.3581
+    }
+  }
+}

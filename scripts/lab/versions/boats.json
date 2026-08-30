@@ -1,0 +1,32 @@
+{
+  "note": "History milestone boats = playbook-bot 9b45d043a (2026-08-29): \"v6\": sea-expansion rule (free shore, collapsed follow-up, weak players, tribes), open-shore-first early boat; 23/30 alive from 17. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "9b45d043a",
+  "params": {
+    "__bot": "boats"
+  },
+  "results": {
+    "games": 58,
+    "alive": 56,
+    "crowns": 4,
+    "top3": 28,
+    "medianTiles": 86668.5,
+    "medianTilesCI": [
+      63873,
+      94028
+    ],
+    "meanTiles": 78974,
+    "score": 1.639,
+    "scoreCI": [
+      1.5167,
+      1.7591
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 24,
+      "losses": 34,
+      "dScore": -0.184,
+      "p": 0.237
+    }
+  }
+}

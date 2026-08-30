@@ -1,0 +1,32 @@
+{
+  "note": "History milestone review = playbook-bot 96393fd0d (2026-08-29): the review packages merged: threat map, SPRT lab, estimator restored, nation-exploit flags, build search, fixes/perf, utility + campaigns (all flags default off). Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "96393fd0d",
+  "params": {
+    "__bot": "review"
+  },
+  "results": {
+    "games": 58,
+    "alive": 58,
+    "crowns": 13,
+    "top3": 25,
+    "medianTiles": 95839.0,
+    "medianTilesCI": [
+      67692,
+      127490
+    ],
+    "meanTiles": 113051,
+    "score": 1.823,
+    "scoreCI": [
+      1.7281,
+      1.9148
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 57,
+      "wins": 0,
+      "losses": 0,
+      "dScore": 0.0,
+      "p": 1.0
+    }
+  }
+}

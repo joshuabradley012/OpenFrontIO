@@ -1,0 +1,32 @@
+{
+  "note": "History milestone mirv = playbook-bot ac430fcac (2026-08-29): \"v3\": MIRV rule (counter / victory denial / crown push), endgame wars, city-unit cap under the steamroll line, SAM policy, one war at a time. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "ac430fcac",
+  "params": {
+    "__bot": "mirv"
+  },
+  "results": {
+    "games": 58,
+    "alive": 49,
+    "crowns": 5,
+    "top3": 19,
+    "medianTiles": 57365.5,
+    "medianTilesCI": [
+      42133,
+      77831
+    ],
+    "meanTiles": 71025,
+    "score": 1.5743,
+    "scoreCI": [
+      1.4256,
+      1.7078
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 20,
+      "losses": 38,
+      "dScore": -0.2487,
+      "p": 0.0247
+    }
+  }
+}

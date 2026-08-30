@@ -1,0 +1,32 @@
+{
+  "note": "History milestone endgame2 = playbook-bot dc98ec741 (2026-08-29): endgame v2: hydrogen bombs instead of hoarding, MIRV fund capped at 40M, weak allies lapse from 15:00, short boat jumps at 2x. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "dc98ec741",
+  "params": {
+    "__bot": "endgame2"
+  },
+  "results": {
+    "games": 58,
+    "alive": 57,
+    "crowns": 7,
+    "top3": 25,
+    "medianTiles": 71793.5,
+    "medianTilesCI": [
+      56909,
+      97660
+    ],
+    "meanTiles": 87352,
+    "score": 1.7253,
+    "scoreCI": [
+      1.616,
+      1.824
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 25,
+      "losses": 33,
+      "dScore": -0.0977,
+      "p": 0.3581
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "note": "History milestone preplan = playbook-bot e69862fbe (2026-08-29): pre-rebuild baseline: spawn picker v2 (basin / crowding vetoes from the 67-spawn regression), war ratio 2x, split watch, econ wars. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "e69862fbe",
+  "params": {
+    "__bot": "preplan"
+  },
+  "results": {
+    "games": 58,
+    "alive": 57,
+    "crowns": 7,
+    "top3": 25,
+    "medianTiles": 71793.5,
+    "medianTilesCI": [
+      56909,
+      97660
+    ],
+    "meanTiles": 87352,
+    "score": 1.7253,
+    "scoreCI": [
+      1.616,
+      1.824
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 25,
+      "losses": 33,
+      "dScore": -0.0977,
+      "p": 0.3581
+    }
+  }
+}

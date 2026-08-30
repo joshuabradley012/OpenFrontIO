@@ -69,3 +69,17 @@ python3 scripts/lab/history.py lab-out/hist-smoke
 `history.py` prints per-version games / alive / crowns / median tiles / mean score with a bootstrap CI, writes
 `versions/<tag>.json` (`{"note", "commit", "params": {"__bot": tag}, "results": {...}}` — usable as a ladder.sh
 candidate or opponent since the `__bot` param selects the extracted bot) and draws `lab-out/history.svg`.
+
+## Run 1 (2026-08-30, local JOBS=6, `lab-out/hist`, 58 mirrored 20-min Medium games per version, same seeds, today's engine)
+
+| version | crowns | top-3 | median tiles | score [95 % CI] | vs today (W/L, dScore) |
+|---|---|---|---|---|---|
+| rules | 10 | 26 | 54k | 1.58 [1.41, 1.73] | 27/31, −0.25 |
+| mirv | 5 | 19 | 57k | 1.57 [1.43, 1.71] | 20/38, −0.25 (p=0.02) |
+| boats | 4 | 28 | 87k | 1.64 [1.52, 1.76] | 24/34, −0.18 |
+| sticky | 7 | 18 | 38k | 1.60 [1.48, 1.71] | 22/36, −0.23 |
+| endgame2 = finish = preplan | 7 | 25 | 72k | 1.73 [1.62, 1.82] | 25/33, −0.10 |
+| c3 = fold | 10 | 30 | 95k | 1.79 [1.66, 1.90] | 33/25, −0.04 |
+| review = today (flags off) | 13 | 25 | 96k | 1.82 [1.73, 1.92] | — |
+
+Versions shown as equal play byte-identical 20-minute games (their differences only act after 20:00 or behind default-off flags). Chart: `lab-out/history.svg` (regenerate with `python3 scripts/lab/history.py lab-out/hist`). Caveat: 20-minute score; the objective from 2026-08-30 on is full-game wins (`MINUTES=170`, `winner=`), so the next history run should use that.

@@ -1,0 +1,32 @@
+{
+  "note": "History milestone c3 = playbook-bot bc9108bd1 (2026-08-29): after the rebuild plan's C3: module split, estimator, situation model, realRetreats + trustWars + nationAware graduated, nearbyEvery 10. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "bc9108bd1",
+  "params": {
+    "__bot": "c3"
+  },
+  "results": {
+    "games": 58,
+    "alive": 58,
+    "crowns": 10,
+    "top3": 30,
+    "medianTiles": 95013.0,
+    "medianTilesCI": [
+      74923,
+      118680
+    ],
+    "meanTiles": 109848,
+    "score": 1.7852,
+    "scoreCI": [
+      1.6633,
+      1.9042
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 33,
+      "losses": 25,
+      "dScore": -0.0378,
+      "p": 0.3581
+    }
+  }
+}

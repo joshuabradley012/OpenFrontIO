@@ -1,0 +1,32 @@
+{
+  "note": "History milestone finish = playbook-bot b7b0ef0c5 (2026-08-29): finish rule: hold under the victory-denial line while a MIRV-capable rival exists, remove them, then push. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "b7b0ef0c5",
+  "params": {
+    "__bot": "finish"
+  },
+  "results": {
+    "games": 58,
+    "alive": 57,
+    "crowns": 7,
+    "top3": 25,
+    "medianTiles": 71793.5,
+    "medianTilesCI": [
+      56909,
+      97660
+    ],
+    "meanTiles": 87352,
+    "score": 1.7253,
+    "scoreCI": [
+      1.616,
+      1.824
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 25,
+      "losses": 33,
+      "dScore": -0.0977,
+      "p": 0.3581
+    }
+  }
+}

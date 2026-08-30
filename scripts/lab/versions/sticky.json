@@ -1,0 +1,32 @@
+{
+  "note": "History milestone sticky = playbook-bot a201a1711 (2026-08-29): wars go whole or not at all (4c6bf6aa2) + one sticky war target to the end; leaner structure ratios. Played by the lab at HEAD on hist; __bot selects the extracted copy (scripts/lab/history.sh).",
+  "commit": "a201a1711",
+  "params": {
+    "__bot": "sticky"
+  },
+  "results": {
+    "games": 58,
+    "alive": 57,
+    "crowns": 7,
+    "top3": 18,
+    "medianTiles": 37972.5,
+    "medianTilesCI": [
+      23136,
+      73056
+    ],
+    "meanTiles": 63511,
+    "score": 1.5956,
+    "scoreCI": [
+      1.4838,
+      1.7078
+    ],
+    "vsBase": {
+      "pairs": 58,
+      "live": 58,
+      "wins": 22,
+      "losses": 36,
+      "dScore": -0.2274,
+      "p": 0.0869
+    }
+  }
+}
