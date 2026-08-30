@@ -70,7 +70,7 @@ export class Rivals {
     const before = this.trust(p);
     const after = Math.min(1, Math.max(0, before + by));
     this.trustOf.set(p, after);
-    this.ctx.log(`t${this.ctx.mg.ticks()} trust ${p.name()} ${before.toFixed(2)} → ${after.toFixed(2)}: ${why}`);
+    if (after !== before) this.ctx.log(`t${this.ctx.mg.ticks()} trust ${p.name()} ${before.toFixed(2)} → ${after.toFixed(2)}: ${why}`); // clamped at 0/1: nothing to report
   }
 
   // ---------------------------------------------------------------- events
