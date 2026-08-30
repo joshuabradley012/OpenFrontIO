@@ -451,8 +451,22 @@ class Client {
       }
       const isAdFree =
         userMeResponse !== false && userMeResponse.player?.adfree === true;
+      // Dev server: ad-free by default (no API session, so the adfree entitlement can never arrive locally and
+      // Admiral + the promo layers would all load). `localStorage.showAds = "1"` opts back in for ad-layout work.
+      const devAdFree =
+        import.meta.env.DEV &&
+        (() => {
+          try {
+            return localStorage.getItem("showAds") !== "1";
+          } catch {
+            return true;
+          }
+        })();
       window.adsEnabled =
-        !isAdFree && !crazyGamesSDK.isOnCrazyGames() && !isDesktopShell();
+        !isAdFree &&
+        !devAdFree &&
+        !crazyGamesSDK.isOnCrazyGames() &&
+        !isDesktopShell();
       // Ad-eligible users only: paid/adfree users must never load Admiral (its
       // adblock popup fires autonomously once the payload runs). Start watching
       // adblock state; once a blocker is ever detected the in-game ad is
