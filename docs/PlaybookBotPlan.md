@@ -1539,3 +1539,11 @@ Confirmation (SPRT + MIRROR, 20-min Medium, 68 mirrored pairs vs the ac86780e6 b
 Lesson (restating ab1): the same seven mechanisms were noise at hand-picked constants and +0.2 tuned together — tune flag-on before judging a flag. Final gate before flipping defaults: m4/m8 vs the d8b8c89cc defaults (`lab-out/final`).
 
 **m4 was found on 20-minute games.** The objective is winning full games, and the 20-minute score is only a proxy (games are decided late — see the early-stop analysis). Before m4's constants become defaults they need the full-game gate: `CONFIGS='{"base":{},"m4":{…}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`, judged on `summarize.py`'s `wscore` / paired WIN line (docs/PlaybookBotLab.md, "Full games and win scoring"). A CMA campaign on the full-game objective (`cmaes.py --minutes full`, ~8× the cost per game) is the follow-up if the gate fails.
+
+## Full-game gate of the CMA-tuned constants (2026-08-30, `lab-out/full1`) — NOT graduated
+
+Objective changed to winning full games (Josh, 2026-08-30): `MINUTES=170`, the loop stops on `getWinner()`, summarize.py scores `wscore` = score + 1 per win (d0deb3ccd). Games end at 18–73 sim-minutes, ≈4× a 20-min game.
+
+base (d8b8c89cc defaults) vs m4, 36 mirrored full games each: **base wins 19/36 (53 %), m4 wins 9/36** — pairs base-only 14 / m4-only 4 / both 5 / neither 13, McNemar p=0.031; m4 dwscore −0.53 [−1.01, −0.03], median tiles 115k vs 448k. The 20-minute-tuned constants (fightAbove 0.49, fightMaxShare 0.73, reserveShare 0.35 …) win the land race and lose the game. `bot/tuned-defaults` (8c7c23b39) is kept as a branch for reference and must not be merged.
+
+Lessons: (1) a 20-minute score is a screen, never a graduation — the same config was +0.21 (p=0.010) at 20 min and −0.53 on wins; (2) re-run the CMA race with `--minutes full` and the wscore objective before trusting any constant; (3) the version-history ladder (run 1) is 20-minute and needs a full-game run 2.
