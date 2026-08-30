@@ -8,6 +8,7 @@ import { closestTile } from "../Util";
 import { BuildKind, describePlan, EconModel, EconState, horizonForPhase, Plan, portLevelRate, search } from "./BuildSearch";
 import { BotContext, FireLimiter } from "./Context";
 import { Military } from "./Military";
+import { MirvRisk } from "./MirvRisk";
 import { SituationQueries } from "./Situation";
 
 export class Economy {
@@ -21,9 +22,11 @@ export class Economy {
     private ctx: BotContext,
     private q: SituationQueries,
     private military: Military,
+    private risk: MirvRisk = new MirvRisk(ctx), // the nations' MIRV rules against us (`nationMirvAware` steamroll guard)
   ) {
     this.lim = new FireLimiter(ctx);
   }
+  private lastLineLog = -1e9;
 
   /** Rivals we failed to place a threat post against, by tick (cleared by Diplomacy.onAllianceEnded). */
   get postFailed(): Map<Player, number> {
@@ -157,7 +160,9 @@ export class Economy {
   private railDiag = "";
 
   /** Nations MIRV the city leader once it has >10 city units and 1.25× (Hard) / 1.5× (Medium) the runner-up's count.
-   *  Stay under that line: past it, cap comes from city levels, which the rule does not count. */
+   *  Stay under that line. NB (2026-08-30, MirvRisk): the rule reads Player.unitCount(City), which SUMS LEVELS — a
+   *  level-3 city is three units to it — so levels past this cap do count; this cap compares our unit count to the
+   *  runner-up's level sum and is kept as it was (flag-off baseline). `nationMirvAware` reads the real count. */
   cityUnitCap(steamroll = this.ctx.p.steamrollCap): number {
     const me = this.ctx.me;
     let second = 0;
@@ -188,7 +193,27 @@ export class Economy {
     const portLevels = me.unitsOwned(UnitType.Port);
     const capFull = me.troops() > this.q.cap() * this.ctx.p.capFullShare;
     const { rivals, friends } = this.q.neighbours();
-    const cityCapHit = cityUnits.length >= this.cityUnitCap();
+    const sams = me.units(UnitType.SAMLauncher);
+    // `nationMirvAware` (2): near the steamroll line (the rule counts city LEVELS — Player.unitCount sums them — and
+    // cities captured in wars; the cap only stops building) while a nation can fire: no new city and no city level,
+    // and SAM cover for every city unit is the top discretionary buy — SAM levels to 3 first (range grows with
+    // level), then a launcher beside the uncovered cities — its price escrowed out of the buys below like the bomb
+    // fund until it is affordable
+    const line = this.ctx.p.nationMirvAware ? this.risk.steamroll() : null;
+    const nearLine = line !== null && line.near && this.risk.armed(); // a nation can fire or is within half the price (it fires the tick it gets there)
+    let samBuy: { low: Unit | null; tile: TileRef | null; need: bigint } | null = null;
+    if (line !== null && nearLine) {
+      const uncovered = this.samUncovered(sams, cityUnits);
+      if (ticks - this.lastLineLog >= 600) { this.lastLineLog = ticks; this.ctx.log(`t${ticks} STEAMROLL LINE: ${line.units} vs ${line.threshold} — SAM cover ${cityUnits.length - uncovered.length}/${cityUnits.length} cities`); }
+      if (uncovered.length > 0) {
+        const low = sams.find((sm) => sm.level() < 3 && me.canUpgradeUnit(sm)) ?? null;
+        const tile = low === null && ticks - this.lastSamTick >= 300 ? this.samCoverTile(uncovered, sams, gold >= cost(UnitType.SAMLauncher)) : null; // a launcher takes 30 s to build; canBuild needs the gold, so the site is picked geometrically while the fund saves
+        if (low !== null || tile !== null) samBuy = { low, tile, need: cost(UnitType.SAMLauncher) };
+      }
+    }
+    const samFund = samBuy !== null ? samBuy.need : 0n;
+    const cityCapHit = cityUnits.length >= this.cityUnitCap() || nearLine;
+    if (nearLine && cityUnits.length < this.cityUnitCap()) this.lim.fire("nationMirvAware", "cap");
     if (this.ctx.p.steamrollCap && cityCapHit !== cityUnits.length >= this.cityUnitCap(false) && ticks - this.lastCapFire >= 100) { this.lastCapFire = ticks; this.ctx.fire("steamrollCap"); }
     const myRank = this.ctx.mg.ticks() >= 9000 ? this.rank() : 99;
     // top three after 20:00: half of every gold pile is the MIRV fund — a crown without a MIRV loses to the first one fired
@@ -202,8 +227,10 @@ export class Economy {
     // `bombBudget`: the planned bomb's price (Military.bombPlan — silo owned, a bomb target, a cluster worth it) is
     // held out of every discretionary buy below; `spare(site, avail, need)` is the affordability test with the fund
     // taken out, and fires when the fund alone is what defers the buy
-    const fund = this.ctx.p.bombBudget ? this.military.bombFund(ticks) : 0n;
-    const spare = (site: string, avail: bigint, need: bigint): boolean => { const ok = avail - fund >= need; if (!ok && avail >= need) this.lim.fire("bombBudget", site); return ok; };
+    const bombFund = this.ctx.p.bombBudget ? this.military.bombFund(ticks) : 0n;
+    const fund = bombFund + samFund; // `nationMirvAware`: the SAM cover's price is escrowed the same way
+    const deferredBy = (avail: bigint, need: bigint) => avail - bombFund >= need ? "nationMirvAware" : "bombBudget"; // which fund alone defers the buy
+    const spare = (site: string, avail: bigint, need: bigint): boolean => { const ok = avail - fund >= need; if (!ok && avail >= need) this.lim.fire(deferredBy(avail, need), site); return ok; };
 
     // 1. defence: a post where a non-bot attack lands, or facing a threat / a boxed-in nation about to betray
     const incoming = me.incomingAttacks().find((a) => a.attacker().type() !== PlayerType.Bot);
@@ -223,7 +250,6 @@ export class Economy {
     // 2. SAM once anyone unfriendly on the map has a silo, or once we are top three after 15:00 (the crown gets MIRVed);
     //    level 3 when leading; a second launcher when the city stack outgrows one umbrella
     const enemySilos = this.ctx.mg.players().some((o) => o !== me && !me.isFriendly(o) && o.type() !== PlayerType.Bot && o.units(UnitType.MissileSilo).length > 0);
-    const sams = me.units(UnitType.SAMLauncher);
     const samTarget = enemySilos || this.ctx.mg.ticks() >= 7200 || myRank <= 3 ? Math.max(1, Math.ceil(cityUnits.length / 8)) : 0; // nations: 0.25 per city on Hard; the bot can afford 1 per 8
     const wantSam = sams.length < samTarget || myRank <= 3;
     if (wantSam && gold >= cost(UnitType.SAMLauncher) && ticks - this.lastSamTick >= 400 && (!this.ctx.p.buildSearch || (enemySilos && sams.length === 0))) { // buildSearch: only the first SAM under an enemy silo is a hard override; the rest is the planner's // a launcher takes 30 s to build; don't order another meanwhile
@@ -238,9 +264,14 @@ export class Economy {
         }
       }
     }
+    // `nationMirvAware` (2b): the SAM cover buy, ahead of every discretionary buy (the planner included)
+    if (samBuy !== null && gold >= samBuy.need) {
+      if (samBuy.low !== null) { upgrade(samBuy.low); this.lim.fire("nationMirvAware", "sam"); return; }
+      if (samBuy.tile !== null && this.tryBuild(UnitType.SAMLauncher, samBuy.tile)) { this.lastSamTick = ticks; this.lim.fire("nationMirvAware", "sam"); return; }
+    }
     // #7 buildSearch: the planner replaces steps 3–9 (posts under attack, the first SAM under an enemy silo, mirvFund
     // and the silo escrow stayed above / are passed in)
-    if (this.ctx.p.buildSearch) { this.buildBySearch(ticks, gold, mirvFund + fund, cost, cities, cityUnits, ports, portLevels, capFull, rivals, enemySilos, myRank, seaFull, cityCapHit, upgrade); if (fund > 0n && this.lastPlanCost > 0 && Number(gold - mirvFund) >= this.lastPlanCost && Number(gold - mirvFund - fund) < this.lastPlanCost) this.lim.fire("bombBudget", "plan"); return; } // bombBudget: the planner sees the gold net of the fund
+    if (this.ctx.p.buildSearch) { this.buildBySearch(ticks, gold, mirvFund + fund, cost, cities, cityUnits, ports, portLevels, capFull, rivals, enemySilos, myRank, seaFull, cityCapHit, upgrade, nearLine); if (fund > 0n && this.lastPlanCost > 0 && Number(gold - mirvFund) >= this.lastPlanCost && Number(gold - mirvFund - fund) < this.lastPlanCost) this.lim.fire("bombBudget", "plan"); return; } // bombBudget: the planner sees the gold net of the fund
     // 3. first three city levels
     if (cities < 3 && spare("city", gold, cost(UnitType.City))) {
       const tile = this.railInfillTile() ?? this.interiorTile(UnitType.City);
@@ -264,7 +295,7 @@ export class Economy {
     const deadPorts = ports.length > 0 && me.units(UnitType.TradeShip).length === 0 && ticks - this.firstPortTick > 900;
     const wantRail = cities >= 3 && ((ports.length === 0 && partnerTile === null && this.ctx.mg.ticks() >= 1500) || deadPorts || (friends.length > 0 && this.ctx.mg.ticks() >= 1800) || (ports.length > 0 && this.ctx.mg.ticks() >= 1800) || seaFull) && me.unitsOwned(UnitType.Factory) < 6;
     if (wantRail && this.buildRail(gold - mirvFund - fund, cost)) return;
-    if (wantRail && fund > 0n && gold - mirvFund >= cost(UnitType.City) && gold - mirvFund - fund < cost(UnitType.City)) this.lim.fire("bombBudget", "rail"); // coarse: the fund took the rail's next city / factory out of reach
+    if (wantRail && fund > 0n && gold - mirvFund >= cost(UnitType.City) && gold - mirvFund - fund < cost(UnitType.City)) this.lim.fire(deferredBy(gold - mirvFund, cost(UnitType.City)), "rail"); // coarse: the fund took the rail's next city / factory out of reach
     if (!wantRail && cities >= 3 && ticks % 1200 < 10) this.ctx.log(`t${ticks} no rail wanted: ports=${ports.length} partner=${partnerTile !== null} friends=${friends.length} seaFull=${seaFull}`);
     // 6. silos, nation-style: the first at four city units or 10:00 (whichever comes first, once a port or factory pays),
     //    a second at twelve, a third at twenty; a level when a bomb target sat out of range
@@ -285,7 +316,7 @@ export class Economy {
     if (capFull && gold - siloReserve - mirvFund >= cost(UnitType.City)) {
       const rt = cityCapHit ? null : this.railInfillTile();
       if (rt !== null && this.tryBuild(UnitType.City, rt)) { this.rail.infilled++; return; }
-      const city = cityUnits.find((c) => me.canUpgradeUnit(c));
+      const city = nearLine ? undefined : cityUnits.find((c) => me.canUpgradeUnit(c)); // `nationMirvAware`: the rule counts levels (Player.unitCount sums them)
       if (city) { upgrade(city); return; }
       const tile = cityCapHit ? null : this.interiorTile(UnitType.City);
       if (tile !== null && this.tryBuild(UnitType.City, tile)) return;
@@ -294,8 +325,8 @@ export class Economy {
     const atWar = (this.military.currentTarget !== null && this.military.currentTarget.isAlive() && !me.isFriendly(this.military.currentTarget)) || me.incomingAttacks().some((a) => a.attacker().type() !== PlayerType.Bot);
     const oldReserve = me.units(UnitType.MissileSilo).length > 0 && (atWar || idleAtCap) ? 1_000_000n : siloReserve;
     // `bombBudget`: the planned bomb's price replaces the flat 1M (the silo escrow stays on top of it)
-    const reserve = fund > 0n ? fund + siloReserve : oldReserve;
-    const spareR = (site: string, need: bigint): boolean => { const ok = gold - reserve - mirvFund >= need; if (!ok && gold - oldReserve - mirvFund >= need) this.lim.fire("bombBudget", site); return ok; };
+    const reserve = (bombFund > 0n ? bombFund + siloReserve : oldReserve) + samFund;
+    const spareR = (site: string, need: bigint): boolean => { const ok = gold - reserve - mirvFund >= need; if (!ok && gold - oldReserve - mirvFund >= need) this.lim.fire(gold - reserve + samFund - mirvFund >= need ? "nationMirvAware" : "bombBudget", site); return ok; }; // the SAM fund alone defers it → nationMirvAware
     // 9. a warship per four ports when gold is spare: it sinks landing boats and guards the trade lanes
     const warships = me.units(UnitType.Warship);
     if (ports.length > 0 && this.ctx.mg.ticks() >= 9000 && warships.length < Math.ceil(ports.length / 6) && ticks - this.lastWarshipTick >= 600 && spareR("warship", cost(UnitType.Warship) + 500_000n) && !this.ctx.mg.config().isUnitDisabled(UnitType.Warship)) {
@@ -315,7 +346,7 @@ export class Economy {
     if (spareR("city", cost(UnitType.City))) {
       const rt = cityCapHit ? null : this.railInfillTile();
       if (rt !== null && this.tryBuild(UnitType.City, rt)) { this.rail.infilled++; return; }
-      const city = cityUnits.find((c) => me.canUpgradeUnit(c));
+      const city = nearLine ? undefined : cityUnits.find((c) => me.canUpgradeUnit(c)); // `nationMirvAware`: the rule counts levels (Player.unitCount sums them)
       if (city) { upgrade(city); return; }
       const tile = cityCapHit ? null : this.interiorTile(UnitType.City);
       if (tile !== null && this.tryBuild(UnitType.City, tile)) return;
@@ -356,7 +387,7 @@ export class Economy {
     if (gold >= cost(UnitType.City)) return "cap";
     return null;
   }
-  private buildBySearch(ticks: number, goldB: bigint, mirvFund: bigint, cost: (u: UnitType) => bigint, cities: number, cityUnits: Unit[], ports: Unit[], portLevels: number, capFull: boolean, rivals: Player[], enemySilos: boolean, myRank: number, seaFull: boolean, cityCapHit: boolean, upgrade: (u: Unit) => void): void {
+  private buildBySearch(ticks: number, goldB: bigint, mirvFund: bigint, cost: (u: UnitType) => bigint, cities: number, cityUnits: Unit[], ports: Unit[], portLevels: number, capFull: boolean, rivals: Player[], enemySilos: boolean, myRank: number, seaFull: boolean, cityCapHit: boolean, upgrade: (u: Unit) => void, noLevels = false): void {
     const me = this.ctx.me, mg = this.ctx.mg, cfg = mg.config(), p = this.ctx.p;
     const { friends } = this.q.neighbours();
     const partnerTile = cities >= p.citiesBeforePort ? this.portTile() : null;
@@ -410,7 +441,7 @@ export class Economy {
     let ok = false;
     switch (kind) {
       case "city": { const t = cityCapHit ? null : this.railInfillTile() ?? this.interiorTile(UnitType.City); ok = t !== null && this.tryBuild(UnitType.City, t); break; }
-      case "cityLevel": { const c = cityUnits.find((u) => me.canUpgradeUnit(u)); if (c) { upgrade(c); ok = true; } break; }
+      case "cityLevel": { const c = noLevels ? undefined : cityUnits.find((u) => me.canUpgradeUnit(u)); if (c) { upgrade(c); ok = true; } break; }
       case "port": { const t = partnerTile ?? (cities >= 1 && ticks >= p.portWithoutPartnerTick ? this.oceanShoreTile() : null); ok = t !== null && this.tryBuild(UnitType.Port, t); if (ok && ports.length === 0) this.firstPortTick = ticks; break; }
       case "portLevel": { const b = [...ports].sort((a, c) => c.level() - a.level()).find((u) => me.canUpgradeUnit(u)); if (b) { upgrade(b); ok = true; } break; }
       case "factory": ok = this.buildRail(goldB - mirvFund, cost); break;
@@ -431,6 +462,35 @@ export class Economy {
     this.spentThisPass += this.ctx.mg.config().unitInfo(type).cost(this.ctx.mg, this.ctx.me);
     this.ctx.log(`t${this.ctx.mg.ticks()} build ${type}`);
     return true;
+  }
+  /** `nationMirvAware`: our city units no SAM of ours covers (Config.samRange(level) around each launcher). */
+  samUncovered(sams: Unit[], cityUnits: Unit[]): Unit[] {
+    const mg = this.ctx.mg;
+    return cityUnits.filter((c) => !sams.some((s) => mg.euclideanDistSquared(s.tile(), c.tile()) <= mg.config().samRange(s.level()) ** 2));
+  }
+  /** `nationMirvAware`: a tile for a new launcher beside the uncovered city whose level-1 umbrella would cover the most
+   *  of the others, or null when nothing near it can take one. `check` runs Player.canBuild (which also wants the
+   *  gold); off, our own land clear of other launchers is enough — the buy path checks again. */
+  samCoverTile(uncovered: Unit[], sams: Unit[], check = true): TileRef | null {
+    const mg = this.ctx.mg, me = this.ctx.me, r1 = mg.config().samRange(1);
+    let best: Unit | null = null, bestN = -1;
+    for (const c of uncovered) {
+      const n = uncovered.filter((o) => mg.euclideanDistSquared(c.tile(), o.tile()) <= r1 * r1).length;
+      if (n > bestN) { bestN = n; best = c; }
+    }
+    if (best === null) return null;
+    const cx = mg.x(best.tile()), cy = mg.y(best.tile());
+    for (let d = 2; d <= 10; d += 2) {
+      for (let a = 0; a < 8; a++) {
+        const x = Math.round(cx + Math.cos((a / 8) * Math.PI * 2) * d), y = Math.round(cy + Math.sin((a / 8) * Math.PI * 2) * d);
+        if (!mg.isValidCoord(x, y)) continue;
+        const t = mg.ref(x, y);
+        if (mg.owner(t) !== me || !mg.isLand(t)) continue;
+        if (sams.some((s) => mg.euclideanDistSquared(s.tile(), t) <= 4)) continue;
+        if (!check || me.canBuild(UnitType.SAMLauncher, t) !== false) return t;
+      }
+    }
+    return null;
   }
   sampleTerritory(n: number): TileRef[] {
     const size = this.ctx.me.numTilesOwned();

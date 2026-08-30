@@ -1539,3 +1539,162 @@ Confirmation (SPRT + MIRROR, 20-min Medium, 68 mirrored pairs vs the ac86780e6 b
 Lesson (restating ab1): the same seven mechanisms were noise at hand-picked constants and +0.2 tuned together — tune flag-on before judging a flag. Final gate before flipping defaults: m4/m8 vs the d8b8c89cc defaults (`lab-out/final`).
 
 **m4 was found on 20-minute games.** The objective is winning full games, and the 20-minute score is only a proxy (games are decided late — see the early-stop analysis). Before m4's constants become defaults they need the full-game gate: `CONFIGS='{"base":{},"m4":{…}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`, judged on `summarize.py`'s `wscore` / paired WIN line (docs/PlaybookBotLab.md, "Full games and win scoring"). A CMA campaign on the full-game objective (`cmaes.py --minutes full`, ~8× the cost per game) is the follow-up if the gate fails.
+
+## Exploiting the nations' MIRV rules (`nationMirvAware`, `MirvRisk.ts`, 2026-08-30, branch `bot/mirv-aware`)
+
+Josh, watching the GUI: "the bot still triggers MIRVs a lot — check it exploits
+nation behaviour, it should." A nation fires a MIRV
+(`NationMIRVBehavior.considerMIRV`, every attack tick, after a silo, the live
+MIRV price — 25M + 15M per launch on the map — and a 1-in-4 hesitation on
+Medium) for exactly three reasons, in this order, each with a 300-tick per-target
+cooldown shared by every nation: **counter** (one of ours is inbound at a tile
+it owns), **victory denial** (our share of `numLandTiles` ≥ 0.65 Medium / 0.55
+Hard / 0.75 Easy / 0.4 Impossible; team share ≥ 0.8 / 0.7 / 0.9 / 0.6 at the
+largest member) and **steamroll** (we lead the city ranking with > 10 units
+(Easy 20, Impossible 8) at ≥ 1.5× (Medium; 1.25 Hard, 2 Easy, 1.15 Impossible)
+the runner-up's count). Two things were wrong with how the bot modelled that:
+
+1. **The rule counts city LEVELS.** `selectSteamrollStopTarget` reads
+   `Player.unitCount(City)`, and `PlayerImpl.unitCount` sums `unit.level()` — a
+   level-3 city is three units to it. `Economy.cityUnitCap` compared our
+   unit count (`units(City).length`) to the runner-up's level sum and its
+   comment promised "cap comes from city levels, which the rule does not count".
+   A crown with 12 cities levelled to 3 reads 36 against a field of 14. The
+   flag-off cap is left as it was (baseline fidelity); the flag reads the real
+   count, and the comment is corrected.
+2. **The crown MIRV asks for a counter.** 5 of the 6 lab launches were the 25:00
+   "crown" MIRV at the largest un-allied player above us; a nation with a silo
+   and the price answers it with its own within the tick (rule 1), so the launch
+   was a trade of one MIRV for two.
+
+Also found: cities captured in wars (`UnitImpl.setOwner`) push the count over
+the line with nothing reacting; in hold mode a war on a threat can carry the
+share past the denial line.
+
+**Always-on diagnostics (`MirvRisk`, no flag).** Every 100 ticks the three
+rules are evaluated against us exactly as a nation would (`MirvRisk.steamroll` /
+`denial` / `counter`, the thresholds in `mirvRules(difficulty)`), plus who could
+actually fire (a Nation, not on our team, with a silo and either the live price
+or a MIRV unit — `considerMIRV`'s own gates). The log gets one line per change
+of the risk state (`MIRV RISK steamroll: 12 city units (levels) vs 10.5 (7 ×
+1.5, leader > 10) — 1 nation can fire (R)`, `MIRV RISK denial: share 65.4 % vs
+65 % — …`, `MIRV RISK counter: our MIRV is inbound at …`, `MIRV RISK clear: …`);
+nothing is logged while the state stays the same, so the golden hash is
+unchanged (big_plains vs three small nations never enters a rule). Every 10
+ticks enemy MIRV units are scanned: one aimed at a tile we own logs `MIRVED by
+<name> (<rule true at that moment>, <n>th)` once per unit and counts in
+`bot.mirvsTaken`, which the lab FINAL line carries as `mirvsTaken=` (one
+append-only field).
+
+**`nationMirvAware` (default off).**
+
+1. *Crown MIRV only at a target that cannot counter.* `MirvRisk.canCounter(p)`
+   = a silo and (the live price or a MIRV unit). Of the candidates (un-allied,
+   > 0.8× our tiles, largest first) the first that cannot counter gets it; when
+   every candidate can, the launch is held and `MIRV held: <name> can counter`
+   is logged once per 600 ticks. The counter of an inbound MIRV, the victory
+   denial launch and the finish-mode launch at the richest threat are unchanged.
+2. *Steamroll guard.* `near` = units ≥ 0.9 × (mult × runner-up) and > minLeader
+   − 1, evaluated on the level sum. While `near` and a nation is **armed**
+   (`MirvRisk.armed()`: it can fire, or has a silo and at least half the live
+   price — the first 30-min smoke with the gate on "can fire" showed why:
+   `MIRV RISK … 1 nation can fire (Türkiye)` at t7800 and `MIRVED by Türkiye`
+   at t7810; a nation fires the tick it reaches the price, so a guard that
+   waits for that is ten ticks too late):
+   (a) `Economy.build` buys no new city **and no city level** (levels count —
+   the planner's `cityLevel` too); (b) SAM cover for every city unit is the top
+   discretionary buy: a SAM under level 3 is levelled first (range grows with
+   level, `Config.samRange`), then a launcher beside the uncovered city whose
+   level-1 umbrella covers the most of the others (`Economy.samCoverTile`, 300
+   ticks between launchers); its price is escrowed out of every discretionary
+   buy exactly as the bomb fund is (`fund = bombFund + samFund` in `spare()`,
+   `spareR()`, the rail budget and the planner's gold), the hard overrides
+   (posts under attack / vs a threat, the first SAM under an enemy silo) still
+   go first; `STEAMROLL LINE: <units> vs <threshold> — SAM cover <k>/<n>
+   cities` every 600 ticks; (c) the war scorer refuses (−1) a target whose city
+   units would carry us over the line with it out of the ranking
+   (`MirvRisk.steamroll(extra, without)`) unless it is the only MIRV-capable
+   rival or an opportunity (collapsed / gap owner / threatHere / annexable, which
+   return before the guard); `no war on <name>: its N cities would carry us
+   over the steamroll line (13 vs 12)` once per 600 ticks per target. The
+   same armed gate applies to (a)–(c); the diagnostics line reports both
+   (`1 nation can fire (X), 2 saving (Y, Z)`).
+3. *Denial guard.* In hold mode (and push with a threat left) the scorer
+   refuses a target whose tiles would carry our share to ≥ denial − 0.01 unless
+   it is the last threat (taking it ends the hold). Counters and tribes are
+   untouched (they do not go through the scorer).
+
+Every guard fires through the `FireLimiter` per site (`crown`, `cap`, `sam`,
+`steamroll`, `denial`, the escrow sites).
+
+**What `NationNukeBehavior` retaliates to** (atom / hydrogen, `maybeSendNuke`
+every attack tick once the nation has a silo): the target is, in order — on
+Hard/Impossible with two players left, the other one; **the largest incoming
+non-bot, non-friendly attack's owner** (`AiAttackBehavior.findIncomingAttackPlayer`
+— the retaliation, "most important"); on Impossible, the richest nation hunts
+the densest structure owner (level sum / tiles > 1/75); on Impossible FFA the
+crown over 50 % of the fallout-free land; any player its allies have
+`target()`ed; the most hated (`Relation.Hostile`) player unless the nation's
+max troops are ≥ 2× theirs; in FFA the crown whose share exceeds its own by
+0.3 (Medium; 0.4 Easy, 0.2 Hard, 0.1 Impossible); in teams the strongest team.
+Tribes are never nuked, nor teammates, and on Medium `shouldAttack` drops a
+human target 1 time in 4. The nuke goes only if the gold covers the *perceived*
+price (the real price × 1.5 per atom / 1.25 per hydrogen already launched —
+"saving for a MIRV" — waived with two players left, with MIRVs disabled, in
+team games above the hydrogen price, with a MIRV + hydrogen in the bank, or on
+Hard/Impossible under an attack ≥ its own troops); a third of nations throw
+hydrogens only unless under heavy attack. The tile is the best-scoring of ten
+random tiles plus every structure (city 25k, silo 50k, port/factory 15k, post
+5k per level, minus 30 per tile of distance to its nearest silo, keeping at
+least 20 %); on Easy/Medium every tile inside the blast must be the target's
+own (no border shots), on Medium a SAM within 50 tiles voids the tile, on
+Hard/Impossible the trajectory must clear every enemy SAM's range. So: **a
+war wave that is the largest attack a nation is under makes us its nuke target
+for as long as the wave runs**, and being the crown by 30 % of the map on
+Medium makes us every unallied nation's fallback target.
+
+**Tests** (`tests/playbook/mirvAware.test.ts`, 13): the steamroll line with its
+numbers and a level counting as a unit, a silo + 30M turning "nobody can fire"
+into "1 nation can fire (R)"; a real Medium `NationExecution` with a silo and
+60M launching at a 12-vs-7 leader within 1500 ticks (`MIRVED by N (steamroll,
+1st)`, once per unit, `mirvsTaken` 1); the crown MIRV at 25:00 fired flag-off,
+held (`MIRV held: T can counter`, no MIRV unit) flag-on against a silo + 30M
+target, fired against a silo-less one; near the line (11 vs 12, N can fire)
+flag-off buys a city level, flag-on logs `STEAMROLL LINE: 11 vs 12 — SAM cover
+3/11 cities` and buys `level SAM → 2`, `→ 3`, `build SAM` with no city level;
+the escrow (at 2:30 with the rail line wanting its factory, 2M buys only the
+threat post while a SAM costs 3M, off buys the factory; at 12M the SAM precedes
+the factory); the war target with 2 cities skipped (`13 vs 12`, off attacks
+it); in hold mode at 62.5 % the crossing threat refused and the other fought,
+then fought as the last threat once the other is dead, and fought at once when
+it is the only threat. Golden unchanged; flag-off `MIN=3 SPAWN=africa
+DIFF=medium` transcript byte-identical after stripping `MIRV RISK` / `MIRVED`
+lines and the `mirvsTaken=` field.
+
+**Smoke** (`MIN=30 SPAWN=africa DIFF=medium`, one seed — not evidence):
+
+| config | rank / tiles | troops / cap at 30:00 | city levels | SAMs | our MIRVs | `mirvsTaken` (rule) | fired |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `{}` | 1 / 330,362 | 15.0M / 34.4M | 121 | 15 | 0 | 3 (steamroll ×3) | — |
+| `nationMirvAware`, gate "can fire" | 1 / 329,835 | 49.4M / 90.7M | 346 | 15 | 0 | 3 (steamroll ×3) | 9 |
+| `nationMirvAware`, gate "armed" (shipped) | 1 / 334,661 | 51.4M / 64.0M | 239 | 80 | 0 | 4 (steamroll ×4) | 144 |
+
+What the diagnostics say about the baseline: the first `MIRV RISK steamroll`
+line is at t5700 (27 levels vs 22.5) with nobody able to fire; by t7800 the
+bot is at 101 levels vs 37.5 — nearly 3× the line, all of it city levels bought
+for troop cap while no nation had a silo and 25M — and Türkiye fires the tick
+it reaches the price (t7800 → t7810). Every MIRV in all three games was the
+steamroll rule; no crown MIRV of ours was ever affordable on this seed (the
+price climbs 15M per launch), so guard 1 did not come up, and the share never
+reached the denial line, so guard 3 did not either. With the "armed" gate the
+war guard refused 15 city-rich targets, SAM cover went from 21/39 to 75/83
+cities, and the level sum still climbed from 42 to 180 in the windows where no
+nation had a silo and half the price — a line crossed with levels cannot be
+un-crossed, and captured cities keep adding. The open question for the A/B is
+the economic one this smoke cannot answer: holding the level sum under 1.5×
+the runner-up's for the whole game (a `steamrollCap` on the level sum, no gate)
+costs most of the city-level troop cap; letting it climb costs a MIRV every
+time a nation reaches 25M. Run as `CONFIGS='{"base":{},"nma":{"nationMirvAware":true}}'`
+with `mirvsTaken=` in `summarize.py`, and read the `MIRV RISK` lines of the
+base games first: if every MIRV taken is `steamroll`, the level-sum cap is the
+next package.
