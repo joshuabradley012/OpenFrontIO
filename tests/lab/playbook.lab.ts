@@ -76,7 +76,11 @@ function neighboursBots(me: Player): string { return me.nearby().filter((n): n i
 async function runGame(label: string, params: PlaybookParams, minutes: number, difficulty: Difficulty, prefer: [number, number]) {
   const tribes = process.env.TRIBES ? Number(process.env.TRIBES) : 400; // online default
   const { game, nations } = await makeWorld(difficulty, tribes);
-  const gameID = "lab";
+  // Common random numbers (scripts/lab/sweep.sh MIRROR/SPRT): every PRNG in the game derives from this id —
+  // nations simpleHash(nation id) + simpleHash(gameID), tribes simpleHash(gameID) + 2, the bot simpleHash("playbook") + 7
+  // — and the spawn is picked deterministically from the state after 3 ticks, so two configs of one sweep with the
+  // same (batch, spawn, SHIFT, SEED) meet the identical world. SEED=n gives a different opponent field.
+  const gameID = "lab" + (process.env.SEED ?? "");
   game.addExecution(...nations.map((n) => new NationExecution(gameID, n)));
   game.addExecution(...new TribeSpawner(game, gameID, nations.map((n) => n.spawnCell!)).spawnTribes(tribes));
   const info = new PlayerInfo("PlaybookBot", PlayerType.Human, null, "playbook");

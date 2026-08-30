@@ -60,6 +60,8 @@ shared Hetzner vCPU (a hyperthread); games where the bot dies finish sooner.
 | `TRIBES` | tribe count (default 400 = public default) |
 | `LAB_OUT` | output directory (must exist) |
 | `OUTFILE` | file name inside `LAB_OUT` |
+| `SHIFT` | offset added to the spawn region's preferred point (ladder.sh: 150; the picker searches 250 tiles around it, so a 150 shift often re-picks the same tile) |
+| `SEED` | suffix of the game id `"lab"` — nations, tribes and the bot seed from it, so another SEED is another opponent field on the same map |
 
 Single game by hand (≈2 s at `MIN=1`, ~35 s at `MIN=20`):
 
@@ -150,6 +152,8 @@ four times (`Test Files 4 passed`), 4× the CPU.
 | `REUSE` | 0 | 1 = use the existing servers; rsync is incremental, so a rerun after a bot edit starts in seconds |
 | `BATCHES`, `SPAWNS`, `JOBS`, `SHIFT` | — | passed through to `sweep.sh` (SHIFT offsets the spawn grid, see ladder.sh) |
 | `STAGED` | 0 | 1 = run the first `STAGE1` (3) batches, then the rest only for configs still "unclear" (`summarize.py --verdict VERDICT`, default 3 = \|wins − losses\| < 3 vs the first config). Clear results cost 18 games instead of 30. |
+| `SPRT` | 0 | 1 = sequential A/B: chunks of `STAGE1` batches from `BATCHES` then `EXTRA` (`med5 … med9`) until `summarize.py --sprt --verdict` says ACCEPT / REJECT for every config vs the first, or `MAXBATCHES` (10) batches. `DELTA` = the test's δ (0.10). See "Sequential testing". |
+| `MIRROR`, `MIRRORSHIFT`, `MIRRORSEED`, `SEED` | — | passed through to `sweep.sh` (mirrored slots / opponent field, see "Sequential testing") |
 
 Run it under `nohup … &` from a tool call — it runs longer than any tool
 timeout. Watch `remote.log`; `results in …` means success.
@@ -187,7 +191,9 @@ Env: `CONFIGS`, `MINUTES` (20), `JOBS` (`nproc`; **pass it explicitly on
 macOS**), `OUT` (./lab-out), `BATCHES` (default `med0 … med4`; `hardN`/`medN`
 for any rank N, `gN`/`ghN` for the global picker ladder), `SPAWNS` (subset),
 `SHARD` (`0/1`), `RUNNER` (`node`; `vitest` = the old path, ~2 s slower a
-game), `AGGREGATE` (1).
+game), `AGGREGATE` (1), `MIRROR` / `MIRRORSHIFT` / `MIRRORSEED` / `SEED` and
+`SPRT` / `STAGE1` / `EXTRA` / `MAXBATCHES` / `DELTA` (see "Sequential
+testing" — the SPRT loop re-enters `sweep.sh` once per chunk).
 
 Gotcha already fixed, worth knowing: plain `xargs` strips double quotes from
 its input, which turned `{"botsAfterWild":false}` into `{botsAfterWild:false}`
@@ -316,6 +322,8 @@ python3 scripts/lab/summarize.py $DEST                    # every config in $DES
 python3 scripts/lab/summarize.py $DEST base early es25    # explicit order; first = baseline
 python3 scripts/lab/summarize.py --fitness $DEST base early   # JSON {config: {fitness, games, alive, top3, tiles}}
 python3 scripts/lab/summarize.py --ladder $DEST cand v-current v3 v2   # Bradley–Terry table, see ladder.sh
+python3 scripts/lab/summarize.py --sprt $DEST base cand                 # + the sequential test (ACCEPT / REJECT / CONTINUE)
+python3 scripts/lab/summarize.py --cycles $DEST cand v-current v3 v2   # non-transitive triples among the configs
 ```
 
 Per config: games, alive, crowns (rank 1), top-3, total tiles, median land,
@@ -354,7 +362,16 @@ nohup python3 scripts/lab/cmaes.py --out lab-out/cma --pop 10 --gens 12 --minute
 #   --runner local --jobs 8       scripts/lab/sweep.sh on this machine instead of remote.sh
 #   --batches "med0 med1"         smaller grid (must stay the same for the whole campaign)
 #   --dry-run                     no games: a synthetic bowl-shaped fitness, fake ab30 files; tests the loop
+#   --race                        racing: drop members the sequential test puts below "mean" after --race-stage (3)
+#                                 batches by --race-delta (0.10); the saved games buy extra batches for the survivors
 ```
+
+`BUILTIN_SPEC` has **10** parameters since 2026-08-29: `retreatBelowRatio`
+was dropped — it is declared in `Params.ts` but read nowhere in the bot, so
+it was a pure noise dimension. `cmaes.py` now parses `DEFAULT_PLAYBOOK` from
+`Params.ts` at start-up and warns about a spec key that is not a parameter,
+one the bot's sources never mention, or an `init` that differs from the
+code's default.
 
 Hetzner env (`SERVER_TYPE` defaults to `cpx51` here, `NAME`, `LOCATION`,
 `KEEP`, `REUSE`) passes straight through to `remote.sh`. The server is **never
@@ -402,6 +419,93 @@ python3 scripts/lab/summarize.py --ladder lab-out/ladder-x cma12 v-current   # r
 When a candidate wins: copy its overrides to `versions/vN.json` (next N, note
 = which sweep), fold them into `DEFAULT_PLAYBOOK`, leave `v-current.json`
 empty, and update the guide's "Pressure-tested" table.
+
+## Sequential testing (2026-08-29)
+
+Why: three defaults sat at PROVISIONAL because a fixed 30-game grid only
+resolves effects of about half a standard deviation. The fix is Stockfish's:
+keep playing pairs until a sequential test decides, which stops clear
+results early and lets marginal ones run on instead of being declared
+undecided.
+
+**The test** (`summarize.py --sprt`, function `sprt()` — also imported by
+`cmaes.py`): a generalised SPRT on the mean of the paired score differences
+d = score(cand) − score(base), live games only, in batch order.
+H0: d ≤ 0 vs H1: d ≥ δ (δ = `--delta`, default **0.10** score units ≈ one
+rank step out of ten or 10k → 16k tiles), α = β = 0.05:
+
+```
+LLR_n = n · (mean_n − δ/2) · δ / var_n            # running sample variance, floor 1e-4
+ACCEPT  when LLR ≥ ln((1−β)/α) = +2.94             # H1: the candidate is better by ≥ δ
+REJECT  when LLR ≤ ln(β/(1−α)) = −2.94             # H0: it is not
+CONTINUE otherwise; the report says how many more pairs the current mean/variance would need
+```
+
+The decision is the first crossing walking the pairs in order (later pairs
+cannot undo it). With `--verdict` the exit code is 0 only when every config
+has decided, which is what the runners loop on.
+
+**Common random numbers** (already true, now documented): a lab game is
+fixed by `(batch, spawn, SHIFT, SEED)` — the game id `"lab"+SEED` seeds the
+nations (`simpleHash(id) + simpleHash(gameID)`), the tribes
+(`simpleHash(gameID) + 2`) and the bot (`simpleHash("playbook") + 7`), and
+the spawn is picked deterministically from the state after three ticks. So
+every config of one sweep meets the identical world and the paired
+difference cancels the scenario. `SEED=n` changes the opponent field.
+
+**Mirrored slots** (`MIRROR=1`): every `(batch, spawn)` is played twice —
+batch `med0` at `SHIFT`/`SEED` as given and batch `med0b` at
+`SHIFT=MIRRORSHIFT` (150) with `SEED=${SEED}MIRRORSEED` (`b`). The second
+slot is a different opponent field on the same region (a shift alone often
+re-picks the same tile, see `SHIFT` above). `summarize.py` averages the two
+slots of a scenario into one SPRT observation and prints a pentanomial line
+(`LL/LT/TT/WT/WW` = the slot-pair outcomes), the analogue of playing both
+colours. Files: `p_<cfg>_med0b_<spawn>.txt`, `ab30_<cfg>_med0b.txt`.
+
+**Commands**
+
+```bash
+# sequential A/B on Hetzner: 3 batches (18 games/config), then 3 more, … until the test decides or 10 batches
+CONFIGS='{"base":{},"x":{"trustWars":false}}' MINUTES=30 WORKERS=3 SPRT=1 DEST=lab-out/sprt-x scripts/lab/remote.sh
+# the same with mirrored slots (36 games per chunk per config) and a different opponent field
+CONFIGS='{"base":{},"x":{"trustWars":false}}' MINUTES=30 WORKERS=3 SPRT=1 MIRROR=1 SEED=2 scripts/lab/remote.sh
+# knobs: STAGE1=3 (chunk), EXTRA="med5 med6 med7 med8 med9" (pool after BATCHES), MAXBATCHES=10, DELTA=0.10
+# locally (small): 1-min games, one spawn, chunks of one batch
+CONFIGS='{"base":{},"x":{"fightAbove":0.5}}' MINUTES=1 JOBS=4 SPAWNS=africa MIRROR=1 SPRT=1 STAGE1=1 MAXBATCHES=2 OUT=/tmp/s scripts/lab/sweep.sh
+# read it back
+python3 scripts/lab/summarize.py --sprt lab-out/sprt-x base x            # table + live stats + SPRT line (+ pentanomial)
+python3 scripts/lab/summarize.py --sprt --verdict 0 lab-out/sprt-x base x  # one line per config, exit 0 iff all decided
+# racing CMA-ES: members below "mean" after 3 batches stop, survivors get the saved batches
+python3 scripts/lab/cmaes.py --out lab-out/cma --pop 10 --gens 12 --race --games-growth
+python3 scripts/lab/cmaes.py --rescore lab-out/cma                          # honours the per-member batch lists
+# ladder: prints the SPRT of the candidate vs every version and the transitivity check
+scripts/lab/ladder.sh cand.json
+python3 scripts/lab/summarize.py --cycles lab-out/ladder-x cand v-current v3 v2
+```
+
+**Reading the SPRT line**: `SPRT n 24 mean +0.062 sd 0.210 LLR +1.71
+[-2.94, +2.94] … CONTINUE (~17 more pairs needed)` — n is the number of live
+pairs so far, `more` the extrapolation at the current estimate (∞ when the
+mean sits exactly at δ/2). ACCEPT/REJECT say `at n=…`, the pair at which the
+bound was crossed. A REJECT means "not better by δ", not "worse" — read the
+live-stats line for the sign.
+
+**Racing** (`cmaes.py --race`): the whole generation plays `--race-stage`
+(3) batches; each member's paired differences vs `mean` go through
+`sprt(d0 = −δ, d1 = 0)`; REJECT = "worse than the parent by δ", and that
+member stops (its objective is the paired mean over the games it played).
+The saved games are spent as extra batches (`med5 …`) for the survivors —
+as many whole batches as `saved / survivors` buys. `gen_N.json` stores
+`race.{stage, dropped, extra, verdicts, batches_by_config}`. Verified with
+`--dry-run --race --pop 6 --gens 2`: gen 0 dropped 4/6 after 18 games and
+gave the survivors +12 games each; resume and `--rescore` honour the
+per-member lists. **Not yet run on Hetzner.**
+
+**Transitivity** (`--cycles`, also printed by `--ladder`): lists triples
+where x beats y, y beats z and z beats x by paired wins. The Bradley–Terry
+strength is one axis; a candidate that beats its parent but loses to the
+grandparent is a rock-paper-scissors the ladder cannot show. None found in
+the dry-run data; check it on every real ladder.
 
 ## Clean up
 

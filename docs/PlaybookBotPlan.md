@@ -40,6 +40,10 @@ simWars/scoredSpend ideas live in git history — last commit with
 confirmed decisively and folded into the code (no flag); `trustWars` and
 `nationAware` confirmed neutral-to-positive and kept on. No flags remain.
 
+`Estimate.ts`/`Spend.ts` is 95f4b634a. Remaining flags: `realRetreats`,
+`trustWars`, `nationAware` (all default on, PROVISIONAL — graduate them with
+`SPRT=1`, see "Sequential evaluation loop" below).
+
 **What to do next (C3)**
 1. One sweep, MINUTES=20, all in the same CONFIGS so games pair:
    `{"base":{},"ret":{"realRetreats":true},"spend":{"scoredSpend":true},"c1":{"bsrReserve":true,"trustWars":true,"nationAware":true,"phaseGates":true},"sim":{"simWars":true}}`
@@ -563,7 +567,7 @@ times, always naming one giant neighbour (e.g. Japan 260k tiles / 6.3M).
 
 Lab can now run to a real win: `MIN=full` (170-minute ceiling), the loop
 stops on `game.getWinner()`, FINAL carries `winner=us|other|none`.
-=======
+
 ## Border threat map (`threatMap`, review opportunity #5, 2026-08-29)
 
 `src/core/execution/playbook/ThreatMap.ts`, built inside the 50-tick border
@@ -612,3 +616,44 @@ A/B: `CONFIGS='{"base":{},"threat":{"threatMap":true}}' MINUTES=20 WORKERS=3 scr
 Cost: the `busyElsewhere` pass walks each unfriendly neighbour's border every
 50 ticks; see the smoke `botMs` in the package report.
 >>>>>>> bot/threat-map
+=======
+**Next lab session:** graduate the PROVISIONAL flags with the sequential
+test (below), then `cmaes.py --pop 10 --gens 12 --race --games-growth`;
+then Hard.
+
+## Sequential evaluation loop (2026-08-29, branch bot/lab-sprt)
+
+Review opportunity #1: the accept gate is no longer a fixed 30 games.
+`scripts/lab/summarize.py --sprt` runs a generalised SPRT on the paired
+score difference (H0 d ≤ 0 vs H1 d ≥ δ = 0.10, α = β = 0.05, bounds
+±2.94); `remote.sh` / `sweep.sh` `SPRT=1` keep adding chunks of `STAGE1`
+batches (pool `BATCHES` + `EXTRA` = med0 … med9, `MAXBATCHES` 10) until
+every config has ACCEPT or REJECT; `MIRROR=1` plays each scenario in two
+slots (shifted grid + other opponent field, averaged into one observation,
+pentanomial line); `cmaes.py --race` drops members the same test puts below
+`mean` after 3 batches and spends the saved games on the survivors;
+`retreatBelowRatio` left `BUILTIN_SPEC` (read nowhere) and the spec is
+checked against `Params.ts` at start-up; `summarize.py --cycles` (and the
+ladder) reports non-transitive triples. Full write-up and commands:
+`docs/PlaybookBotLab.md` "Sequential testing".
+
+**How to graduate `realRetreats`, `trustWars`, `nationAware`** (all default
+on, PROVISIONAL): run each as a *removal* against the current default, so
+the baseline is the code as shipped and REJECT means "turning it off is not
+better" — i.e. keep it:
+
+```bash
+CONFIGS='{"base":{},"noRet":{"realRetreats":false},"noTrust":{"trustWars":false},"noNA":{"nationAware":false}}' \
+  MINUTES=30 WORKERS=3 SPRT=1 MIRROR=1 DEST=lab-out/grad-2026-08 scripts/lab/remote.sh
+python3 scripts/lab/summarize.py --sprt lab-out/grad-2026-08 base noRet noTrust noNA
+```
+
+Read the SPRT line per config: **REJECT** (off is not better by δ) with a
+non-positive live mean → the flag stays on and graduates (fold it as C2
+did, note n and the LLR next to the parameter). **ACCEPT** (off is better
+by ≥ δ) → revert the default and delete the branch. **CONTINUE after 10
+batches** (60 games, 120 with MIRROR) → the effect is below 0.10 score
+units either way; keep the simpler code path (off) and record it as
+"no measurable effect at n=…". Because `trustWars`/`nationAware` fire in
+only a third of the games, expect them to need the mirrored 120 and read
+`n_live`; `realRetreats` fires everywhere and should decide by 36–60.

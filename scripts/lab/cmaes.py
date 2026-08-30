@@ -26,7 +26,33 @@ Noise handling (2026-08-30):
     summarize.py without running anything (the CMA state is left as it was —
     the populations were sampled from it).
 
+Common random numbers: every config of a generation (members, "mean", "base")
+plays the same batch list on the same seed — a lab game is fixed by
+(batch, spawn, SHIFT, SEED), see tests/lab/playbook.lab.ts — so per-game
+differences against "mean" are paired. (Verified 2026-08-29: sweep.sh builds
+one job list per CONFIGS and the gameID "lab" seeds nations, tribes and bot.)
+
+Racing (--race, 2026-08-29): a generation first plays --race-stage (3)
+batches; each member's paired differences vs "mean" on those games go through
+the sequential test of summarize.py (sprt with d0 = -δ, d1 = 0, δ =
+--race-delta 0.10 score units); a member the test REJECTs is "worse than the
+parent by δ" and plays no more this generation (it keeps its objective over
+the games it did play — a fair ranking for CMA-ES's tail). The batches the
+dropped members would have played are spent on the survivors: extra
+batches from --extra-batches (med5 …) are added, as many as the saved games
+buy (saved / survivors, rounded down, capped by the list). gen_N.json
+records "race": {stage, dropped, extra, batches_by_config}; --rescore
+honours it, and gen files without it (older campaigns) still rescore.
+
+retreatBelowRatio was dropped from BUILTIN_SPEC on 2026-08-29: Params.ts
+declares it but nothing reads it (Military.ts uses literal retreat
+thresholds), so it was a pure noise dimension inflating sigma. The spec is
+checked against DEFAULT_PLAYBOOK by parsing Params.ts at start-up: a spec
+key that is not a parameter, or an init that differs from the default, is
+printed as a warning.
+
   python3 scripts/lab/cmaes.py --out lab-out/cma --pop 10 --gens 12 --minutes 20     # Hetzner
+  python3 scripts/lab/cmaes.py --out lab-out/cma --pop 10 --gens 12 --race            # + racing (fewer games per gen)
   python3 scripts/lab/cmaes.py --out /tmp/cma --pop 4 --gens 2 --dry-run              # no games, synthetic fitness
   python3 scripts/lab/cmaes.py --out lab-out/cma --pop 10 --gens 12                   # again = resume from the last gen_N.json
   python3 scripts/lab/cmaes.py --rescore lab-out/cma                                 # re-score stored results, no games
@@ -55,14 +81,19 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 SUMMARIZE = os.path.join(HERE, "summarize.py")
+PARAMS_TS = os.path.join(ROOT, "src", "core", "execution", "playbook", "Params.ts")
+sys.path.insert(0, HERE)
+from summarize import sprt  # noqa: E402  (stdlib-only module next to this one)
 
-# name: (lo, hi, init, int?) — init = DEFAULT_PLAYBOOK on 2026-08-29, keep in sync by hand
+# name: (lo, hi, init, int?) — init = DEFAULT_PLAYBOOK on 2026-08-29; check_spec() compares it with Params.ts
+# retreatBelowRatio is declared but read nowhere (dropped 2026-08-29, see the docstring)
 BUILTIN_SPEC = {
     "expandContested": (0.05, 0.5, 0.2, False),
     "expandFree": (0.03, 0.3, 0.1, False),
@@ -71,7 +102,6 @@ BUILTIN_SPEC = {
     "fightAbove": (0.4, 0.95, 0.7, False),
     "fightMaxShare": (0.3, 0.9, 0.6, False),
     "reserveShare": (0.1, 0.5, 0.3, False),
-    "retreatBelowRatio": (0.1, 0.8, 0.4, False),
     "capFullShare": (0.3, 0.9, 0.6, False),
     "bombReserve": (0, 1_000_000, 250_000, True),
     "railSpacing": (8, 32, 16, True),
@@ -249,13 +279,72 @@ def to_unit(spec):
     return [(init - lo) / (hi - lo) if hi > lo else 0.5 for lo, hi, init, _ in spec.values()]
 
 
+def default_playbook(path=PARAMS_TS):
+    """{name: value} of the DEFAULT_PLAYBOOK literal in Params.ts (numbers and booleans; other values -> None),
+    or None when the file cannot be read."""
+    try:
+        text = open(path).read()
+    except OSError:
+        return None
+    m = re.search(r"export const DEFAULT_PLAYBOOK[^{]*\{(.*?)^\};", text, re.S | re.M)
+    if not m:
+        return None
+    out = {}
+    for line in m.group(1).splitlines():
+        km = re.match(r"\s*(\w+)\s*:\s*([^,/]*)", line)
+        if not km:
+            continue
+        raw = km.group(2).strip()
+        try:
+            out[km.group(1)] = float(raw.replace("_", ""))
+        except ValueError:
+            out[km.group(1)] = {"true": True, "false": False}.get(raw)
+    return out
+
+
+def param_readers(name, bot_dir=os.path.dirname(PARAMS_TS)):
+    """Number of mentions of a parameter in the bot's sources outside Params.ts (0 = declared but read nowhere)."""
+    n = 0
+    pat = re.compile(r"\b" + re.escape(name) + r"\b")
+    try:
+        for f in os.listdir(bot_dir):
+            if f.endswith(".ts") and f != os.path.basename(PARAMS_TS):
+                n += len(pat.findall(open(os.path.join(bot_dir, f)).read()))
+    except OSError:
+        return None
+    return n
+
+
+def check_spec(spec, defaults=None):
+    """Warn about spec keys that DEFAULT_PLAYBOOK does not have, keys the bot's sources never read (a noise
+    dimension, like retreatBelowRatio was), and inits that differ from the code's default. Returns the warnings."""
+    defaults = default_playbook() if defaults is None else defaults
+    warnings = []
+    if defaults is None:
+        warnings.append(f"could not parse DEFAULT_PLAYBOOK from {PARAMS_TS}; spec not checked")
+    else:
+        for k, (lo, hi, init, is_int) in spec.items():
+            if k not in defaults:
+                warnings.append(f"spec key '{k}' is not in DEFAULT_PLAYBOOK (Params.ts) — the bot ignores it, drop it from the spec")
+                continue
+            if param_readers(k) == 0:
+                warnings.append(f"spec key '{k}' is declared in Params.ts but read nowhere in the bot — a noise dimension, drop it")
+            if isinstance(defaults[k], float) and abs(defaults[k] - init) > 1e-9:
+                warnings.append(f"spec init {k}={init:g} differs from DEFAULT_PLAYBOOK {defaults[k]:g}")
+    for w in warnings:
+        print(f"warning: {w}")
+    return warnings
+
+
 # ---------------------------------------------------------------- sweeps
 
 def results_complete(results_dir, names, batches=BATCHES):
+    """True when every config in `names` has a full ab30 file for every batch. `batches` may be a list (same for
+    all) or a {name: [batches]} dict (racing: dropped members played fewer)."""
     if not os.path.isdir(results_dir):
         return False
     for n in names:
-        for b in batches:
+        for b in (batches[n] if isinstance(batches, dict) else batches):
             f = os.path.join(results_dir, f"ab30_{n}_{b}.txt")
             if not os.path.isfile(f) or sum(1 for l in open(f) if "FINAL" in l) < len(SPAWNS):
                 return False
@@ -319,12 +408,14 @@ def fake_sweep(args, spec, configs, results_dir, target, rng, batches):
 
 
 def score(results_dir, names, old=False, expect=30):
+    """summarize.py --fitness as a dict. `expect` = games per config (int, or {name: int})."""
     cmd = [sys.executable, SUMMARIZE] + (["--old-fitness"] if old else []) + ["--fitness", results_dir] + names
     out = subprocess.check_output(cmd, text=True)
     fit = json.loads(out)
     for n in names:
-        if fit[n]["games"] < expect:
-            print(f"  warning: {n} has only {fit[n]['games']} games (expected {expect})")
+        e = expect[n] if isinstance(expect, dict) else expect
+        if fit[n]["games"] < e:
+            print(f"  warning: {n} has only {fit[n]['games']} games (expected {e})")
     return fit
 
 
@@ -342,9 +433,29 @@ def objective(fit, names, ref, raw):
     return vals, f"paired-vs-{ref}"
 
 
+def race_verdicts(fit, pop_names, ref, delta):
+    """Sequential test per member on its paired differences vs `ref` (games in batch order): {name: sprt result}.
+    d0 = -delta, d1 = 0 — REJECT = the member is worse than the parent by delta; ACCEPT = it is not."""
+    ref_pg = fit[ref]["per_game"]
+    out = {}
+    for n in pop_names:
+        pg = fit[n]["per_game"]
+        diffs = [pg[k] - ref_pg[k] for k in sorted(pg) if k in ref_pg]
+        out[n] = sprt(diffs, d0=-delta, d1=0.0)
+    return out
+
+
+def batches_by_config(record, names):
+    """{name: [batches]} for a gen record: the race's per-config lists when present, else the common list."""
+    common = record.get("batches", BATCHES)
+    by = record.get("race", {}).get("batches_by_config", {})
+    return {n: by.get(n, common) for n in names}
+
+
 def score_record(record, results_dir, names, pop_names, configs, args):
     """Fill the score fields of a gen record from results_dir; returns the CMA objective per member."""
-    fit = score(results_dir, names, old=args.old_fitness, expect=len(record.get("batches", BATCHES)) * len(SPAWNS))
+    by = batches_by_config(record, names)
+    fit = score(results_dir, names, old=args.old_fitness, expect={n: len(by[n]) * len(SPAWNS) for n in names})
     ref = "mean" if args.reeval_mean else "base"
     obj, kind = objective(fit, pop_names, ref, args.raw_fitness)
     best = max(range(len(pop_names)), key=lambda i: obj[i])
@@ -378,14 +489,16 @@ def rescore(args):
             if glob.glob(os.path.join(results_dir, f"ab30_{extra}_*.txt")):
                 names.append(extra)
         batches = record.get("batches", BATCHES)
-        if not results_complete(results_dir, names, batches):
+        if not results_complete(results_dir, names, batches_by_config(record, names)):
             print(f"gen {g}: results incomplete in {results_dir}, skipped")
             continue
         args.reeval_mean = "mean" in names
         obj, fit = score_record(record, results_dir, names, pop_names, configs, args)
         json.dump(record, open(f, "w"), indent=1)
         extras = "".join(f", {x} {fit[x]['fitness']:.3f}" for x in ("mean", "base") if x in fit)
-        print(f"gen {g}: rescored ({record['scoring']}, {record['objective_kind']}, {len(batches) * len(SPAWNS)} games) "
+        race = record.get("race")
+        raced = f", raced: {len(race['dropped'])} dropped, +{len(race['extra'])} extra batches" if race else ""
+        print(f"gen {g}: rescored ({record['scoring']}, {record['objective_kind']}, {len(batches) * len(SPAWNS)} games{raced}) "
               f"mean fitness {record['mean_fitness']:.3f}, best {record['best']['name']} obj {record['best']['objective']:+.3f}{extras}")
 
 
@@ -419,6 +532,9 @@ def main():
     ap.add_argument("--grow-below", type=float, default=0.12, help="sigma threshold for --games-growth")
     ap.add_argument("--extra-batches", default=EXTRA_BATCHES, help=f"batches added by --games-growth (default '{EXTRA_BATCHES}')")
     ap.add_argument("--rescore", metavar="OUT", help="recompute the scores of every gen_N.json in OUT from its stored results; runs nothing")
+    ap.add_argument("--race", action="store_true", help="racing: after --race-stage batches drop members the sequential test puts below 'mean' by --race-delta, spend the saved games on the survivors")
+    ap.add_argument("--race-stage", type=int, default=3, help="batches every member plays before the race cut (default 3)")
+    ap.add_argument("--race-delta", type=float, default=0.10, help="score-unit margin of the race test (default 0.10)")
     args = ap.parse_args()
     if args.rescore:
         return rescore(args)
@@ -426,6 +542,7 @@ def main():
         ap.error("--out is required")
 
     spec = parse_spec(args)
+    check_spec(spec)
     names_spec = list(spec.keys())
     n = len(names_spec)
     os.makedirs(args.out, exist_ok=True)
@@ -480,12 +597,43 @@ def main():
             sweep_configs["base"] = {}
         grown = " (grown grid)" if len(batches) > len(base_batches) else ""
         print(f"generation {g}: {len(sweep_configs)} configs x {len(batches) * len(SPAWNS)} games{grown}, sigma={cma.sigma:.4f}")
-        if results_complete(results_dir, list(sweep_configs), batches):
-            print("  results already present, scoring without a sweep")
-        elif args.dry_run:
-            fake_sweep(args, spec, sweep_configs, results_dir, target, random.Random(args.seed * 7 + g), batches)
+
+        def ensure(subset, bats):
+            """Run (or skip, when already on disk) the games of `subset` over batches `bats` into results_dir."""
+            if not bats or results_complete(results_dir, list(subset), bats):
+                return
+            if args.dry_run:
+                fake_sweep(args, spec, subset, results_dir, target, random.Random(args.seed * 7 + g), bats)
+            else:
+                run_sweep(args, g, subset, results_dir, bats)
+
+        ref = "mean" if args.reeval_mean else ("base" if args.with_base else None)
+        if args.race and ref and len(batches) > args.race_stage:
+            stage, rest = batches[: args.race_stage], batches[args.race_stage:]
+            ensure(sweep_configs, stage)
+            by_stage = {n: len(stage) * len(SPAWNS) for n in sweep_configs}
+            fit_stage = score(results_dir, list(sweep_configs), old=args.old_fitness, expect=by_stage)
+            verdicts = race_verdicts(fit_stage, names, ref, args.race_delta)
+            dropped = [n for n in names if verdicts[n]["decision"] == "REJECT"]
+            survivors = [n for n in names if n not in dropped]
+            refs = [n for n in sweep_configs if n not in names]
+            avail = [b for b in args.extra_batches.split() if b not in batches]
+            saved = len(dropped) * len(rest)
+            extra = avail[: saved // max(1, len(survivors) + len(refs))] if survivors else []
+            if survivors:  # nobody survived: the references stop too (their extra games would pair with nothing)
+                ensure({n: sweep_configs[n] for n in survivors + refs}, rest + extra)
+            record["race"] = {
+                "stage": stage, "dropped": dropped, "extra": extra, "ref": ref, "delta": args.race_delta,
+                "verdicts": {n: {k: verdicts[n][k] for k in ("decision", "n", "mean", "llr", "n_at")} for n in names},
+                "batches_by_config": {**{n: stage for n in dropped}, **{n: (batches + extra if survivors else stage) for n in survivors + refs}},
+            }
+            print(f"  race: after {len(stage)} batches dropped {len(dropped)}/{len(names)} ({', '.join(dropped) or '-'}); "
+                  f"survivors play {len(rest)} more + {len(extra)} extra batches ({' '.join(extra) or '-'}), "
+                  f"{saved - len(extra) * (len(survivors) + len(refs))} of {saved} saved games banked")
         else:
-            run_sweep(args, g, sweep_configs, results_dir, batches)
+            if args.race and not ref:
+                print("  race: no reference config (--no-reeval-mean without --with-base); racing skipped")
+            ensure(sweep_configs, batches)
         obj, fit = score_record(record, results_dir, list(sweep_configs), names, configs, args)
         cma.tell(pop, obj)
         record.update({"mean_params": to_params(spec, cma.mean), "state_after": cma.state()})
