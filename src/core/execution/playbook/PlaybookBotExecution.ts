@@ -192,12 +192,23 @@ export class PlaybookBotExecution implements Execution {
     this.sit.spendable -= amount; this.sit.troops -= amount;
     return amount;
   }
+  /** `boatDedupe`: is a boat of ours already bound for (or just landed) within boatDedupeRadius of `tile`? */
+  private recentLandings: { tile: TileRef; tick: number }[] = [];
+  private boatBound(tile: TileRef): boolean {
+    const r2 = this.p.boatDedupeRadius ** 2, now = this.sit.tick;
+    this.recentLandings = this.recentLandings.filter((l) => now - l.tick < 300);
+    if (this.recentLandings.some((l) => this.mg.euclideanDistSquared(l.tile, tile) <= r2)) return true;
+    for (const u of this.player.units(UnitType.TransportShip)) { const d = u.targetTile(); if (d !== undefined && this.mg.euclideanDistSquared(d, tile) <= r2) return true; }
+    return false;
+  }
   private boat(tile: TileRef, n: number, why: string): number {
     if (this.sit.hold !== null || (this.sit.mode === "hold" && !why.includes("collapsed"))) return 0;
     const amount = Math.min(Math.floor(n), Math.floor(this.sit.spendable));
     if (amount < 500 || this.player.canBuild(UnitType.TransportShip, tile) === false) return 0;
+    if (this.p.boatDedupe && !why.startsWith("finish") && this.boatBound(tile)) { this.fired.set("boatDedupe", (this.fired.get("boatDedupe") ?? 0) + 1); return 0; } // finishByBoat keeps its own one-per-target rule
     if (this.dry) { this.dryBoats++; return amount; } // `boatsAfterCoast`: would have launched
     this.mg.addExecution(new TransportShipExecution(this.player, tile, amount));
+    this.recentLandings.push({ tile, tick: this.sit.tick });
     this.sit.spendable -= amount; this.sit.troops -= amount; this.sit.boats++;
     if (this.log.length < 2000) this.log.push(`t${this.sit.tick} boat ${Math.round(amount / 1000)}k: ${why}`);
     return amount;

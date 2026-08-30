@@ -20,6 +20,8 @@ export interface PlaybookParams {
   botsAfterWild: boolean; // wait for the wilderness to run out before harvesting tribes
   botClickCap: number; // guide rule: no single tribe click above this share of home; split into follow-up clicks instead
   botFollowUpTicks: number; // ticks between follow-up clicks on the same tribe (they merge into the running attack)
+  boatDedupe: boolean; // boat() refuses a destination within boatDedupeRadius tiles of a transport of ours still sailing or of a landing made in the last 300 ticks — the boat rules pick independently every 20–100 ticks and used to send a second boat at the same shore while the first was still at sea
+  boatDedupeRadius: number;
   boatAtTick: number;
   boatShare: number;
   islandMaxTiles: number;
@@ -111,6 +113,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   botClickCap: 0.3, // 30-game lab: ties the single click on land, one more survivor; matches the guide's click table
   botFollowUpTicks: 100,
   botsAfterWild: false, // 2026-08-29 Hetzner sweeps, 20-min games: Medium 30-game A/B gate off beats on 14-7-9, median land 65k vs 37k, cities 70 vs 44, same survival; Hard 30-game A/B neutral (7-6-5). Tribes cost 2-3x more by 2:00 while free land never gets cheaper.
+  boatDedupe: true, // ON by default 2026-08-30 (a correctness fix seen in the GUI: two boats to one shore; A/B as a removal, {"boatDedupe":false} vs {})
+  boatDedupeRadius: 40,
   boatAtTick: 50,
   boatShare: 0.2,
   islandMaxTiles: 20000,
