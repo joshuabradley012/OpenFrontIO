@@ -138,7 +138,7 @@ export class PlaybookBotExecution implements Execution {
       collapsed: nb.rivals.filter((r) => this.military.collapsed(r)), // cheap (a map lookup per rival); its 100-tick snapshot keeps the original tick alignment
       expiring: [],
       hold: null,
-      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null,
+      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null, contest: null,
     };
     if (this.slow === null || t % 10 === 0) this.slow = this.readSlow(t, troops);
     this.sit.threats = this.slow.threats; this.sit.expiring = this.slow.expiring; this.sit.hold = this.slow.hold; this.sit.mode = this.slow.mode;

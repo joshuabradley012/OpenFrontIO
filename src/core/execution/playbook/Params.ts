@@ -107,6 +107,9 @@ export interface PlaybookParams {
   webDefense: boolean; // loss cluster 4 (the alliance-web rush, rm1): before webUntil, a border web — ≥ 2 non-ally neighbours allied WITH EACH OTHER whose combined nation-rule sendable (RivalView.nationWouldSend) exceeds webRatio × our troops — makes requestAlliances ask the member most likely to accept first (even one kept as prey), the threat-post rule treat every member as a threat, and the reserve read the web's combined sendable where it reads a max (bounded ×2 as today); default off until the full-game A/B
   webRatio: number; // webDefense: the web's combined sendable over our troops at which it counts
   webUntil: number; // webDefense: no web detection from this tick on (int; 6000 = 10:00 — the rush that kills is early)
+  contestLeader: boolean; // loss cluster 2 (rm1: 13/41 losses ended rank 2–3 while the winner ran to 80 % and we boated 1,500-tile weaklings): while we are rank ≤ contestRank by tiles among non-bots, the leader is not us or a friend, its tiles exceed contestLeadRatio × ours and it is still growing (two tile samples 300 ticks apart), the boats seaExpansion / huntBotsByBoat already send are re-aimed from "weak X" / tribe targets at the leader's coastline (its ports/cities shore, same sizes and gates), maybeBomb / maybeMIRV treat the leader as a priority target like `threats`, and the war scorer adds +4 when it borders us; redirects targets, never sizes. Default off until the 30-game Medium A/B
+  contestRank: number; // contestLeader: contest only while our tile rank among non-bot players is ≤ this (int)
+  contestLeadRatio: number; // contestLeader: the leader's tiles must exceed this × ours
   multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
 }
 
@@ -178,6 +181,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   webRatio: 2.0,
   webUntil: 6000,
   multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
+  contestLeader: false, // default off until the 30-game Medium A/B
+  contestRank: 3,
+  contestLeadRatio: 1.5,
   boatsWaterPath: false, // OFF again 2026-08-30: rm1 (96 mirrored full games, wins objective, docs/PlaybookBotPlan.md) — removal won 63/96 vs base 48 (p=0.032); the water-path ranking hurts full games
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B

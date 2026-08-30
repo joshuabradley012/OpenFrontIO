@@ -29,6 +29,8 @@ export interface Situation {
   rival: Map<Player, RivalView>;
   /** `webDefense`: the border web (SituationQueries.web) — null with the flag off, after webUntil, or when none qualifies. */
   web: { members: Player[]; send: number } | null;
+  /** `contestLeader`: the runaway leader to contest right now (null: flag off, or no runaway — see SituationQueries.contest). */
+  contest: Player | null;
 }
 
 export class SituationQueries {
@@ -50,13 +52,51 @@ export class SituationQueries {
   enrichRivals(sit: Situation): void {
     sit.rival = this.rivals.update(sit);
   }
-  /** Fills `sit.phase` from the finished situation. */
+  /** Fills `sit.phase` (and `sit.contest`) from the finished situation. */
   enrichPhase(sit: Situation): void {
     sit.phase = this.phase(sit);
+    sit.contest = this.contest(sit.tick);
     if (sit.phase !== this.lastPhase) {
       if (this.lastPhase !== null) this.ctx.log(`t${sit.tick} phase ${this.lastPhase} → ${sit.phase}`);
       this.lastPhase = sit.phase;
     }
+  }
+  // ---------------------------------------------------------------- contestLeader
+  private contestCache = { tick: -1e9, contest: null as Player | null };
+  private leaderSample = { leader: null as Player | null, tiles: 0, tick: -1e9, rising: false };
+  private contestLogged = -1e9;
+  /** `contestLeader` (loss cluster 2): the leader by tiles among living non-bot players, maintained on the rank
+   *  cadence (one pass over players every 100 ticks, as endgameThreat) plus a tile sample of the leader every 300
+   *  ticks for its trend. The contest is on while our rank ≤ contestRank, the leader is neither us nor a friend nor
+   *  a teammate, its tiles exceed contestLeadRatio × ours and its last two samples rose — a leader that stopped
+   *  growing is contained, not contested (and before two samples exist there is no trend, so no contest). Entry and
+   *  exit are logged `CONTEST …`, at most one line per 300 ticks. */
+  private contest(tick: number): Player | null {
+    if (!this.ctx.p.contestLeader) return null;
+    if (tick - this.contestCache.tick < 100) return this.contestCache.contest;
+    const me = this.ctx.me;
+    let leader: Player | null = null, above = 0;
+    for (const o of this.ctx.mg.players()) {
+      if (!o.isAlive() || o.type() === PlayerType.Bot) continue;
+      if (o !== me && o.numTilesOwned() > me.numTilesOwned()) above++;
+      if (leader === null || o.numTilesOwned() > leader.numTilesOwned()) leader = o;
+    }
+    const s = this.leaderSample;
+    if (leader !== s.leader) this.leaderSample = { leader, tiles: leader?.numTilesOwned() ?? 0, tick, rising: false }; // a new leader restarts the trend window
+    else if (leader !== null && tick - s.tick >= 300) { s.rising = leader.numTilesOwned() > s.tiles; s.tiles = leader.numTilesOwned(); s.tick = tick; }
+    const on = leader !== null && leader !== me && !me.isFriendly(leader) && !me.isOnSameTeam(leader)
+      && above + 1 <= this.ctx.p.contestRank
+      && leader.numTilesOwned() > me.numTilesOwned() * this.ctx.p.contestLeadRatio
+      && this.leaderSample.rising;
+    const contest = on ? leader : null;
+    const was = this.contestCache.contest;
+    if ((contest !== null) !== (was !== null) && tick - this.contestLogged >= 300) {
+      this.contestLogged = tick;
+      if (contest !== null) this.ctx.log(`t${tick} CONTEST leader ${contest.name()} share ${((100 * contest.numTilesOwned()) / Math.max(1, this.ctx.mg.numLandTiles())).toFixed(0)} % (${contest.numTilesOwned()}t vs ours ${me.numTilesOwned()}t, we are #${above + 1})`);
+      else this.ctx.log(`t${tick} CONTEST over${was !== null && was.isAlive() ? `: ${was.name()} ${was.numTilesOwned()}t vs ours ${me.numTilesOwned()}t` : ""}`);
+    }
+    this.contestCache = { tick, contest };
+    return contest;
   }
   /** opening while free land is reachable; endgame from clockTicks − 3000 (25:00) or when top-3 and an unfriendly silo exists; war when a
    *  war is affordable (Military.fight's test) or troops ≥ fightAbove·cap (fight() proceeds from there); else consolidate. */

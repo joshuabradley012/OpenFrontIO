@@ -1763,3 +1763,26 @@ without; no trigger when the neighbours are not allied with each other, none aft
 **A/B** (full games — the cluster kills, it does not cost 20-minute land):
 `CONFIGS='{"base":{},"web":{"webDefense":true}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`,
 judged on `summarize.py`'s `wscore` / paired WIN line.
+## Contest the leader (`contestLeader`, 2026-08-30, branch `bot/contest-leader`)
+
+Loss cluster 2 above (13/41 rm1 losses ended rank 2–3 while the winner ran away — p_base_med2b_australia.txt spends
+its last minutes boating 1,500-tile weaklings and finishes `rank=3 share=0.08 winner=other`). `Situation` now keeps,
+on the existing 100-tick rank cadence plus a 300-tick tile sample for the trend, the leader by tiles among non-bot
+players. The contest is on while our rank ≤ `contestRank` (3), the leader is not us / a friend / a teammate, its
+tiles exceed `contestLeadRatio` (1.5) × ours, and its last two samples rose — a leader that stopped growing is
+contained, not contested. While on (`sit.contest`; `CONTEST leader …` / `CONTEST over` logged on entry/exit):
+
+- `seaExpansion` re-aims the boat it was about to send at a "weak X" / tribe candidate at the leader's ocean shore
+  (its ports/cities coastline preferred — `Military.contestShore`), same wave and same distance / across-water
+  gates; a collapsed follow-up or a free-shore boat keeps its target. `huntBotsByBoat` does the same with its tribe
+  boat (900-tick per-leader cooldown through `boatedAt`).
+- `maybeBomb` puts the leader on the enemy list like a threat (the value search still does the prioritising, so
+  range and affordability keep their say); `maybeMIRV` takes the leader as a priority target with no 12000-tick /
+  0.8×-tiles gate beyond the contest state itself, and keeps `nationMirvAware`'s never-at-a-counterer rule when
+  that flag is on.
+- The war scorer adds +4 (the planned-target weight) on the leader when it borders us; every gate stays.
+
+No new troop spending: targets are redirected, sizes and budgets are the rules' own. Fires (`contestLeader`) on a
+redirected boat, on a bomb/MIRV pick only the flag put on the list, and on a war pick the +4 changed.
+Tests: `tests/playbook/contestLeader.test.ts`. A/B (full games — the cluster is an endgame failure):
+`CONFIGS='{"base":{},"cl":{"contestLeader":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.
