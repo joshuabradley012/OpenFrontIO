@@ -12,7 +12,7 @@ import { PlayerType } from "../../src/core/game/Game";
 import { playbookSetup } from "../util/PlaybookSetup";
 
 const GOLDEN =
-  "0543927031e0ec8d52d85cc88b863084f03f610b3b52c1d3167de80e5719c09c";
+  "00488d6cd371aa15410aa1af42e2e49a478c867bd8bd69ca34817592cd57dc4c";
 const SNAPSHOT_TICKS = [100, 300, 600, 900, 1200, 1500, 1800, 2100, 2400];
 
 describe("golden", () => {

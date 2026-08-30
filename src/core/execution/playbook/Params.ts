@@ -150,9 +150,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   steamrollCap: false,
   holdHumans: false,
   strictOneWar: false,
-  boatsNearest: false, // default off until the 30-game Medium A/B
-  finishByBoat: false, // default off until the 30-game Medium A/B
-  multiWar: false, // default off until the 30-game Medium A/B
+  boatsNearest: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"boatsNearest":false} vs {})ntil the 30-game Medium A/B
+  finishByBoat: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"finishByBoat":false} vs {})ntil the 30-game Medium A/B
+  multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
   utility: false, // default off until the 30-game Medium A/B
   utilCapMid: 0.7,
   utilCapSteep: 10,
@@ -170,6 +170,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   hystMargin: 0.1,
   hystSlope: 0.2,
   hystStrikes: 2,
-  annexWars: false, // default off until the 30-game Medium A/B
-  lapseToAttack: false, // default off until the 30-game Medium A/B
+  annexWars: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"annexWars":false} vs {})ntil the 30-game Medium A/B
+  lapseToAttack: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"lapseToAttack":false} vs {})ntil the 30-game Medium A/B
 };
