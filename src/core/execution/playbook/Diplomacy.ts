@@ -34,9 +34,16 @@ export class Diplomacy {
       const r = req.requestor();
       if (r.type() === PlayerType.Bot) continue;
       if (r === this.military.currentTarget || r === this.plannedTarget_) continue;
-      if (this.isPrey(r) || this.q.annexable(r)) continue;
+      if (this.isPrey(r) || this.annexRefuse(r)) continue;
       req.accept();
     }
+  }
+  /** No alliance with a player we could annex. `annexWars` widens what counts as annexable (Situation.annexable);
+   *  the flag fires when the refusal is one the old rule would not have made. */
+  private annexRefuse(o: Player): boolean {
+    const a = this.q.annexable(o);
+    if (a && this.ctx.p.annexWars && this.q.annexableChanged(o)) this.lim.fire("annexWars", "refuse");
+    return a;
   }
   /** A weaker neighbour is food: with two or more neighbours we keep the weakest one unallied so the army has somewhere to go. */
   private isPrey(o: Player): boolean {
@@ -70,7 +77,7 @@ export class Diplomacy {
     rivals.sort((a, b) => b.troops() - a.troops());
     for (const o of rivals) {
       if (o === this.military.currentTarget || o === this.plannedTarget_) continue;
-      if (this.isPrey(o) || this.q.annexable(o)) continue; // an ally can never be annexed
+      if (this.isPrey(o) || this.annexRefuse(o)) continue; // an ally can never be annexed
       if (!me.canSendAllianceRequest(o)) continue;
       // `relationAware`: ask a nation only when its own decision rules would say yes (Rivals.wouldAcceptAlliance) —
       // a refusal we asked for is not a signal, and the trust dock for it (Rivals.onRequestRefused) counted our spam
@@ -100,7 +107,21 @@ export class Diplomacy {
       let st = this.expiryState.get(other);
       if (!st) { st = { expiresAt: al.expiresAt(), gifted: false, extended: false }; this.expiryState.set(other, st); }
       const { rivals, friends } = this.q.neighbours();
-      const prey = (friends.includes(other) && other.troops() < me.troops() * 0.4 && me.troops() > this.q.cap() * this.ctx.p.fightAbove && rivals.length <= 1) || this.q.annexable(other) || (this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && other.troops() < me.troops() * 0.5 && other.numTilesOwned() < me.numTilesOwned());
+      let prey = (friends.includes(other) && other.troops() < me.troops() * 0.4 && me.troops() > this.q.cap() * this.ctx.p.fightAbove && rivals.length <= 1) || this.q.annexable(other) || (this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && other.troops() < me.troops() * 0.5 && other.numTilesOwned() < me.numTilesOwned());
+      if (prey && this.ctx.p.annexWars && this.q.annexableChanged(other)) this.lim.fire("annexWars", "lapse");
+      // `lapseToAttack`: the ally is the best war the army could have — the scorer takes it as if it were unfriendly and
+      // it beats every unfriendly candidate — so it lapses whatever the number of rivals; not while a stronger
+      // unfriendly neighbour (> 0.6× our troops) borders us, unless the ally is annexable (a war it cannot answer)
+      let lapseScore: number | null = null;
+      if (!prey && this.ctx.p.lapseToAttack) {
+        const w = this.military.wouldTarget(other);
+        if (w.ok) {
+          let bestRival = 0;
+          for (const r of rivals) { const s = this.military.wouldTarget(r); if (s.ok && s.score > bestRival) bestRival = s.score; }
+          const stronger = rivals.some((r) => r.troops() > me.troops() * 0.6);
+          if (w.score > bestRival && (!stronger || this.q.annexable(other))) { prey = true; lapseScore = w.score; }
+        }
+      }
       // A Hard nation renews only if we are as strong as it, a threat to it, or on friendly terms.
       // A gift of 1/7 of its cap makes it friendly (+50): cheap insurance when we are the weaker side.
       // C1 (`nationAware`): "weaker side" = its own attack rules would let it hit us at expiry, not the 0.9× heuristic.
@@ -116,7 +137,8 @@ export class Diplomacy {
       }
       if (prey) {
         this.plannedTarget_ = other;
-        this.ctx.log(`t${this.ctx.mg.ticks()} let alliance with ${other.name()} lapse (${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`);
+        if (lapseScore !== null) { this.ctx.fire("lapseToAttack"); this.ctx.log(`t${this.ctx.mg.ticks()} let alliance lapse to attack ${other.name()} (score ${lapseScore.toFixed(1)}, ${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`); }
+        else this.ctx.log(`t${this.ctx.mg.ticks()} let alliance with ${other.name()} lapse (${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`);
         continue;
       }
       if (!st.extended) { this.ctx.mg.addExecution(new AllianceExtensionExecution(me, other.id())); st.extended = true; }

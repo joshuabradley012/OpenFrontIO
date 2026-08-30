@@ -90,6 +90,8 @@ export interface PlaybookParams {
   strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
   boatsNearest: boolean; // every boat rule (seaExpansion, earlyBoat, huntBotsByBoat, seaInvasion) measures a candidate from the nearest of a sample of our ocean-shore tiles — where the engine launches from (SpatialQuery.closestShoreByWater) — instead of an arbitrary middle border tile; candidates are ranked value / max(1, d / 40) so a free shore 60 tiles away beats a richer target 200 away, and a shore across water may be as close as 10 tiles (was 30); default off until the 30-game Medium A/B
   finishByBoat: boolean; // every 100 ticks from tick 1200: when the war target (or a rival we have a wave on) owns a piece no land attack of ours can reach (Military.pieces with no border tile beside ours) and that piece has an ocean shore, a boat of 2 × its troops × (unreachable / total tiles) + 2000 (at most 40 % of spendable) lands on that piece's shore nearest our coast; one per target, 600-tick cooldown; default off until the 30-game Medium A/B
+  annexWars: boolean; // Situation.annexable samples the target's border (ours-adjacent ≥ 40 %, third-party-or-unowned ≤ 15 %, a coast or map edge no longer disqualifies, never an ally) and an annexable unfriendly neighbour is a war opportunity in warPick (1.2× wave, scored 25 + ratio, passes the affordability / sticky / one-war gates); no alliance is requested from or accepted with an annexable player; default off until the 30-game Medium A/B
+  lapseToAttack: boolean; // manageExpiries lets an ally lapse when Military.wouldTarget (the war scorer run as if it were unfriendly) accepts it and its score beats every current unfriendly candidate's, whatever the number of rivals; never while a stronger unfriendly neighbour (> 0.6× our troops) borders us unless the ally is annexable; default off until the 30-game Medium A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -166,4 +168,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   hystMargin: 0.1,
   hystSlope: 0.2,
   hystStrikes: 2,
+  annexWars: false, // default off until the 30-game Medium A/B
+  lapseToAttack: false, // default off until the 30-game Medium A/B
 };
