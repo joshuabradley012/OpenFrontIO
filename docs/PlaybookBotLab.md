@@ -269,10 +269,37 @@ logic shared with production and are left alone.
 ```
 lab-out/
   sweep.log                          done/retry/FAILED per game (all shards; sweep.<i>.log per box)
-  p_<config>_<batch>_<spawn>.txt     full transcript of one game
+  p_<config>_<batch>_<spawn>.txt     full transcript of one game (line 2 is its `replay:` env recipe)
   ab30_<config>_<batch>.txt          6 FINAL lines, one per spawn (scripts/lab/aggregate.sh)
   .err_<config>_<batch>_<spawn>      stderr of a game that failed twice
 ```
+
+### Replays
+
+Games are deterministic, so the second line of every transcript — added
+2026-08-30 — is the complete game:
+
+```
+  replay: MIN=20 DIFF=medium SPAWNRANK=2 SHIFT=150 SPAWN=africa PARAMS='{...}' node --import tsx tests/lab/playbook.lab.ts
+```
+
+Paste it into a shell (add `LAB_OUT`/`OUTFILE` if you want the transcript
+kept) and the game replays bit-identically — same engine commit only: any
+simulation change invalidates old recipes. To surface the games worth
+re-watching:
+
+```
+python3 scripts/lab/summarize.py --replays 5 lab-out          # 5 best and 5 worst games with their recipes
+```
+
+To WATCH one in the real client (dev server only): paste the recipe into
+`localStorage.labReplay` in the browser console, start any solo game, and the
+worker rebuilds that exact lab game (`src/core/lab/LabReplay.ts` — the same
+bootstrap the headless lab runs) with the normal game UI as a watch-only view:
+every click is ignored so the recorded game cannot fork. `?labreplay=<url-encoded
+recipe>` works too; `localStorage.removeItem("labReplay")` to go back. Games with
+`__bot` / `BOT_DIR` are refused (that bot's code is not in the bundle) — re-run
+those headless. Details in docs/PlaybookBotGUI.md.
 
 ## Reading results
 

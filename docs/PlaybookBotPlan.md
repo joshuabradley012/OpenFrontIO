@@ -1705,3 +1705,20 @@ Objective changed to winning full games (Josh, 2026-08-30): `MINUTES=170`, the l
 base (d8b8c89cc defaults) vs m4, 36 mirrored full games each: **base wins 19/36 (53 %), m4 wins 9/36** — pairs base-only 14 / m4-only 4 / both 5 / neither 13, McNemar p=0.031; m4 dwscore −0.53 [−1.01, −0.03], median tiles 115k vs 448k. The 20-minute-tuned constants (fightAbove 0.49, fightMaxShare 0.73, reserveShare 0.35 …) win the land race and lose the game. `bot/tuned-defaults` (8c7c23b39) is kept as a branch for reference and must not be merged.
 
 Lessons: (1) a 20-minute score is a screen, never a graduation — the same config was +0.21 (p=0.010) at 20 min and −0.53 on wins; (2) re-run the CMA race with `--minutes full` and the wscore objective before trusting any constant; (3) the version-history ladder (run 1) is 20-minute and needs a full-game run 2.
+
+## `rm1` — removal A/Bs of the eight default-on flags, full games (2026-08-30, `lab-out/rm1`)
+
+96 mirrored full games per config on head 937640535 (5× cpx62 IPv6 pool), scored on wins (wscore). Removing a flag and WINNING MORE means the flag was hurting.
+
+| removed | wins (base 48/96) | McNemar p | verdict |
+|---|---|---|---|
+| finishByBoat | 21 | <0.001 | **keeper — carries the win rate** (removal: 50 % → 22 %) |
+| boatsNearest | 40 | 0.28 | keeper (probable) |
+| multiWar | 43 | 0.57 | mildly positive, keep |
+| takeFallout | 50 | 0.87 | no measurable effect |
+| annexWars | 52 | 0.66 | no measurable effect |
+| steamrollLevels | 52 | 0.61 | no measurable effect |
+| lapseToAttack | 54 | 0.35 | leaning harmful |
+| boatsWaterPath | **63** | **0.032** | **harmful — flip back off** (removal: 50 % → 66 % wins) |
+
+Base wins 50 % of full games on this grid. Actions (pending Josh): revert the boatsWaterPath default; consider pruning annexWars/takeFallout/steamrollLevels/lapseToAttack for simplicity or re-testing at tuned constants.

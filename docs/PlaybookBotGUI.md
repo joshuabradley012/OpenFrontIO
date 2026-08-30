@@ -134,3 +134,34 @@ proximity bonus to 0; everything else is the production `Config`.
 A static production build (`VITE_PLAYBOOK_BOT=1 vite build`, served by
 `npm run start:server-dev` on :3000) hangs at "Game is Starting…": the worker
 script and map load, but the worker never posts `initialized`. Not debugged.
+
+## Watching a lab replay (2026-08-30)
+
+Every lab transcript's second line is a `replay:` env recipe that fully
+determines the game (deterministic engine — see docs/PlaybookBotLab.md
+"Replays"). The client can rebuild that exact game and let you watch it:
+
+1. `python3 scripts/lab/summarize.py --replays 5 lab-out` — pick a game, copy
+   its recipe (without the leading `replay:` — with it also works).
+2. In the browser console on the dev server: `localStorage.labReplay = "MIN=20
+   DIFF=medium SPAWNRANK=2 SHIFT=150 SPAWN=africa PARAMS='{...}' node
+   --import tsx tests/lab/playbook.lab.ts"`.
+3. Start any solo game (map/difficulty in the modal are ignored — the recipe
+   wins). The game opens past the spawn phase with PlaybookBot already
+   playing "your" player.
+4. `localStorage.removeItem("labReplay")` to go back to normal games.
+
+Notes:
+
+- **Watch-only.** Every intent is dropped in the worker (`GameRunner`
+  labReplay flag), so clicking around cannot fork the recorded game. The
+  keyboard game-speed keys still work (they pace turns, not the sim).
+- **Same engine commit only.** A recipe replays bit-identically only on the
+  code that produced it; note the commit next to sweeps you want to keep.
+- The sim runs `LabConfig` (production combat maths over TestConfig) while
+  the HUD's display config is production — cosmetic mismatches possible.
+- `__bot` / `BOT_DIR` recipes are refused (milestone bots are not bundled);
+  replay those headless with the recipe as-is.
+- A 20-minute recording keeps playing past minute 20 — the world simply
+  continues deterministically beyond where the transcript stopped.
+
