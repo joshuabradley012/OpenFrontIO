@@ -20,6 +20,8 @@ export interface RivalView {
   borderTiles: number;
   /** their troops × (their border facing us / their total border) / our troops — see `bsr()` for the approximation. */
   bsr: number;
+  /** The share of their border that faces us (0–1), the same approximation as `bsr` (our facing tiles / their border). */
+  borderShare: number;
   /** AiAttackBehavior would let this nation attack us now (ignores its dice rolls; false for humans and bots). */
   nationCanAttack: boolean;
   /** Troops a land attack on us would carry under its reserve ratio and troopSendCap (0 for humans and bots). */
@@ -171,6 +173,7 @@ export class Rivals {
       out.set(p, {
         troopsDelta, tilesDelta, trust: this.trust(p), borderTiles,
         bsr: this.bsr(p, borderTiles, sit.troops),
+        borderShare: this.borderShare(p, borderTiles),
         nationCanAttack: nr.can, nationWouldSend: nr.send,
         wildernessBound: this.ctx.p.wildernessAware && isNation && this.wildernessBound(p),
         drainedUntil: isNation ? this.drainedUntil(p, t) : -1,
@@ -254,10 +257,14 @@ export class Rivals {
    *  border facing them (a shared front has about the same length seen from both sides), so their border share is
    *  ourFacing / their total border tiles. Their troops are spread along that share and compared to our whole army. */
   private bsr(p: Player, ourFacing: number, ourTroops: number): number {
+    const share = this.borderShare(p, ourFacing);
+    if (share === 0) return 0;
+    return (p.troops() * share) / Math.max(1, ourTroops);
+  }
+  private borderShare(p: Player, ourFacing: number): number {
     const theirBorder = p.borderTiles().size;
     if (theirBorder === 0 || ourFacing === 0) return 0;
-    const share = Math.min(1, ourFacing / theirBorder);
-    return (p.troops() * share) / Math.max(1, ourTroops);
+    return Math.min(1, ourFacing / theirBorder);
   }
 
   // ---------------------------------------------------------------- housekeeping

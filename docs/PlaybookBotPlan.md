@@ -1056,3 +1056,91 @@ new one. Golden hash unchanged with the flag off.
 **A/B:** `CONFIGS='{"base":{},"x":{"campaigns":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 (and `{"utility":true,"campaigns":true}` for the pair — the review suggested
 #3 / #5 / #6 as one package).
+
+## Opportunistic wars and multitasking (`borderRatio`, `multiWar`, 2026-08-29, branch bot/multiwar)
+
+Josh's observation from the ladder games: the bot stops attacking in the
+midgame — land plateaus at 20:00, `ATTACK` lines fall from 778 to 394 per
+5-minute bucket, and every "idle at cap" line names one giant neighbour. The
+causes in code: `warPick` compares the wave (≤ `fightMaxShare` of troops, minus
+the 30 % reserve) to the target's **whole** army at `fightRatio` 2×, so once
+the neighbours are large nothing qualifies; one war at a time (two only at cap
+after 25:00) plus the sticky target; one tribe click per pass. Two default-off
+flags, in clearly separable blocks (no dependency on `Campaign.ts`):
+
+**`borderRatio`** — a target whose whole army is out of reach at the gate
+(`maxSend / troops < minRatio`, whatever the gate's special case — shadowed,
+richer, attacking us) is measured instead against what it can bring to *our*
+border: `defenders = (troops + regen × 100 ticks) × max(0.25, borderShare)`,
+where `borderShare` = its border tiles facing us / its total border tiles
+(new `RivalView.borderShare`, the same approximation `bsr` already uses; a
+target facing us on ≤ 25 % of its border still counts a quarter). The regen
+horizon is 10 s — the time a wave takes to bite in — because a minute of the
+engine's regen exceeds the army itself at midgame troop counts, which would
+have made every bite dearer than the whole-army war. The gate is then `wave ≥
+fightRatio × defenders` and the wave is `fightRatio × defenders + 1000` (a
+bite, not a whole-army fight), capped at `maxSend`; the density veto (`ratio <
+3 && tiles > 1.5× ours && density < 40 → never`) is skipped on that path and
+the size penalty stays; the affordability gate accepts a bite too. Logged as
+`BITE <name> border share 0.xx, defenders Nk` before the `ATTACK` line. Fires
+(`borderRatio`) whenever a target passes only via the border ratio. With
+`fightRatio` 2 and the 0.25 floor the bite reaches a neighbour up to ~1.2× our
+troops (0.6 / (2 × 0.25)) — bigger than that, nothing fits, whichever gate.
+
+**`multiWar`** — (a) wars: `fight()` keeps calling `warPick` inside the pass;
+once the plain rule's slot is used (`wars ≥ limit`) a second and third war may
+open when the next wave is affordable above the reserve (`send()`'s
+whole-or-nothing test, unchanged) and the total committed — `attackStart`'s
+send per running non-counter war, else what is left of the wave, plus the
+waves opened earlier in the pass — stays under `fightMaxShare` of the army
+(`troops + committed`); each wave ≥ 1000. `MULTI_WAR_SLOTS` = 3 counts every
+running non-bot attack, so **a running counter occupies a slot** (the
+`strictOneWar` finding, 15W/6L, carried over). The sticky-target filter binds
+the first war only; an extra war never becomes `currentTarget_` and does not
+refresh `lastWarTick`. `strictOneWar` (if on) still wins: its check runs first
+and refuses the pass. With `utility` on, a further war option in the ranked
+list re-runs `warPick` against the slots and commitments the first one left.
+Logged `WAR #n beside the running ones`; fires per extra war. (b) tribes:
+concurrency 2 below 60 % of cap, 3 above (never under the old value), and
+`harvestBots` / the troops rule keep clicking while the next click is
+affordable, at most three per pass; fires per click the one-at-a-time rule
+would not have made. (c) building: verified that `Economy.build` waits on
+`outgoingAttacks().length === 0` only in the idle-at-cap silo rule (and the
+bomb reserve that reads the same `idleAtCap`); the campaigns escrow trims
+builds only while a campaign prepares — that is `campaigns`' own flag and is
+left alone.
+
+Tests: `tests/playbook/borderRatio.test.ts` (a 150k neighbour facing our
+200k on ~20 % of its border: off → no war; on → `BITE` with the wave at
+2 × (troops + 10 s regen) × 0.25 + 1000; a target wrapped by us on > 80 % of
+its border is still gated by its whole army) and
+`tests/playbook/multiWar.test.ts` (two weak neighbours: off → one war per
+pass, on → both in the same pass under `fightMaxShare`, with `utility` on
+too; three neighbours fill three slots; a counter on the current target
+leaves room for two; `strictOneWar` on top refuses the pass; three tribes
+below 60 % of cap: on → two first clicks in one pass, off → one). Golden
+unchanged; a 3-minute africa transcript with `{}` is byte-identical before
+and after (only `botMs`/`gameMs` differ).
+
+Smoke (africa, Medium, 12 min, one seed — not evidence): see the package
+report in the commit message.
+
+A/B: `CONFIGS='{"base":{},"bite":{"borderRatio":true},"multi":{"multiWar":true},"both":{"borderRatio":true,"multiWar":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+**Smoke result and a caveat on the premise (africa, Medium, 12 min, one seed).**
+Off: rank 6/30, 49.5k tiles, 38 `ATTACK`, 5 retreats, 0 counters, botMs 1138.
+Both on: rank 13/29, 22.8k tiles, 59 `ATTACK` (36 `BITE`, 32 `WAR #n`), 17
+retreats, 17 counters, botMs 910; `fired` multiWar:45, borderRatio:60. Every
+`BITE` line shows the 0.25 floor (no midgame neighbour faces us on more than a
+quarter of its border), the bites went at 0.57–0.78× of the target's army and
+lost (Libya 144k → 140 tiles for 128k lost; Morocco 202k → 243 tiles for 177k;
+Spain 286k, 25k left), and each opened a front that came back as an
+`INCOMING`/`COUNTER` pair. The reason is in the engine, not the tuning:
+`Config.attackLogic` prices the attacker's per-tile loss by
+`within(defender.troops() / attackTroops, 0.6, 2) × mag` — the defender's
+**whole** army, wherever it sits — so a 0.75× wave pays 2.2× the per-tile loss
+of a 2× wave and takes fewer tiles. The border-share premise ("a target can
+only bring what faces us") does not hold in OpenFront; the A/B is expected to
+confirm this. `multiWar` on its own is the part worth the A/B (its extra wars
+in the smoke were mostly bites, so the pair confounds it — run the four
+CONFIGS above, not just `both`).

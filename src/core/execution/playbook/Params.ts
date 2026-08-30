@@ -70,6 +70,8 @@ export interface PlaybookParams {
   steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
   holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
   strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
+  borderRatio: boolean; // a target whose whole army is out of reach at fightRatio is measured instead against the troops it can bring to our shared border (troops × max(0.25, border share facing us) + a minute of regen): the wave is fightRatio × those defenders + 1000 — a bite, not a whole-army fight; the density veto is skipped on that path, the size penalty stays. Default off until the 30-game Medium A/B
+  multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -128,6 +130,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   steamrollCap: false,
   holdHumans: false,
   strictOneWar: false,
+  borderRatio: false, // default off until the 30-game Medium A/B
+  multiWar: false, // default off until the 30-game Medium A/B
   utility: false, // default off until the 30-game Medium A/B
   campaigns: false, // default off until the 30-game Medium A/B
 };
