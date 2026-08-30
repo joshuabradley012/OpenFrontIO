@@ -132,11 +132,12 @@ export class Military {
   prune(): void {
     const t = this.ctx.mg.ticks(), me = this.ctx.me;
     const dead = (p: Player) => !p.isAlive();
-    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged]) for (const p of m.keys()) if (dead(p)) m.delete(p);
+    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged, this.finishedAt]) for (const p of m.keys()) if (dead(p)) m.delete(p);
     for (const [p, until] of this.blacklist) if (t >= until) this.blacklist.delete(p);
     for (const [p, s] of this.sentAt) if (t - s.tick >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
     for (const [p, at] of this.lastCounter) if (t - at >= 300) this.lastCounter.delete(p);
     for (const [p, at] of this.boatedAt) if (t - at >= 900) this.boatedAt.delete(p);
+    for (const [p, at] of this.finishedAt) if (t - at >= 600) this.finishedAt.delete(p);
     for (const [p, at] of this.pileInLogged) if (t - at >= 600) this.pileInLogged.delete(p);
     for (const [p, at] of this.embargoedAt_) if (t - at > 1200 && !me.hasEmbargoAgainst(p)) this.embargoedAt_.delete(p);
     const running = new Set(me.outgoingAttacks().map((a) => a.id()));
@@ -144,6 +145,39 @@ export class Military {
     const targets = new Set(me.outgoingAttacks().map((a) => a.target()));
     for (const p of this.waves.keys()) if (!targets.has(p)) this.waves.delete(p); // read only while an attack on that tribe runs
     for (const p of this.counters) if (dead(p)) this.counters.delete(p);
+  }
+
+  // ---------------------------------------------------------------- boatsNearest: measure from where the engine launches
+  private shoreCache: { tick: number; shore: TileRef[] } | null = null;
+  /** `boatsNearest`: a sample of our ocean-shore border tiles (every k-th, at most 200), cached per tick. The engine
+   *  launches a boat from our shore nearest its landing (TransportShipUtils.bestShoreDeploymentSource →
+   *  SpatialQuery.closestShoreByWater), so the distance that matters is from the nearest of these — not from the
+   *  middle tile of the border list, which the old rules used and which may sit on the far side of the empire. */
+  shoreSample(): TileRef[] {
+    const t = this.ctx.mg.ticks();
+    if (this.shoreCache !== null && this.shoreCache.tick === t) return this.shoreCache.shore;
+    const all: TileRef[] = [];
+    for (const b of this.ctx.me.borderTiles()) if (this.ctx.mg.isOceanShore(b)) all.push(b);
+    const step = Math.max(1, Math.ceil(all.length / 200));
+    const shore: TileRef[] = [];
+    for (let i = 0; i < all.length; i += step) shore.push(all[i]);
+    this.shoreCache = { tick: t, shore };
+    return shore;
+  }
+  /** Manhattan distance from `t` to the nearest tile of `sample` (1e9 for an empty sample). */
+  nearestShoreDist(t: TileRef, sample: TileRef[] = this.shoreSample()): number {
+    const mg = this.ctx.mg, x = mg.x(t), y = mg.y(t);
+    let best = 1e9;
+    for (const s of sample) { const d = Math.abs(mg.x(s) - x) + Math.abs(mg.y(s) - y); if (d < best) best = d; }
+    return best;
+  }
+  /** `boatsNearest`: the scan window for free shores — around the middle tile as before, or around the whole sampled
+   *  coast, so a shore near either end of a long coast is seen at all. */
+  private scanBox(sample: TileRef[], fx: number, fy: number, r: number): { x0: number; y0: number; x1: number; y1: number } {
+    const mg = this.ctx.mg;
+    let x0 = fx, y0 = fy, x1 = fx, y1 = fy;
+    if (this.ctx.p.boatsNearest) for (const s of sample) { const x = mg.x(s), y = mg.y(s); if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    return { x0: x0 - r, y0: y0 - r, x1: x1 + r, y1: y1 + r };
   }
 
   // ---------------------------------------------------------------- boats in the mid and late game
@@ -161,18 +195,25 @@ export class Military {
     if (shore.length === 0) return;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
-    const dist = (t: TileRef) => Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
-    const cands: { tile: TileRef; troops: number; score: number; what: string }[] = [];
+    const distOld = (t: TileRef) => Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+    // `boatsNearest`: the distance the engine will sail, not the one from an arbitrary border tile; every value is
+    // divided by max(1, d / 40) so a stepping stone 60 tiles away beats a richer target 200 away; a shore across
+    // water counts from 10 tiles (acrossWater below keeps same-landmass tiles out)
+    const sample = this.ctx.p.boatsNearest ? this.shoreSample() : [];
+    const nearest = sample.length > 0;
+    const dist = nearest ? (t: TileRef) => this.nearestShoreDist(t, sample) : distOld;
+    const cands: { tile: TileRef; troops: number; score: number; oldScore: number; oldOk: boolean; what: string }[] = [];
     // (a) free shore across water: 15 % of home, worth the most per troop
     let seen = 0;
-    for (let dy = -300; dy <= 300; dy += 8) for (let dx = -300; dx <= 300; dx += 8) {
-      const x = fx + dx, y = fy + dy;
+    const box = this.scanBox(sample, fx, fy, 300);
+    for (let y = box.y0; y <= box.y1; y += 8) for (let x = box.x0; x <= box.x1; x += 8) {
       if (!this.ctx.mg.isValidCoord(x, y)) continue;
       const t = this.ctx.mg.ref(x, y);
       if (!this.ctx.mg.isLand(t) || !this.ctx.mg.isOceanShore(t) || this.ctx.mg.hasOwner(t)) continue;
-      const d = Math.abs(dx) + Math.abs(dy);
-      if (d < 30 || seen++ > 400) continue;
-      cands.push({ tile: t, troops: Math.max(5000, Math.floor(this.ctx.sit.troops * 0.15)), score: 300 - d, what: "free shore" });
+      const dOld = Math.abs(x - fx) + Math.abs(y - fy);
+      const d = nearest ? dist(t) : dOld;
+      if (d < (nearest ? 10 : 30) || (nearest && d > 300) || seen++ > 400) continue;
+      cands.push({ tile: t, troops: Math.max(5000, Math.floor(this.ctx.sit.troops * 0.15)), score: nearest ? 300 / Math.max(1, d / 40) : 300 - d, oldScore: 300 - dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 300 && Math.abs(y - fy) <= 300 && (x - fx) % 8 === 0 && (y - fy) % 8 === 0, what: "free shore" }); // oldOk: on the old scan's grid and inside its window
     }
     // (b) collapsed players (bombed, MIRVed): the follow-up; (c) weak players without posts; (d) tribes
     for (const o of this.ctx.mg.players()) {
@@ -185,19 +226,36 @@ export class Military {
       if (!isBot && !me.canAttackPlayer(o)) continue;
       const want = Math.ceil(o.troops() * (isBot ? 2 : 3)) + 2000;
       if (want > this.ctx.sit.spendable * 0.5) continue;
-      let i = 0, bestT: TileRef | null = null, bestD = 1e9;
-      for (const t of o.borderTiles()) { if ((i++ % 9) !== 0 || !this.ctx.mg.isOceanShore(t)) continue; const d = dist(t); if (d < bestD) { bestD = d; bestT = t; } }
+      let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9;
+      for (const t of o.borderTiles()) {
+        if ((i++ % 9) !== 0 || !this.ctx.mg.isOceanShore(t)) continue;
+        const d = dist(t); if (d < bestD) { bestD = d; bestT = t; }
+        if (nearest) { const dO = distOld(t); if (dO < oldD) { oldD = dO; oldT = t; } }
+      }
+      if (!nearest) { oldT = bestT; oldD = bestD; }
+      const value = coll ? 600 : weak ? 400 : 250;
+      const what = `${coll ? "collapsed " : weak ? "weak " : "tribe "}${o.name()} ${o.numTilesOwned()}t/${Math.round(o.troops() / 1000)}k`;
+      const oldOk = oldT !== null && oldD <= 500 && !(late && weak && oldD > 150 && o.troops() >= this.ctx.sit.troops * 0.25);
+      const oldScore = value - oldD / 2 + (o.units(UnitType.City).length * 10);
       if (bestT === null || bestD > 500) continue;
       if (late && weak && bestD > 150 && o.troops() >= this.ctx.sit.troops * 0.25) continue; // the late-game jump is a short one
-      const value = coll ? 600 : weak ? 400 : 250;
-      cands.push({ tile: bestT, troops: want, score: value - bestD / 2 + (o.units(UnitType.City).length * 10), what: `${coll ? "collapsed " : weak ? "weak " : "tribe "}${o.name()} ${o.numTilesOwned()}t/${Math.round(o.troops() / 1000)}k` });
+      const score = nearest ? (value + o.units(UnitType.City).length * 10) / Math.max(1, bestD / 40) : oldScore;
+      cands.push({ tile: bestT, troops: want, score, oldScore, oldOk: oldOk && oldT === bestT, what });
+      if (nearest && oldOk && oldT !== null && oldT !== bestT) cands.push({ tile: oldT, troops: want, score: -1e9, oldScore, oldOk: true, what }); // the old ranking's tile, for the liveness count only
     }
     cands.sort((a, b) => b.score - a.score);
     for (const c of cands.slice(0, 10)) {
+      if (c.score <= -1e9) continue;
       if (c.troops > this.ctx.sit.spendable) continue;
-      if (!this.q.acrossWater(c.tile)) continue;
-      if (this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}`) === 0) continue;
+      if (nearest ? !this.q.acrossWaterNear(c.tile, dist(c.tile)) : !this.q.acrossWater(c.tile)) continue;
+      const sent = this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}${nearest ? ` (${dist(c.tile)} tiles)` : ""}`);
+      if (sent === 0) continue;
       this.lastSeaTick = this.ctx.mg.ticks();
+      if (nearest) {
+        // liveness: what the old ranking (middle tile, flat − d/2, 30-tile floor) would have launched at
+        const old = cands.filter((o) => o.oldOk).sort((a, b) => b.oldScore - a.oldScore).slice(0, 10).find((o) => o.troops <= this.ctx.sit.spendable + sent && this.q.acrossWater(o.tile));
+        if (old === undefined || old.tile !== c.tile) this.lim.fire("boatsNearest", "sea");
+      }
       return;
     }
   }
@@ -842,28 +900,45 @@ export class Military {
     if (shore.length === 0) return false;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
-    const dist = (t: TileRef) => Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
-    const cands: { tile: TileRef; troops: number; d: number; what: string }[] = [];
+    const distOld = (t: TileRef) => Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+    const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
+    const nearest = sample.length > 0;
+    const dist = nearest ? (t: TileRef) => this.nearestShoreDist(t, sample) : distOld;
+    const cands: { tile: TileRef; troops: number; d: number; oldD: number; oldOk: boolean; what: string }[] = [];
     for (const bot of this.ctx.mg.players()) {
       if (bot.type() !== PlayerType.Bot || !bot.isAlive()) continue;
       const want = Math.ceil(bot.troops() * 2) + 500; // a beach landing costs more than a land attack: 2×, not 1.67×
       if (want > me.troops() * 0.4) continue;
-      let i = 0, bestT: TileRef | null = null, bestD = 1e9;
-      for (const t of bot.borderTiles()) { if ((i++ % 5) !== 0 || !this.ctx.mg.isShore(t)) continue; const d = dist(t); if (d < bestD) { bestD = d; bestT = t; } }
-      if (bestT !== null && bestD <= 250) cands.push({ tile: bestT, troops: Math.max(want, Math.floor(me.troops() * this.ctx.p.boatShare)), d: bestD + 80, what: `tribe ${bot.name()}` }); // open shore preferred: free land, no losses; a tribe only when no empty coast is near
+      let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9;
+      for (const t of bot.borderTiles()) {
+        if ((i++ % 5) !== 0 || !this.ctx.mg.isShore(t)) continue;
+        const d = dist(t); if (d < bestD) { bestD = d; bestT = t; }
+        if (nearest) { const dO = distOld(t); if (dO < oldD) { oldD = dO; oldT = t; } }
+      }
+      if (!nearest) { oldT = bestT; oldD = bestD; }
+      const troops = Math.max(want, Math.floor(me.troops() * this.ctx.p.boatShare));
+      if (bestT !== null && bestD <= 250) cands.push({ tile: bestT, troops, d: bestD + 80, oldD: oldD + 80, oldOk: oldD <= 250 && oldT === bestT, what: `tribe ${bot.name()}` }); // open shore preferred: free land, no losses; a tribe only when no empty coast is near
+      if (nearest && oldT !== null && oldD <= 250 && oldT !== bestT) cands.push({ tile: oldT, troops, d: 1e9, oldD: oldD + 80, oldOk: true, what: `tribe ${bot.name()}` }); // the old ranking's tile, for the liveness count only
     }
-    for (let dy = -200; dy <= 200; dy += 6) for (let dx = -200; dx <= 200; dx += 6) {
-      const x = fx + dx, y = fy + dy;
+    const box = this.scanBox(sample, fx, fy, 200);
+    for (let y = box.y0; y <= box.y1; y += 6) for (let x = box.x0; x <= box.x1; x += 6) {
       if (!this.ctx.mg.isValidCoord(x, y)) continue;
       const t = this.ctx.mg.ref(x, y);
       if (!this.ctx.mg.isLand(t) || !this.ctx.mg.isShore(t) || this.ctx.mg.hasOwner(t)) continue;
-      const d = Math.abs(dx) + Math.abs(dy);
-      if (d >= 30) cands.push({ tile: t, troops: Math.floor(me.troops() * this.ctx.p.boatShare), d, what: "empty shore" });
+      const dOld = Math.abs(x - fx) + Math.abs(y - fy);
+      const d = nearest ? dist(t) : dOld;
+      if (nearest && d > 200) continue;
+      if (d >= (nearest ? 10 : 30)) cands.push({ tile: t, troops: Math.floor(me.troops() * this.ctx.p.boatShare), d, oldD: dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 200 && Math.abs(y - fy) <= 200 && (x - fx) % 6 === 0 && (y - fy) % 6 === 0, what: "empty shore" });
     }
     cands.sort((a, b) => a.d - b.d);
     for (const c of cands.slice(0, 16)) {
-      if (c.troops < 500 || !this.q.acrossWater(c.tile)) continue;
+      if (c.d >= 1e9 || c.troops < 500 || (nearest ? !this.q.acrossWaterNear(c.tile, c.d) : !this.q.acrossWater(c.tile))) continue;
       if (this.ctx.boat(c.tile, c.troops, `early boat → ${c.what}, ${c.d} tiles`) === 0) continue;
+      if (nearest) {
+        // liveness: what the old ranking (middle tile, 30-tile floor) would have launched at
+        const old = cands.filter((o) => o.oldOk).sort((a, b) => a.oldD - b.oldD).slice(0, 16).find((o) => o.troops >= 500 && this.q.acrossWater(o.tile));
+        if (old === undefined || old.tile !== c.tile) this.lim.fire("boatsNearest", "early");
+      }
       return true;
     }
     return false;
@@ -901,7 +976,9 @@ export class Military {
     if (shore.length === 0) return;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
-    let best: TileRef | null = null, bestBot: Player | null = null, bestD = 1e9;
+    const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
+    const nearest = sample.length > 0;
+    let best: TileRef | null = null, bestBot: Player | null = null, bestD = 1e9, oldBest: TileRef | null = null, oldD = 1e9;
     for (const bot of this.ctx.mg.players()) {
       if (bot.type() !== PlayerType.Bot || !bot.isAlive() || bot.numTilesOwned() < 100) continue;
       if (this.ctx.mg.ticks() - (this.boatedAt.get(bot) ?? -1e9) < 900) continue;
@@ -912,16 +989,19 @@ export class Military {
       for (const t of bot.borderTiles()) {
         if ((i++ % 7) !== 0) continue;
         if (!this.ctx.mg.isShore(t)) continue;
-        const d = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+        const dO = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+        const d = nearest ? this.nearestShoreDist(t, sample) : dO;
         if (d < bestD && d <= 350) { bestD = d; best = t; bestBot = bot; }
+        if (dO < oldD && dO <= 350) { oldD = dO; oldBest = t; }
       }
     }
     if (best === null || bestBot === null) return;
-    if (!this.q.acrossWater(best)) return; // reachable by land: that is a land attack, not a boat
+    if (nearest ? !this.q.acrossWaterNear(best, bestD) : !this.q.acrossWater(best)) return; // reachable by land: that is a land attack, not a boat
     const troops = Math.ceil(bestBot.troops() * 2) + 500;
     if (troops > this.ctx.sit.spendable) return;
     if (this.ctx.boat(best, troops, `to tribe ${bestBot.name()} ${bestBot.numTilesOwned()}t/${Math.round(bestBot.troops() / 1000)}k, ${bestD} tiles`) === 0) return;
     this.boatedAt.set(bestBot, this.ctx.mg.ticks());
+    if (nearest && oldBest !== best) this.lim.fire("boatsNearest", "tribe");
   }
 
   /** Boxed in at cap with nothing to fight on land: land a big boat on the weakest unfriendly player within reach. */
@@ -940,17 +1020,22 @@ export class Military {
     if (shore.length === 0) return;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
+    const sample = this.ctx.p.boatsNearest ? this.shoreSample() : []; // `boatsNearest`: see seaExpansion
+    const nearest = sample.length > 0;
     const { rivals } = this.q.neighbours();
-    let best: { tile: TileRef; p: Player; d: number; score: number } | null = null;
+    let best: { tile: TileRef; p: Player; d: number; score: number } | null = null, oldBest: { tile: TileRef; score: number } | null = null;
     for (const o of this.ctx.mg.players()) {
       if (o === me || !o.isAlive() || me.isFriendly(o) || o.type() === PlayerType.Bot || rivals.includes(o)) continue;
       if (o.troops() > me.troops() * 0.25 || o.numTilesOwned() < 300 || o.units(UnitType.DefensePost).length > 0) continue;
       let i = 0;
       for (const t of o.borderTiles()) {
         if ((i++ % 9) !== 0 || !this.ctx.mg.isShore(t)) continue;
-        const d = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+        const dO = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
+        const d = nearest ? this.nearestShoreDist(t, sample) : dO;
+        const base = this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - o.units(UnitType.DefensePost).length * 2;
+        if (nearest && dO <= 500) { const s = base - dO / 100; if (oldBest === null || s > oldBest.score) oldBest = { tile: t, score: s }; }
         if (d > 500) continue;
-        const score = this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - d / 100 - o.units(UnitType.DefensePost).length * 2;
+        const score = nearest ? base / Math.max(1, d / 40) : this.q.density(o) / 10 + o.units(UnitType.City).length * 2 - d / 100 - o.units(UnitType.DefensePost).length * 2;
         if (best === null || score > best.score) best = { tile: t, p: o, d, score };
       }
     }
@@ -959,6 +1044,65 @@ export class Military {
     if (troops < 20000 || troops < best.p.troops() * 3) return; // a landing under 3× is the boat that takes no land
     if (this.ctx.boat(best.tile, troops, `INVADE ${best.p.name()} ${best.p.numTilesOwned()}t/${Math.round(best.p.troops() / 1000)}k, ${best.d} tiles`) === 0) return;
     this.lastInvasionTick = this.ctx.mg.ticks();
+    if (nearest && (oldBest === null || oldBest.tile !== best.tile)) this.lim.fire("boatsNearest", "invade");
+  }
+
+  // ---------------------------------------------------------------- finishByBoat: the remnant a land war cannot reach
+  private finishedAt = new Map<Player, number>();
+  /** The part of `t` no land attack of ours can reach: its 4-connected pieces (Military.pieces — exact, from the border
+   *  alone, the flood fill the brief asked for costs O(tiles)) with no border tile beside one of ours. AttackExecution
+   *  only takes tiles adjacent to ours, so a piece with no such tile is never conquered by a land wave; when the
+   *  land war has taken what borders us the target lives on there. Returns the tile count and the piece's ocean-shore
+   *  tiles (sampled to ≤ 200), or null when every piece touches us. */
+  unreachablePart(t: Player): { tiles: number; shore: TileRef[] } | null {
+    const mg = this.ctx.mg, me = this.ctx.me;
+    let tiles = 0;
+    const shore: TileRef[] = [];
+    for (const piece of Military.pieces(mg, t)) {
+      let touches = false;
+      for (const b of piece.border) { for (const n of mg.neighbors(b)) if (mg.owner(n) === me) { touches = true; break; } if (touches) break; }
+      if (touches) continue;
+      tiles += piece.tiles;
+      for (const b of piece.border) if (mg.isOceanShore(b)) shore.push(b);
+    }
+    if (tiles === 0) return null;
+    const step = Math.max(1, Math.ceil(shore.length / 200));
+    const sampled: TileRef[] = [];
+    for (let i = 0; i < shore.length; i += step) sampled.push(shore[i]);
+    return { tiles, shore: sampled };
+  }
+  /** `finishByBoat` (every 100 ticks from tick 1200): the current war target, or any non-bot rival one of our waves is
+   *  on, that owns a piece we cannot reach by land and which has an ocean shore gets a boat from our nearest shore
+   *  onto that piece's shore tile nearest our coast: 2 × its troops × (unreachable / its tiles) + 2000, at most 40 %
+   *  of the spendable. One boat per target at a time (a transport of ours still bound for it, or one launched inside
+   *  600 ticks, holds the next). Fires on every launch. */
+  finishByBoat(): void {
+    const me = this.ctx.me, mg = this.ctx.mg, now = mg.ticks();
+    if (this.ctx.sit.boats >= mg.config().boatMaxNumber()) return;
+    const sample = this.shoreSample();
+    if (sample.length === 0) return;
+    const targets: Player[] = [];
+    if (this.currentTarget_ !== null && now - this.lastWarTick < 1800) targets.push(this.currentTarget_);
+    for (const a of me.outgoingAttacks()) { const t = a.target(); if (t.isPlayer() && t.type() !== PlayerType.Bot && !targets.includes(t)) targets.push(t); }
+    const bound = new Set<Player>();
+    for (const u of me.units(UnitType.TransportShip)) { const d = u.targetTile(); if (d !== undefined && mg.hasOwner(d)) { const o = mg.owner(d); if (o.isPlayer()) bound.add(o); } }
+    for (const t of targets) {
+      if (!t.isAlive() || me.isFriendly(t) || !me.canAttackPlayer(t) || bound.has(t)) continue;
+      if (now - (this.finishedAt.get(t) ?? -1e9) < 600) continue;
+      const part = this.unreachablePart(t);
+      if (part === null || part.shore.length === 0) continue;
+      let tile: TileRef | null = null, dist = 1e9;
+      for (const s of part.shore) { const d = this.nearestShoreDist(s, sample); if (d < dist) { dist = d; tile = s; } }
+      if (tile === null || dist > 600) continue;
+      const share = part.tiles / Math.max(1, t.numTilesOwned()), spendable = this.ctx.sit.spendable, theirs = t.troops();
+      const troops = Math.min(Math.ceil(2 * theirs * share) + 2000, Math.floor(spendable * 0.4));
+      const sent = this.ctx.boat(tile, troops, `finish ${t.name()} across water, ${dist} tiles`);
+      if (sent === 0) continue;
+      this.finishedAt.set(t, now);
+      this.ctx.fire("finishByBoat");
+      this.ctx.log(`t${now} FINISH BY BOAT ${t.name()} ${part.tiles} unreachable tiles of ${t.numTilesOwned()}, troops ${Math.round(theirs)} spendable ${Math.floor(spendable)} → ${sent} landing ${dist} tiles out`);
+      return;
+    }
   }
 
   // ---------------------------------------------------------------- nukes
