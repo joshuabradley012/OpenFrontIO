@@ -28,10 +28,14 @@ Read this first if you are picking the rebuild up.
   Sweeps: `scripts/lab/remote.sh` (Hetzner, WORKERS=N) or `sweep.sh`; results
   via `scripts/lab/summarize.py`; tuning via `cmaes.py` / `ladder.sh`.
 
-**Seven flags, all default off, all waiting for a 30-game Medium A/B**
+**Flags (see `Params.ts` for the defaults — they are not all off)**
+Originally seven default-off flags waited for a 30-game Medium A/B:
 `simWars`, `realRetreats`, `scoredSpend`, `bsrReserve`, `trustWars`,
-`nationAware`, `phaseGates`. `{}` is the exact pre-rebuild baseline (every
-flag-off transcript was proven byte-identical at merge time).
+`nationAware`, `phaseGates`; `{}` was the exact pre-rebuild baseline (every
+flag-off transcript was proven byte-identical at merge time). Today
+`realRetreats`, `trustWars` and `nationAware` default **on** (PROVISIONAL, see
+their comments in `Params.ts`), `nearbyEvery` is 10, and the package below
+added three default-off flags: `steamrollCap`, `holdHumans`, `strictOneWar`.
 *Update (C3 done):* `simWars`, `scoredSpend`, `bsrReserve` and `phaseGates`
 lost their A/Bs and were removed in 7cd2c9c56 (code, tests, `Estimate.ts`,
 `Spend.ts`; a default-config game was diff-identical before and after). The
@@ -538,3 +542,41 @@ Findings and what was done about them; see "Scoring" above for the formulas.
 **Next lab session:** `ladder.sh` on the two provisional flags (60 games,
 30 min, SHIFT=150) → fold or revert; then `cmaes.py --pop 10 --gens 12
 --games-growth`; then Hard.
+
+## Fixes + perf package (2026-08-29, branch `bot/fixes-perf`)
+
+Review opportunity #8 ("cheap CPU wins") and the bug table.
+
+**Performance (decision-identical; golden hash unchanged, 6-minute africa/Medium
+smoke row-for-row identical, botMs 394 → 306):** the MIRV-threat scan, the
+expiring list and the expiry hold are computed on the 10-tick cadence every
+consumer runs on (`readSlow`); `Rivals.troopSendCap` memoises each rival's
+`nearby()` for `nearbyEvery` ticks; `watchSplit` derives the 4-connected pieces
+from the border runs alone (`Military.pieces`, exact — tested against the old
+flood fill on constructed shapes and 200 random blobs; only the sampled gap
+estimate moved, to border samples); `neighbours()` memoises the friend/rival
+split per tick (invalidated after `acceptAlliances`); `interiorTile` ranks the
+40 samples with one walk of the border, once per tick; a `prune` rule (every
+300 ticks) drops dead players, finished attacks and passed windows from every
+per-player map (`bombed` is kept on purpose: a structure is bombed once).
+
+**Bug fixes (no flag):** `reachable()` blacklists only a wave that vanished
+with the target still on our border and no wave of theirs to cancel against;
+a lapse we planned (`plannedTarget`) leaves trust unchanged; `manageExpiries`
+runs every 50 ticks and retries a gift/renewal that could not go through, once
+per alliance; the MIRV-threat gate reads the live MIRV price; `maybeMIRV`
+shifts off a SAM-covered centre (or holds when every tile is covered); the rule
+table reads `expandEvery` / `allianceEvery`. None of these reach the golden
+window (its hash is unchanged); each has a test in `tests/playbook/fixesPerf.test.ts`.
+
+**Three new flags, default off until the 30-game Medium A/B:**
+- `steamrollCap` — city-unit cap = 0.9 × the nations' steamroll multiplier
+  (1.5× Medium / 1.25× Hard, never under the rule's 10-unit floor) instead of
+  the flat max(9, 1.15× runner-up). Fires when it lifts a cap the flat rule hit.
+- `holdHumans` — the 45 s expiry hold also for a human ally stronger than us.
+- `strictOneWar` — counters occupy the second war slot: one war plus counters,
+  no second war (opportunity wars included) while a counter runs; a counter on
+  the current target counts as that war.
+
+A/B: `CONFIGS='{"base":{},"cap":{"steamrollCap":true},"hold":{"holdHumans":true},"one":{"strictOneWar":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
+Tests: `tests/playbook/{fixesPerf,steamrollCap,holdHumans,strictOneWar}.test.ts`.
