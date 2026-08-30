@@ -131,6 +131,17 @@ export class PlaybookBotExecution implements Execution {
     this.sit.hold = this.sit.expiring.find((o) => o.type() === PlayerType.Nation && (this.p.nationAware ? this.q.rivals.couldAttackAtExpiry(o, troops).can : o.troops() > troops * 0.85)) ?? null;
     if (this.p.nationAware && t % 100 === 0) { const heur = this.sit.expiring.find((o) => o.type() === PlayerType.Nation && o.troops() > troops * 0.85) ?? null; if (heur !== this.sit.hold) this.ctx.fire("nationAware"); }
     this.q.enrichRivals(this.sit); // B2: per-rival view
+    if (this.p.threatMap) {
+      // review #5: the reserve follows the pressure nobody at home answers (Σ max(0, theirs − ours) over unfriendly
+      // segments), from the flat share up to twice it — bsrReserve scaled one reserve by the max bsr and lost its A/B.
+      // Never below the flat share: the brief's 0.5 floor made every calm minute a 15 % reserve and the sea-expansion
+      // rule shipped the army to collapsed players on other continents (africa 6-min smoke: 8.8k tiles vs 44k)
+      const tm = this.q.rivals.threat;
+      const mult = Math.min(2, Math.max(1, 1 + (this.p.threatReserveGain * tm.undefended) / Math.max(1, troops)));
+      this.sit.reserve = reserve * mult; this.sit.spendable = Math.max(0, troops - this.sit.reserve);
+      if (mult !== 1 && t % 100 === 0) this.ctx.fire("threatMap");
+      if (t % 600 === 0 && tm.segments.length > 0) this.ctx.log(`t${t} ${tm.summary()} reserve ×${mult.toFixed(2)}`);
+    }
     this.q.enrichPhase(this.sit); // B2: phase (reads spendable)
   }
   /** The one place troops leave home. Never below the reserve; returns what was actually sent (0 = nothing). */
