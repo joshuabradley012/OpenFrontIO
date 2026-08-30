@@ -2,12 +2,13 @@
 // Not a correctness test — a harness. Two entry points share this module:
 //   node --import tsx tests/lab/playbook.lab.ts       (bare node; what sweep.sh runs)
 //   npx vitest --dir tests tests/lab/playbook.lab.test.ts --run   (same game under vitest)
+import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Config } from "../../src/core/configuration/Config";
 import { NationExecution } from "../../src/core/execution/NationExecution";
-import { PlaybookBotExecution, DEFAULT_PLAYBOOK, PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
+import { PlaybookBotExecution as CurrentBot, PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { SpawnExecution } from "../../src/core/execution/SpawnExecution";
 import { TribeSpawner } from "../../src/core/execution/TribeSpawner";
 import { WinCheckExecution } from "../../src/core/execution/WinCheckExecution";
@@ -22,6 +23,18 @@ import { GameConfig } from "../../src/core/Schemas";
 import { TestConfig } from "../util/TestConfig";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "../..");
+// The bot under test: today's src/core/execution/playbook by default; BOT_DIR=<dir> (or PARAMS {"__bot":"<tag>"}
+// = .history/<tag>/src/core/execution/playbook, scripts/lab/history.sh) loads an extracted milestone bot against
+// today's engine so a sweep can play several bot versions on one grid (scripts/lab/versions/HISTORY.md).
+type BotModule = typeof import("../../src/core/execution/playbook/PlaybookBotExecution");
+let Bot: BotModule;
+let botDir = "";
+async function loadBot(dir: string | undefined): Promise<void> {
+  botDir = dir ?? "";
+  Bot = dir ? ((await import(path.resolve(ROOT, dir, "PlaybookBotExecution.ts"))) as BotModule)
+            : await import("../../src/core/execution/playbook/PlaybookBotExecution");
+}
 const OUT = process.env.LAB_OUT ? process.env.LAB_OUT.replace(/\/?$/, "/") : "/private/tmp/claude-501/-Users-josh-Code-openfront/f46e4d3b-aecb-4e40-bb41-205a4bfbadb7/scratchpad/";
 
 class LabConfig extends TestConfig {
@@ -67,9 +80,12 @@ function pickSpawn(game: Game, _nations: Nation[], prefer: [number, number], _mi
   const rank = global ? Number(process.env.SPAWNRANK ?? 0) * 6 + Math.max(0, regionIdx) : Number(process.env.SPAWNRANK ?? 0);
   const exclude: [number, number][] = [];
   let t: TileRef | null = null;
-  for (let i = 0; i <= rank; i++) { t = PlaybookBotExecution.pickSpawn(game, global ? undefined : prefer, exclude); if (t === null) break; exclude.push([game.x(t), game.y(t)]); }
+  // a milestone bot without the exclude parameter (before 1926105b6) cannot walk the ranks: use today's picker
+  const own = typeof Bot.PlaybookBotExecution.pickSpawn === "function" && Bot.PlaybookBotExecution.pickSpawn.length >= 3;
+  const picker = own ? Bot.PlaybookBotExecution : CurrentBot;
+  for (let i = 0; i <= rank; i++) { t = picker.pickSpawn(game, global ? undefined : prefer, exclude); if (t === null) break; exclude.push([game.x(t), game.y(t)]); }
   if (t === null) throw new Error("no spawn near " + prefer);
-  spawnNote = global ? `global rank ${rank}` : `bot picker rank ${rank}`;
+  spawnNote = (global ? `global rank ${rank}` : `bot picker rank ${rank}`) + (botDir ? `, bot ${botDir}${own ? "" : ", today's picker"}` : "");
   return t;
 }
 function neighboursBots(me: Player): string { return me.nearby().filter((n): n is Player => n.isPlayer() && n.type() === PlayerType.Bot).map((b) => Math.round(b.troops() / 1000) + "k/" + b.numTilesOwned() + "t").join(" ") || "-"; }
@@ -92,7 +108,7 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
   for (let i = 0; i < 3; i++) game.executeNextTick();
   game.endSpawnPhase();
   const me = game.player(info.id);
-  const bot = new PlaybookBotExecution(me, params);
+  const bot = new Bot.PlaybookBotExecution(me, params);
   let botMs = 0; const origTick = bot.tick.bind(bot); bot.tick = (t: number) => { const s0 = performance.now(); origTick(t); botMs += performance.now() - s0; };
   game.addExecution(bot, new WinCheckExecution());
   const rows: string[] = [`== ${label} | spawn ${game.x(spawn)},${game.y(spawn)} (${spawnNote}) | ${difficulty} ==`];
@@ -111,7 +127,7 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
   }
   const ranked = game.players().filter((p) => p.type() !== PlayerType.Bot && p.isAlive()).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
   const rank = ranked.findIndex((p) => p === me) + 1; const leader = ranked[0]?.numTilesOwned() ?? 1;
-  rows.push(`  FINAL rank=${rank || 99} share=${(me.numTilesOwned() / Math.max(1, leader)).toFixed(2)} botMs=${Math.round(botMs)} gameMs=${Math.round(allMs)} alive=${me.isAlive()} tiles=${me.numTilesOwned()} troops=${Math.round(me.troops()/1000)}k cities=${me.unitsOwned(UnitType.City)} ports=${me.unitsOwned(UnitType.Port)} factories=${me.unitsOwned(UnitType.Factory)} silos=${me.unitsOwned(UnitType.MissileSilo)} sams=${me.unitsOwned(UnitType.SAMLauncher)} bombs=${bot.bombs} trainGold=${Math.round(Number(me.trainGold())/1000)}k gold=${Math.round(Number(me.gold())/1000)}k winner=${game.getWinner() === null ? "none" : game.getWinner() === me ? "us" : "other"} players=${game.players().filter((p) => p.type() !== PlayerType.Bot).length} fired=${[...bot.fired].map(([k, v]) => `${k}:${v}`).join(",")}`);
+  rows.push(`  FINAL rank=${rank || 99} share=${(me.numTilesOwned() / Math.max(1, leader)).toFixed(2)} botMs=${Math.round(botMs)} gameMs=${Math.round(allMs)} alive=${me.isAlive()} tiles=${me.numTilesOwned()} troops=${Math.round(me.troops()/1000)}k cities=${me.unitsOwned(UnitType.City)} ports=${me.unitsOwned(UnitType.Port)} factories=${me.unitsOwned(UnitType.Factory)} silos=${me.unitsOwned(UnitType.MissileSilo)} sams=${me.unitsOwned(UnitType.SAMLauncher)} bombs=${bot.bombs} trainGold=${Math.round(Number(me.trainGold())/1000)}k gold=${Math.round(Number(me.gold())/1000)}k winner=${game.getWinner() === null ? "none" : game.getWinner() === me ? "us" : "other"} players=${game.players().filter((p) => p.type() !== PlayerType.Bot).length} fired=${[...(bot.fired ?? [])].map(([k, v]) => `${k}:${v}`).join(",")}`);
   rows.push("  log: " + bot.log.join(" | "));
   return rows.join("\n");
 }
@@ -120,15 +136,35 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
 export async function runLab(): Promise<void> {
   const out: string[] = [];
   const spawns: [string, [number, number]][] = [["north-russia", [1200, 140]], ["north-america", [450, 300]], ["east-asia", [1600, 350]], ["africa", [1100, 550]], ["south-america", [620, 650]], ["australia", [1680, 660]]];
+  const o = process.env.PARAMS ? JSON.parse(process.env.PARAMS) : {};
+  await loadBot(botDirFromEnv(o));
+  delete o.__bot;
+  const { DEFAULT_PLAYBOOK } = Bot;
   const params: PlaybookParams = { ...DEFAULT_PLAYBOOK };
   if (process.env.EXPAND) { params.expandContested = Number(process.env.EXPAND); params.expandFree = Number(process.env.EXPAND) / 2; }
   if (process.env.EVERY) params.expandEvery = Number(process.env.EVERY);
-  if (process.env.PARAMS) { const o = JSON.parse(process.env.PARAMS); Object.assign(params, o); if (o.spawnInland !== undefined) DEFAULT_PLAYBOOK.spawnInland = o.spawnInland; }
+  if (process.env.PARAMS) { Object.assign(params, o); if (o.spawnInland !== undefined) DEFAULT_PLAYBOOK.spawnInland = o.spawnInland; }
   const minutes = process.env.MIN === "full" ? 170 : process.env.MIN ? Number(process.env.MIN) : 20;
   const shift = Number(process.env.SHIFT ?? 0);
   for (const [name, pref0] of spawns) { const pref: [number, number] = [pref0[0] + shift, pref0[1] + shift]; if (process.env.SPAWN && process.env.SPAWN !== name) continue; out.push(await runGame(name, params, minutes, process.env.DIFF === "medium" ? Difficulty.Medium : Difficulty.Hard, pref)); fs.writeFileSync(OUT + (process.env.OUTFILE ?? "lab_v10.txt"), out.join("\n\n")); }
   fs.writeFileSync(OUT + "lab_baseline.txt", out.join("\n\n"));
 }
 
+/** BOT_DIR, or .history/<tag>/... for PARAMS {"__bot": tag}; undefined = today's bot. */
+function botDirFromEnv(params: { __bot?: string }): string | undefined {
+  return params.__bot !== undefined ? `.history/${params.__bot}/src/core/execution/playbook` : process.env.BOT_DIR;
+}
+
 // Bare-node entry (no vitest: ~2 s less startup a game and no path-filter foot-guns).
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await runLab();
+if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // An extracted bot needs tsx to compile it with the repo's compiler options (useDefineForClassFields: false —
+  // see history.sh), which tsx only applies inside its tsconfig's include: re-exec once with TSX_TSCONFIG_PATH
+  // pointing at .history/<tag>/tsconfig.json.
+  const dir = botDirFromEnv(process.env.PARAMS ? JSON.parse(process.env.PARAMS) : {});
+  const tsconfig = dir !== undefined ? path.join(dir, "../../../../tsconfig.json") : undefined;
+  if (tsconfig !== undefined && process.env.TSX_TSCONFIG_PATH === undefined && fs.existsSync(tsconfig)) {
+    const r = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, TSX_TSCONFIG_PATH: tsconfig } });
+    process.exit(r.status ?? 1);
+  }
+  await runLab();
+}

@@ -29,3 +29,6 @@ map-generator/map-generator.exe
 
 # lab game recordings (tests/lab, RECORD=1)
 lab-out/
+
+# extracted milestone bots (scripts/lab/history.sh)
+.history/
