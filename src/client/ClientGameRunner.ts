@@ -129,6 +129,27 @@ function playbookParamsJSON(): string | undefined {
     return undefined;
   }
 }
+// Dev-only lab replay (docs/PlaybookBotLab.md "Replays"): paste a transcript's `replay:` line into
+// localStorage.labReplay (or ?labreplay=<url-encoded recipe>) and start any solo game — the worker rebuilds
+// that exact lab game (src/core/lab/LabReplay.ts) and the normal game UI just watches it (intents ignored).
+// localStorage.removeItem("labReplay") to go back to normal games.
+const labReplayInUrl =
+  typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("labreplay")
+    : null;
+function labReplayRecipe(): string | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  let r: string | null = labReplayInUrl;
+  if (r === null) {
+    try {
+      r = localStorage.getItem("labReplay");
+    } catch {
+      r = null;
+    }
+  }
+  if (!r) return undefined;
+  return r.trim().replace(/^replay:\s*/, "");
+}
 function playbookBotEnabled(): boolean {
   if (import.meta.env.VITE_PLAYBOOK_BOT === "1") return true;
   if (!import.meta.env.DEV) return false;
@@ -665,6 +686,7 @@ async function createClientGame(
     clientID,
     playbookBotEnabled(),
     playbookParamsJSON(),
+    labReplayRecipe(),
   );
   await worker.initialize();
   await atlasDataLoad;

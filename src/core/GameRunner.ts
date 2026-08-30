@@ -11,6 +11,8 @@ import {
   AllPlayers,
   BuildableUnit,
   Game,
+  GameMapSize,
+  GameMapType,
   GameType,
   GameUpdates,
   NameViewData,
@@ -30,6 +32,7 @@ import { GameMapLoader } from "./game/GameMapLoader";
 import { ErrorUpdate, GameUpdateViewData } from "./game/GameUpdates";
 import { createNationsForGame } from "./game/NationCreation";
 import { loadTerrainMap as loadGameMap } from "./game/TerrainMapLoader";
+import { labReplaySteps, LabReplaySteps, parseReplayRecipe } from "./lab/LabReplay";
 import { PseudoRandom } from "./PseudoRandom";
 import { ClientID, GameID, GameStartInfo, Turn } from "./Schemas";
 import { simpleHash } from "./Util";
@@ -41,7 +44,30 @@ export async function createGameRunner(
   callBack: (gu: GameUpdateViewData | ErrorUpdate) => void,
   playbookBot = false,
   playbookParams: string | undefined = undefined,
+  labReplay: string | undefined = undefined,
 ): Promise<GameRunner> {
+  // Dev-only lab replay (src/core/lab/LabReplay.ts): rebuild the exact lab game a transcript's `replay:`
+  // recipe describes — the lab's own world and config, the bot already spawned and playing — and watch it in
+  // the normal solo UI. The runner ignores every intent (watch-only); determinism holds per engine commit.
+  if (labReplay !== undefined && gameStart.config.gameType === GameType.Singleplayer) {
+    const spec = parseReplayRecipe(labReplay);
+    const world = await loadGameMap(GameMapType.World, GameMapSize.Normal, mapLoader, false);
+    // The six spawn-phase ticks run through the normal turn loop below (labSteps), NOT pre-ticked here: a
+    // player's first update emission is consumed by whoever executes its tick, and the view needs it.
+    const steps = labReplaySteps(spec, { gameMap: world.gameMap, miniMap: world.miniGameMap, nations: world.nations }, clientID ?? null);
+    console.log(`lab replay: ${spec.region} rank ${spec.spawnRank}${spec.global ? " (global)" : ""}, gameID ${steps.gameID}, ${spec.minutes} min recorded`);
+    const gr = new GameRunner(
+      steps.game,
+      new Executor(steps.game, steps.gameID, clientID),
+      callBack,
+      undefined,
+      steps.gameID,
+      undefined,
+      steps, // labReplay: init() adds nothing (the bootstrap does), intents are dropped
+    );
+    gr.init();
+    return gr;
+  }
   const config = new Config(gameStart.config, null, false, gameStart.listed);
   const gameMap = await loadGameMap(
     gameStart.config.gameMap,
@@ -117,10 +143,15 @@ export class GameRunner {
     private gameID: GameID = "",
     // Dev-only: JSON PlaybookParams overrides merged over DEFAULT_PLAYBOOK (localStorage.playbookParams).
     private playbookParams: string | undefined = undefined,
+    // Dev-only lab replay (src/core/lab/LabReplay.ts): the lab bootstrap owns this game — init() adds no
+    // executions, the spawn/bot stages run at their exact ticks below, and every turn's intents are ignored
+    // (watch-only: a click must not fork the recorded game).
+    private labSteps: LabReplaySteps | undefined = undefined,
   ) {}
   private botSpawnQueued = false;
 
   init() {
+    if (this.labSteps !== undefined) return; // the lab bootstrap adds everything this game runs (LabReplay.labReplaySteps)
     if (this.game.config().gameConfig().gameType !== GameType.Singleplayer) {
       this.game.addExecution(new SpawnTimerExecution());
     }
@@ -159,9 +190,15 @@ export class GameRunner {
     }
     this.isExecuting = true;
 
-    this.game.addExecution(
-      ...this.execManager.createExecs(this.turns[this.currTurn]),
-    );
+    if (this.labSteps === undefined) {
+      this.game.addExecution(
+        ...this.execManager.createExecs(this.turns[this.currTurn]),
+      );
+    } else {
+      // lab replay: intents dropped (watch-only); the bootstrap stages fire at the lab's exact ticks
+      if (this.game.ticks() === 3) this.labSteps.placeSpawn();
+      if (this.game.ticks() === 6) this.labSteps.finish();
+    }
     this.currTurn++;
 
     const wasInSpawnPhase = this.game.inSpawnPhase();

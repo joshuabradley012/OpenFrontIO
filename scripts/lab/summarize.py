@@ -17,6 +17,7 @@ identical pairs, the biggest swings, and the live-game statistics below.
   python3 scripts/lab/summarize.py --verdict 3 DIR …   # per config: "clear" when |wins - losses| >= 3 vs the baseline, else "unclear"
                                                        # (exit 0 when every config is clear — remote.sh STAGED=1 uses this to skip the rest of the grid)
   python3 scripts/lab/summarize.py --sprt DIR base cand  # + sequential test (GSPRT) per config: ACCEPT / REJECT / CONTINUE (n more pairs)
+  python3 scripts/lab/summarize.py --replays 5 DIR [configs]   # the 5 best and 5 worst games with their replay recipes (deterministic re-run)
   python3 scripts/lab/summarize.py --sprt --verdict 3 DIR base cand   # exit 0 when every config's SPRT has decided (remote.sh SPRT=1 loop)
   python3 scripts/lab/summarize.py --cycles DIR cand v-current v3 v2   # non-transitive triples (a beats b beats c beats a)
   python3 scripts/lab/summarize.py --objective wscore DIR …   # objective for the paired stats / SPRT / --fitness: score | wscore | winrate
@@ -308,6 +309,54 @@ def load(d, cfg):
                 games[(batch, region)] = g
     fill_players(d, cfg, games)
     return games
+
+
+def load_transcripts(d, cfg):
+    """{(batch, region): (game, path, replay)} straight from the p_*.txt transcripts — the only place the
+    `replay:` recipe lives (aggregate.sh drops it from the ab30 lines)."""
+    out = {}
+    for f in sorted(glob.glob(os.path.join(d, f"p_{cfg}_*_*.txt"))):
+        rest = os.path.basename(f)[len(f"p_{cfg}_"):-4]
+        batch, _, region = rest.partition("_")
+        text = open(f, errors="replace").read()
+        joined = " ".join(l.strip() for l in text.splitlines() if l.startswith("==") or "DEAD" in l or "FINAL" in l)
+        g = parse_line(joined)
+        if not g:
+            continue
+        replay = next((l.strip()[len("replay: "):] for l in text.splitlines() if l.strip().startswith("replay: ")), None)
+        out[(batch, region)] = (g, f, replay)
+    return out
+
+
+def print_replays(d, names, n):
+    """The n best and n worst games across `names` by the dir's objective, each with the env recipe that
+    replays it bit-identically (games are deterministic; see tests/lab/playbook.lab.ts `replay:`)."""
+    data = {c: load_transcripts(d, c) for c in names}
+    resolve_objective({c: {k: g for k, (g, _, _) in v.items()} for c, v in data.items()})
+    rows = []
+    for c, games in data.items():
+        for (batch, region), (g, f, replay) in games.items():
+            rows.append((obj(g), c, batch, region, g, f, replay))
+    if not rows:
+        print(f"no p_*.txt transcripts in {d} (replay recipes live only there)")
+        return 1
+    rows.sort(key=lambda r: -r[0])
+    print(OBJECTIVE_NOTE)
+    missing = sum(1 for r in rows if r[6] is None)
+    if missing:
+        print(f"note: {missing} of {len(rows)} transcripts have no replay: line (sweep before 2026-08-30)")
+
+    def block(title, sel):
+        print("\n" + title)
+        for sc, c, batch, region, g, f, replay in sel:
+            w = f" winner={g['winner']}" if g.get("winner") in ("us", "other") else ""
+            rel = os.path.relpath(f)
+            print(f"  {sc:6.3f}  {c}/{batch}/{region}  rank={g['rank']} tiles={g['tiles']} alive={g['alive']}{w}  ({f if rel.startswith('..') else rel})")
+            print(f"          {replay if replay else '(no replay line)'}")
+    block(f"best {min(n, len(rows))} games ({OBJECTIVE}):", rows[:n])
+    block(f"worst {min(n, len(rows))} games ({OBJECTIVE}):", rows[-n:][::-1])
+    print("\nre-run: paste a recipe into a shell (same engine commit). watch: localStorage.labReplay = '<recipe>' on the dev server, then start any solo game (docs/PlaybookBotGUI.md)")
+    return 0
 
 
 def assumed_note():
@@ -951,6 +1000,18 @@ def selftest():
         fit = json.loads(out)
         check(fit["cand"]["objective"] == "score" and abs(fit["cand"]["fitness"] - fit["cand"]["score"]) < 1e-9, "20-min dir: --fitness reports score")
 
+        # --replays: transcripts with replay recipes, best and worst by the objective
+        rp = os.path.join(tmp, "rp"); os.makedirs(rp)
+        for region, win in (("africa", True), ("australia", False)):
+            with open(os.path.join(rp, f"p_cand_med0_{region}.txt"), "w") as fh:
+                fh.write(f"== {region} | spawn 1,1 (bot picker rank 0) | Medium ==\n")
+                fh.write(f"  replay: MIN=20 DIFF=medium SPAWNRANK=0 SPAWN={region} node --import tsx tests/lab/playbook.lab.ts\n")
+                fh.write("  " + final(region, win).partition(" == ")[2] + "\n")
+        rc, out = run(["--replays", "1", rp])
+        check(rc == 0 and "best 1 games" in out and "worst 1 games" in out, f"--replays exits {rc}")
+        check("SPAWN=africa node" in out.split("worst 1")[0] and "SPAWN=australia node" in out.split("worst 1")[1],
+              "--replays: the win is the best game, the loss the worst, each with its recipe")
+
         # mixed: the base has winner=, the candidate's files do not -> warn, use wscore
         mixed = os.path.join(tmp, "mixed"); os.makedirs(mixed)
         write_dir(mixed, "base", ["med0"], lambda r, i: final(r, i in base_wins))
@@ -969,11 +1030,18 @@ def main(argv):
     mode = "table"
     thresh = 3
     old = False
+    n_replays = 5
     while argv and argv[0].startswith("--"):
         if argv[0] == "--at":
             AT = int(argv[1]); argv = argv[2:]
         elif argv[0] == "--verdict":
             mode = "verdict"; thresh = int(argv[1]); argv = argv[2:]
+        elif argv[0] == "--replays":
+            mode = "replays"
+            if len(argv) > 1 and argv[1].isdigit():
+                n_replays = int(argv[1]); argv = argv[2:]
+            else:
+                argv = argv[1:]
         elif argv[0] in ("--fitness", "--ladder", "--cycles"):
             mode = argv[0][2:]; argv = argv[1:]
         elif argv[0] == "--sprt":
@@ -999,11 +1067,15 @@ def main(argv):
         return 2
     d = argv[0]
     names = argv[1:] or discover(d)
+    if not names and mode == "replays":
+        names = sorted({os.path.basename(f)[2:].rsplit("_", 2)[0] for f in glob.glob(os.path.join(d, "p_*_*_*.txt"))})
     if not names and AT is not None:
         names = sorted({os.path.basename(f)[2:].rsplit("_", 2)[0] for f in glob.glob(os.path.join(d, "p_*_*_*.txt"))})
     if not names:
         print(f"no ab30_*.txt files in {d}")
         return 1
+    if mode == "replays":
+        return print_replays(d, names, n_replays)
     if mode == "fitness":
         fitness_json(d, names, old)
     elif mode == "verdict":

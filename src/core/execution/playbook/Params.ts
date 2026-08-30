@@ -170,7 +170,7 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nationMirvAware: false, // default off until the 30-game Medium A/B
   clockTicks: 18000, // the 30-minute public game; tests/lab/playbook.lab.ts sets 0 for MIN=full
   multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
-  boatsWaterPath: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"boatsWaterPath":false} vs {})ntil the 30-game Medium A/B
+  boatsWaterPath: false, // OFF again 2026-08-30: rm1 (96 mirrored full games, wins objective, docs/PlaybookBotPlan.md) — removal won 63/96 vs base 48 (p=0.032); the water-path ranking hurts full games
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B
   warYield: false, // default off until the 30-game Medium A/B

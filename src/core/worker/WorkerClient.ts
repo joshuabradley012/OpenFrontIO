@@ -38,6 +38,7 @@ export class WorkerClient {
     private clientID: ClientID | undefined,
     private playbookBot = false,
     private playbookParams: string | undefined = undefined,
+    private labReplay: string | undefined = undefined,
   ) {
     this.messageHandlers = new Map();
   }
@@ -98,6 +99,7 @@ export class WorkerClient {
         cdnBase: getCdnBase(),
         playbookBot: this.playbookBot,
         playbookParams: this.playbookParams,
+        labReplay: this.labReplay,
       });
 
       setTimeout(() => {

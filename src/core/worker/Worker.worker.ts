@@ -153,6 +153,7 @@ ctx.addEventListener("message", async (e: MessageEvent<MainThreadMessage>) => {
           gameUpdate,
           message.playbookBot ?? false,
           message.playbookParams,
+          message.labReplay,
         ).then((gr) => {
           sendMessage({
             type: "initialized",

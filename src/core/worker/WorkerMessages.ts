@@ -46,6 +46,9 @@ export interface InitMessage extends BaseWorkerMessage {
   playbookBot?: boolean;
   // Dev-only: JSON of PlaybookParams overrides for that bot (localStorage.playbookParams).
   playbookParams?: string;
+  // Dev-only: a lab transcript's `replay:` recipe — the worker rebuilds that exact lab game
+  // (src/core/lab/LabReplay.ts) instead of the lobby's world, and ignores every intent (watch-only).
+  labReplay?: string;
 }
 
 export interface TurnMessage extends BaseWorkerMessage {

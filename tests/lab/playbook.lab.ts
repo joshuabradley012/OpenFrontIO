@@ -6,21 +6,11 @@ import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { Config } from "../../src/core/configuration/Config";
-import { NationExecution } from "../../src/core/execution/NationExecution";
 import { PlaybookBotExecution as CurrentBot, PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
-import { SpawnExecution } from "../../src/core/execution/SpawnExecution";
-import { TribeSpawner } from "../../src/core/execution/TribeSpawner";
-import { WinCheckExecution } from "../../src/core/execution/WinCheckExecution";
-import {
-  Cell, Difficulty, Game, GameMapSize, GameMapType, GameMode, GameType, Nation, Player, PlayerInfo, PlayerType, TerraNullius, UnitType,
-} from "../../src/core/game/Game";
-import { createGame } from "../../src/core/game/GameImpl";
-import { TileRef } from "../../src/core/game/GameMap";
+import { Difficulty, Player, PlayerType, UnitType } from "../../src/core/game/Game";
 import { genTerrainFromBin } from "../../src/core/game/TerrainMapLoader";
 import { UserSettings } from "../../src/core/game/UserSettings";
-import { GameConfig } from "../../src/core/Schemas";
-import { TestConfig } from "../util/TestConfig";
+import { buildLabGame, HeadlessLabConfig, LAB_REGIONS, labGameConfig, LabSpec, LabWorld } from "../../src/core/lab/LabReplay";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
@@ -37,91 +27,53 @@ async function loadBot(dir: string | undefined): Promise<void> {
 }
 const OUT = process.env.LAB_OUT ? process.env.LAB_OUT.replace(/\/?$/, "/") : "/private/tmp/claude-501/-Users-josh-Code-openfront/f46e4d3b-aecb-4e40-bb41-205a4bfbadb7/scratchpad/";
 
-class LabConfig extends TestConfig {
-  attackLogic(gm: Game, a: number, at: Player, d: Player | TerraNullius, t: TileRef) { return Config.prototype.attackLogic.call(this, gm, a, at, d, t); }
-  attackTilesPerTick(a: number, at: Player, d: Player | TerraNullius, n: number) { return Config.prototype.attackTilesPerTick.call(this, a, at, d, n); }
-  disableNavMesh(): boolean { return false; }
-  radiusPortSpawn(): number { return 20; }
-  deletionMarkDuration(): number { return 300; }
-  nukeMagnitudes(t: UnitType) { return Config.prototype.nukeMagnitudes.call(this, t); }
-  nukeSpeed(t: UnitType) { return Config.prototype.nukeSpeed.call(this, t); }
-  defaultSamRange(): number { return 70; }
-  samRange(level: number): number { return Config.prototype.samRange.call(this, level); }
-  defaultNukeTargetableRange(): number { return 150; }
-  headless(): boolean { return true; } // no render updates / sync hash: ~5 % of a game, no effect on the sim
-}
-
-async function makeWorld(difficulty: Difficulty, bots: number) {
+async function loadWorld(): Promise<LabWorld> {
+  // terrain from the test bins; nations from the REAL manifest (the client's map loader serves the same file,
+  // so a `replay:` recipe rebuilds the identical world in the GUI — src/core/lab/LabReplay.ts)
   const dir = path.join(__dirname, "../testdata/maps/world");
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
   const gameMap = await genTerrainFromBin(manifest.map, fs.readFileSync(path.join(dir, "map.bin")));
   const miniMap = await genTerrainFromBin(manifest.map4x, fs.readFileSync(path.join(dir, "map4x.bin")));
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, "../../resources/maps/world/manifest.json"), "utf8"));
-  const nations: Nation[] = real.nations.map((n: any, i: number) => new Nation(
-    new Cell(n.coordinates[0], n.coordinates[1]),
-    new PlayerInfo(n.name, PlayerType.Nation, null, `nation_${i}`, false, null, [], null, n.flag ?? null),
-  ));
-  const gameConfig: GameConfig = {
-    gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA, gameType: GameType.Singleplayer,
-    difficulty, nations: "default", donateGold: false, donateTroops: false, bots, infiniteGold: false, infiniteTroops: false, instantBuild: false, randomSpawn: false,
-  };
-  const config = new LabConfig(gameConfig, new UserSettings(), false);
-  const game = createGame([], nations, gameMap, miniMap, config);
-  return { game, nations };
+  return { gameMap, miniMap, nations: real.nations };
 }
 
 let spawnNote = "";
-function pickSpawn(game: Game, _nations: Nation[], prefer: [number, number], _minDist: number): TileRef {
-  // SPAWNRANK=k takes the k-th best spot in the region (each pick excludes a 120-tile circle around the earlier ones)
-  // GLOBAL=1: ignore the region and take the picker's k-th choice on the whole map, k = SPAWNRANK*6 + region index
-  // (so a 5-batch x 6-region sweep walks global ranks 0..29 — the list the real bot picks from)
-  const global = process.env.GLOBAL === "1";
-  const regionIdx = ["north-russia", "north-america", "east-asia", "africa", "south-america", "australia"].indexOf(process.env.SPAWN ?? "");
-  const rank = global ? Number(process.env.SPAWNRANK ?? 0) * 6 + Math.max(0, regionIdx) : Number(process.env.SPAWNRANK ?? 0);
-  const exclude: [number, number][] = [];
-  let t: TileRef | null = null;
-  // a milestone bot without the exclude parameter (before 1926105b6) cannot walk the ranks: use today's picker
-  const own = typeof Bot.PlaybookBotExecution.pickSpawn === "function" && Bot.PlaybookBotExecution.pickSpawn.length >= 3;
-  const picker = own ? Bot.PlaybookBotExecution : CurrentBot;
-  // 441 lab games used to die here ("no spawn near"): the 120-tile exclusion circles exhaust a small
-  // region (australia rank >= 3) before the rank is reached. Restart the whole walk with a smaller
-  // radius — ranks that resolve at 120 are untouched (the first pass is the old behaviour), and the
-  // relaxation is deterministic. A milestone bot without the radius parameter ignores it and can still
-  // come up empty; sweep.sh turns that crash into a SKIPPED line, not a retry.
-  let excludeRadius = 120;
-  for (const r of [120, 60, 30, 15]) {
-    excludeRadius = r; exclude.length = 0; t = null;
-    for (let i = 0; i <= rank; i++) { t = picker.pickSpawn(game, global ? undefined : prefer, exclude, r); if (t === null) break; exclude.push([game.x(t), game.y(t)]); }
-    if (t !== null) break;
+
+/** The env assignments that fully determine this game (see the `replay:` line). PARAMS is the verbatim env value
+ *  (it carries __bot); LAB_OUT/OUTFILE/TAG are output-only and left to the caller. */
+function replayRecipe(spawn: string): string {
+  const parts: string[] = [];
+  for (const k of ["MIN", "DIFF", "GLOBAL", "SPAWNRANK", "SHIFT", "SEED", "TRIBES", "EXPAND", "EVERY", "BOT_DIR"]) {
+    const v = process.env[k];
+    if (v !== undefined && v !== "") parts.push(`${k}=${v}`);
   }
-  if (t === null) throw new Error("no spawn near " + prefer);
-  spawnNote = (global ? `global rank ${rank}` : `bot picker rank ${rank}`) + (excludeRadius !== 120 ? `, exclude ${excludeRadius}` : "") + (botDir ? `, bot ${botDir}${own ? "" : ", today's picker"}` : "");
-  return t;
+  parts.push(`SPAWN=${spawn}`);
+  if (process.env.PARAMS) parts.push(`PARAMS='${process.env.PARAMS}'`);
+  return parts.join(" ");
 }
 function neighboursBots(me: Player): string { return me.nearby().filter((n): n is Player => n.isPlayer() && n.type() === PlayerType.Bot).map((b) => Math.round(b.troops() / 1000) + "k/" + b.numTilesOwned() + "t").join(" ") || "-"; }
 async function runGame(label: string, params: PlaybookParams, minutes: number, difficulty: Difficulty, prefer: [number, number]) {
-  const tribes = process.env.TRIBES ? Number(process.env.TRIBES) : 400; // online default
-  const { game, nations } = await makeWorld(difficulty, tribes);
-  // Common random numbers (scripts/lab/sweep.sh MIRROR/SPRT): every PRNG in the game derives from this id —
-  // nations simpleHash(nation id) + simpleHash(gameID), tribes simpleHash(gameID) + 2, the bot simpleHash("playbook") + 7
-  // — and the spawn is picked deterministically from the state after 3 ticks, so two configs of one sweep with the
-  // same (batch, spawn, SHIFT, SEED) meet the identical world. SEED=n gives a different opponent field.
-  const gameID = "lab" + (process.env.SEED ?? "");
-  game.addExecution(...nations.map((n) => new NationExecution(gameID, n)));
-  game.addExecution(...new TribeSpawner(game, gameID, nations.map((n) => n.spawnCell!)).spawnTribes(tribes));
-  const info = new PlayerInfo("PlaybookBot", PlayerType.Human, null, "playbook");
-  game.addPlayer(info);
-  // spawn phase: nations/tribes place themselves in the first ticks; we pick a spot and are placed with them
-  for (let i = 0; i < 3; i++) game.executeNextTick();
-  const spawn = pickSpawn(game, nations, prefer, 110);
-  game.addExecution(new SpawnExecution(gameID, info, spawn));
-  for (let i = 0; i < 3; i++) game.executeNextTick();
-  game.endSpawnPhase();
-  const me = game.player(info.id);
-  const bot = new Bot.PlaybookBotExecution(me, params);
-  let botMs = 0; const origTick = bot.tick.bind(bot); bot.tick = (t: number) => { const s0 = performance.now(); origTick(t); botMs += performance.now() - s0; };
-  game.addExecution(bot, new WinCheckExecution());
+  // Common random numbers (scripts/lab/sweep.sh MIRROR/SPRT): the whole game derives from the spec — see
+  // src/core/lab/LabReplay.ts (shared with the client's ?labreplay mode), which keeps the exact assembly order.
+  const spec: LabSpec = {
+    minutes, difficulty, global: process.env.GLOBAL === "1", spawnRank: Number(process.env.SPAWNRANK ?? 0),
+    region: label, prefer, seed: process.env.SEED ?? "",
+    tribes: process.env.TRIBES ? Number(process.env.TRIBES) : 400, // online default
+    params,
+  };
+  const world = await loadWorld();
+  // a milestone bot without the exclude parameter (before 1926105b6) cannot walk the ranks: use today's picker
+  const own = typeof Bot.PlaybookBotExecution.pickSpawn === "function" && Bot.PlaybookBotExecution.pickSpawn.length >= 3;
+  const picker = own ? Bot.PlaybookBotExecution : CurrentBot;
+  const { game, me, bot, spawn, rank: pickRank, excludeRadius } = buildLabGame(spec, world, null, Bot.PlaybookBotExecution, picker, new HeadlessLabConfig(labGameConfig(spec), new UserSettings(), false));
+  spawnNote = (spec.global ? `global rank ${pickRank}` : `bot picker rank ${pickRank}`) + (excludeRadius !== 120 ? `, exclude ${excludeRadius}` : "") + (botDir ? `, bot ${botDir}${own ? "" : ", today's picker"}` : "");
+  let botMs = 0; const origTick = bot.tick.bind(bot); bot.tick = (t: number) => { const s0 = performance.now(); origTick(t); botMs += performance.now() - s0; }; // wrapped before the first loop tick; buildLabGame already attached bot + WinCheck
   const rows: string[] = [`== ${label} | spawn ${game.x(spawn)},${game.y(spawn)} (${spawnNote}) | ${difficulty} ==`];
+  // The sim is deterministic, so this env recipe IS the whole game: re-running it replays every tick bit-identically
+  // (same engine commit — an engine change invalidates old replays). aggregate.sh drops the line from ab30 files;
+  // it lives in p_*.txt for `summarize.py --replays` (the exceptional games worth watching again).
+  rows.push(`  replay: ${replayRecipe(label)} node --import tsx tests/lab/playbook.lab.ts`);
   const ticks = minutes * 600; // MIN=full → 170 (WinCheckExecution's hard limit): the game runs until someone wins
   let allMs = 0;
   for (let t = 0; t < ticks; t++) {
@@ -145,7 +97,7 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
 /** One lab run: the configured spawns (env SPAWN filters), MIN minutes, PARAMS overrides; writes LAB_OUT/OUTFILE. */
 export async function runLab(): Promise<void> {
   const out: string[] = [];
-  const spawns: [string, [number, number]][] = [["north-russia", [1200, 140]], ["north-america", [450, 300]], ["east-asia", [1600, 350]], ["africa", [1100, 550]], ["south-america", [620, 650]], ["australia", [1680, 660]]];
+  const spawns = LAB_REGIONS;
   const o = process.env.PARAMS ? JSON.parse(process.env.PARAMS) : {};
   await loadBot(botDirFromEnv(o));
   delete o.__bot;
