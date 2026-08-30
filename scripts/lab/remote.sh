@@ -139,7 +139,8 @@ run_pool() {
   # boxes), and deliver it to the queue box. sweep.sh QUEUE_READY=1 consumes it without rebuilding.
   python3 scripts/lab/durations.py "${HISTORY:-lab-out}" > "$DEST/durations.tsv" 2>/dev/null || : > "$DEST/durations.tsv"
   env CONFIGS="$CONFIGS" BATCHES="$batches" ${SPAWNS:+SPAWNS="$SPAWNS"} ${MIRROR:+MIRROR=$MIRROR} \
-    DURATIONS="$DEST/durations.tsv" LIST=1 bash scripts/lab/sweep.sh > "$DEST/queue.$slug.txt"
+    DURATIONS="$DEST/durations.tsv" LIST=1 SPRT=0 STAGED=0 bash scripts/lab/sweep.sh > "$DEST/queue.$slug.txt"
+  if awk -F'|' 'NF<4 {exit 1}' "$DEST/queue.$slug.txt"; then :; else echo "ERROR: malformed line in $DEST/queue.$slug.txt"; exit 1; fi
   echo "  queue: $(wc -l < "$DEST/queue.$slug.txt" | tr -d ' ') games, longest first"
   for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait
   rsync -az -e "$RSYNC_SSH $(rso "$QUEUE_HOST")" "$DEST/queue.$slug.txt" root@"$(rh "$QUEUE_HOST")":/root/lab-out/queue.txt

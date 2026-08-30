@@ -38,7 +38,11 @@
 # first one, or after MAXBATCHES (10) batches (mirrored slots count as one batch).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-if [ "${SPRT:-0}" = 1 ]; then
+# LIST=1 always prints the ordered job list for the given BATCHES and exits — even when the caller's
+# environment carries SPRT=1 (remote.sh's own SPRT loop builds each chunk's queue through LIST; on
+# 2026-08-30 the SPRT branch ran first and its banner + summarize output were captured into the queue,
+# which workers then claimed as jobs — "unknown batch").
+if [ "${SPRT:-0}" = 1 ] && [ "${LIST:-0}" != 1 ]; then
   # Sequential loop: re-enter this script per chunk with SPRT unset; the results dir accumulates and
   # aggregate.sh is idempotent over it.
   pool="${BATCHES:-med0 med1 med2 med3 med4} ${EXTRA:-med5 med6 med7 med8 med9}"
