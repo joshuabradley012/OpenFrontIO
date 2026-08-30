@@ -963,3 +963,96 @@ window (its hash is unchanged); each has a test in `tests/playbook/fixesPerf.tes
 
 A/B: `CONFIGS='{"base":{},"cap":{"steamrollCap":true},"hold":{"holdHumans":true},"one":{"strictOneWar":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
 Tests: `tests/playbook/{fixesPerf,steamrollCap,holdHumans,strictOneWar}.test.ts`.
+
+### #3 — One currency for troops (`utility`)
+
+**What the flag does.** With `utility` on, one `troops` rule (every 10 ticks,
+`Military.troopsRule`) replaces counter / expand / tribes / wars in the rule
+table. Counters go first (rank 0, `counterAttack` unchanged), then the
+follow-up clicks of running tribe waves (commitments), then every option the
+chain could send this pass becomes an `Option {kind, target, troops, rank,
+weight, why}` (`Utility.ts`): the expand click (`expandOption`), each tribe's
+first click (`tribeOptions`), and each war candidate the scorer accepted
+(`warPick().alts` — the old `fight()` split into `warPick`, the decision, and
+`actWar`, the send; every bonus lambda — trust, threat map, relation, shadow,
+drained, plannedTarget, sticky target — still lives in `warPick`'s scorer).
+The currency is **tiles per troop lost**: free land at 20 a tile (`mag/5`),
+tribes and wars from `estimateAttack` over the phase horizon (2:30 in the
+opening, 5:00 later, the rest of the clock in the endgame; cached 50 ticks),
+never under a tenth of the wave. Considerations (Mark's compensated product):
+border threat for every kind (`ThreatMap.undefended` / troops, else the worst
+bsr), click size for tribes, and for wars troops/cap as a logistic around
+`fightAbove` (a midpoint, no longer a gate), the estimate's margin, trust,
+an alliance about to lapse elsewhere, the scorer's own score, and a ×1.5
+commitment for the running target. Ranks (Dill): 0 counter, 1 opportunity
+(collapsed / gap owner / MIRV threat / drained), 2 normal. Execution: rank,
+then weight, every option takes what `send()` allows — the reserve, the
+whole-or-nothing war, one war per pass, the tribe concurrency cap, hold mode
+and the sticky target all stay. `UTIL` lines (top 3) every 300 ticks. Fires
+when the first thing sent differs from what the chain would have sent first
+(the chain: expand if it can, else the cheapest affordable tribe, else the war).
+
+**What the numbers say** (`utility.test.ts` fixtures, the estimator against
+the real attack maths): a 1.67× tribe click takes its tiles at ~21 troops each
+and a 2× war wave at ~40, against free land's 20 — so while any free land
+remains the expand click keeps the top weight, tribes come next and wars last,
+i.e. the chain's order. That is the `botsAfterWild` A/B's finding restated in
+one currency. Where the flag changes decisions: an opportunity war (rank 1)
+goes before the expand click that used to starve it; wars at cap or with a
+good margin outweigh free land on a contested border; the tie-break inside a
+rank follows the estimate, not the table. Boats are not options yet (the
+brief's "when cheap"): `earlyBoat` / `huntBotsByBoat` / `seaExpansion` keep
+their own rules.
+
+**Tests.** `tests/playbook/utility.test.ts`: the curves and compensation on
+plain numbers; the ranking; a fixture with free land, a tribe and a war
+candidate (all three scored, executed in weight order, no fire when the order
+matches the chain); a counter still first; a whole-or-nothing war on a
+drained target no longer starved by a 60 % expand click (fires). Golden hash
+unchanged with the flag off.
+
+**A/B:** `CONFIGS='{"base":{},"x":{"utility":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+### #6 — A war plan with a preparation phase (`campaigns`)
+
+**What the flag does.** `Campaign.ts` is a phase machine for one target —
+`prepare → wave → followup → consolidate` — owned by Military and fed pure
+`CampaignFacts`. `actWar` opens one whenever the war rule (or the utility
+layer) would send a wave at a target that is **not** an opportunity
+(collapsed / gap owner / MIRV threat / drained go at once, as before).
+*prepare*: the wave is escrowed — `send()` / `boat()` keep the spendable above
+`Military.escrow` for anything but the war or a counter — Economy's threat-post
+rule takes `Military.prepTarget` right after the expiring allies, and
+Diplomacy neither accepts nor requests an alliance with it and lets an existing
+one lapse. The wave goes at the earliest of: affordable (send's room ≥ 0.9 ×
+wave) and no alliance of ours with one of the target's allies within 450 ticks
+of expiry and a post facing the target (waited for at most 300 ticks); the
+target's drained / collapse window opening; the cap of 900 ticks (after which
+only affordability gates it). *wave* → *followup* once the attack is in;
+follow-ups flow through the sticky-target logic; *consolidate* on the target's
+death or 100 ticks after our last attack on it is gone, then a 600-tick
+cooldown in which no new campaign opens. Aborts (→ consolidate): a non-bot
+attack on us above 15 % of our troops (300-tick cooldown: the counter has the
+army), the target allying with one of our allies, the target becoming our
+ally, the ratio under `fightRatio × 0.8` for 300 ticks, or a prepare the war
+rule stopped picking (cap + 600) — these end at once, and a plan that would
+abort on its first tick is refused instead of opened (`CAMPAIGN no war on …`,
+once per 600 ticks). A prepare under 300 ticks old holds its target against a
+different pick (the scorer and the utility layer give the prep target the
+running war's +3 / ×1.5, so it comes back next pass); the first smoke swapped
+two equal-scored targets every pass. "Attacked by someone bigger" is not an
+abort: with `retaliateAware` that is the shadow wave's opportunity. `CAMPAIGN`
+lines on every phase change; fires whenever a wave the chain would have sent
+is delayed (prepare, sticky, waiting, cooldown, refused), on an abort, when the
+escrow trims a spend, and when Economy/Diplomacy act on the prep target.
+
+**Tests.** `tests/playbook/campaigns.test.ts`: the machine on plain facts
+(ready conditions, phases, every abort); a normal target enters prepare at
+the first war pass, the post goes up on its border, the wave follows with a
+`CAMPAIGN go … post in place` line and the follow-up phase; a drained target
+skips prepare; a 25 % incoming wave aborts the plan and the cooldown blocks a
+new one. Golden hash unchanged with the flag off.
+
+**A/B:** `CONFIGS='{"base":{},"x":{"campaigns":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+(and `{"utility":true,"campaigns":true}` for the pair — the review suggested
+#3 / #5 / #6 as one package).

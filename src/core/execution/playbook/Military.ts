@@ -7,9 +7,11 @@ import { MirvExecution } from "../MIRVExecution";
 import { RetreatExecution } from "../RetreatExecution";
 import { TargetPlayerExecution } from "../TargetPlayerExecution";
 import { calculateTerritoryCenter } from "../Util";
+import { ALLY_EXPIRY_MIN, Campaign, CampaignFacts, RETARGET_AFTER } from "./Campaign";
 import { BotContext, FireLimiter } from "./Context";
 import { AttackEstimate, EstimateOptions, estimateAttack } from "./Estimate";
 import { SituationQueries } from "./Situation";
+import { clamp, compensate, describeOption, linear, logistic, Option, rankOptions } from "./Utility";
 
 const SIM_HORIZON = 3000; // simWars: a war that has not resolved in 5 minutes is judged on where it stands then
 const SIM_MARGIN = 0.2; // simWars: the wave must end with this share of itself still standing
@@ -20,6 +22,18 @@ const HYST_STRIKES = 2; // hystRetreats: consecutive losing re-estimates before 
 const HYST_TILE_WORTH = 60; // hystRetreats: what a tile of the target is worth in troops — the non-wilderness bar of simMaxLossPerTile. The wilderness discount belongs to opening a war, not to abandoning one
 const RETREAT_MALUS = 0.75; // AttackExecution.retreat(25) against a player: the share of a recalled wave that gets home
 interface SimPick { troops: number; est: AttackEstimate; tilesPerLoss: number; value: number }
+/** A war fight() would open: the decision half of the old fight(); actWar() is the other half. */
+interface WarPick {
+  r: Player;
+  want: number;
+  sim: SimPick | null; // simWars: the estimate the size came from
+  bomb: boolean; // open the war with a bomb on their cluster (richer, silo)
+  opportunity: boolean; // collapsed / gap owner / MIRV threat / drained: goes at once, no campaign
+  /** Every candidate the scorer accepted, for the utility layer (`best` first). */
+  alts: { r: Player; want: number; sim: SimPick | null; score: number; opportunity: boolean }[];
+}
+const FREE_LAND_TROOPS_PER_TILE = 20; // utility: mag/5 = 16–24 troops a tile of terra nullius (the wave's own losses)
+const UTIL_EST_EVERY = 50; // utility: ticks an option's estimate is cached
 /** One war or tribe wave under calibration bookkeeping (EST at the send, ACT when the attack is gone). */
 interface CalibRecord { wave: number; tick: number; sent: number; tiles0: number; ours0: number; others: number; last: number; seen: boolean; retreating: boolean }
 
@@ -331,12 +345,21 @@ export class Military {
 
   // ---------------------------------------------------------------- expansion
   expand(): void {
+    const o = this.expandOption();
+    if (o !== null) this.actExpand(o.troops);
+  }
+  /** The expand click this pass would make (decide half of expand()). */
+  expandOption(): { troops: number; contested: boolean } | null {
     const { rivals, wilderness } = this.q.neighbours();
-    if (!wilderness) return;
-    // free land is the cheapest growth there is and unused troops come home: only the troop reserve applies, not the cap floor
+    if (!wilderness) return null;
     const ringing = [...this.ctx.sit.rivals, ...this.ctx.sit.bots, ...this.ctx.sit.friends].some((r) => this.q.annexable(r));
-    const frac = rivals.length > 0 || ringing || this.splitTile !== null || this.ctx.sit.mode === "push" ? this.ctx.p.expandContested : this.ctx.p.expandFree;
-    this.ctx.send(this.ctx.mg.terraNullius().id(), Math.floor(this.ctx.sit.troops * frac), "expand", 100);
+    const contested = rivals.length > 0 || ringing || this.splitTile !== null || this.ctx.sit.mode === "push";
+    const frac = contested ? this.ctx.p.expandContested : this.ctx.p.expandFree;
+    return { troops: Math.floor(this.ctx.sit.troops * frac), contested };
+  }
+  /** free land is the cheapest growth there is and unused troops come home: only the troop reserve applies, not the cap floor */
+  actExpand(troops: number): number {
+    return this.ctx.send(this.ctx.mg.terraNullius().id(), troops, "expand", 100);
   }
 
   // ---------------------------------------------------------------- bots
@@ -356,30 +379,52 @@ export class Military {
     for (const bot of bots) {
       if (!me.canAttackPlayer(bot) || !this.reachable(bot)) continue;
       const want = Math.ceil(bot.troops() * this.ctx.p.botRatio) + 500;
-      const running = this.q.outgoingTo(bot);
-      if (running) {
-        // follow-up click: the guide's two-click — a second wave 10 s later merges into the first
-        const w = this.waves.get(bot);
-        if (!w || w.sent >= w.want || this.ctx.mg.ticks() - w.last < this.ctx.p.botFollowUpTicks) continue;
-        const send = this.ctx.send(bot.id(), Math.min(w.want - w.sent, Math.floor(this.ctx.sit.troops * this.ctx.p.botClickCap)), "tribe follow-up");
-        if (send === 0) continue;
-        w.sent += send; w.last = this.ctx.mg.ticks();
-        this.noteFollowUp(bot, send);
-        continue;
-      }
+      if (this.q.outgoingTo(bot)) { this.tribeFollowUp(bot); continue; }
       if (active >= maxConcurrent) continue;
       const maxSend = Math.floor(this.ctx.sit.spendable * (early ? this.ctx.p.botEarlyShare : this.ctx.p.botMaxShare));
       if (want > maxSend) continue;
-      const first = this.ctx.send(bot.id(), Math.min(want, Math.floor(this.ctx.sit.troops * this.ctx.p.botClickCap)), "tribe");
-      if (first === 0) continue;
+      if (!this.tribeClick(bot, want)) continue;
       active++;
-      this.waves.set(bot, { want, sent: first, last: this.ctx.mg.ticks() });
-      this.noteSent(bot);
-      this.noteWave(bot, first);
-      this.ctx.log(`t${this.ctx.mg.ticks()} bot ${bot.name()} ${bot.numTilesOwned()}t/${Math.round(bot.troops())} ← ${first}/${want}`);
       clicks++;
       if (!plentiful || clicks >= 2) return;
     }
+  }
+  /** follow-up click: the guide's two-click — a second wave 10 s later merges into the first */
+  private tribeFollowUp(bot: Player): void {
+    const w = this.waves.get(bot);
+    if (!w || w.sent >= w.want || this.ctx.mg.ticks() - w.last < this.ctx.p.botFollowUpTicks) return;
+    const send = this.ctx.send(bot.id(), Math.min(w.want - w.sent, Math.floor(this.ctx.sit.troops * this.ctx.p.botClickCap)), "tribe follow-up");
+    if (send === 0) return;
+    w.sent += send; w.last = this.ctx.mg.ticks();
+    this.noteFollowUp(bot, send);
+  }
+  /** The first click on a tribe: `want` in total, at most botClickCap of home now (act half of harvestBots). */
+  private tribeClick(bot: Player, want: number): boolean {
+    const first = this.ctx.send(bot.id(), Math.min(want, Math.floor(this.ctx.sit.troops * this.ctx.p.botClickCap)), "tribe");
+    if (first === 0) return false;
+    this.waves.set(bot, { want, sent: first, last: this.ctx.mg.ticks() });
+    this.noteSent(bot);
+    this.noteWave(bot, first);
+    this.ctx.log(`t${this.ctx.mg.ticks()} bot ${bot.name()} ${bot.numTilesOwned()}t/${Math.round(bot.troops())} ← ${first}/${want}`);
+    return true;
+  }
+  /** utility: the tribes harvestBots would click this pass (decide half), cheapest first; follow-ups are not options
+   *  (a running wave is a commitment — tribeFollowUps() sends them before the options are built). */
+  private tribeOptions(): { bot: Player; want: number }[] {
+    const me = this.ctx.me;
+    const { bots, wilderness } = this.q.neighbours();
+    const early = wilderness && this.ctx.p.botsAfterWild;
+    const maxSend = Math.floor(this.ctx.sit.spendable * (early ? this.ctx.p.botEarlyShare : this.ctx.p.botMaxShare));
+    const out: { bot: Player; want: number }[] = [];
+    for (const bot of [...bots].sort((a, b) => a.troops() - b.troops())) {
+      if (!me.canAttackPlayer(bot) || !this.reachable(bot) || this.q.outgoingTo(bot)) continue;
+      const want = Math.ceil(bot.troops() * this.ctx.p.botRatio) + 500;
+      if (want <= maxSend) out.push({ bot, want });
+    }
+    return out;
+  }
+  private tribeFollowUps(): void {
+    for (const bot of this.q.neighbours().bots) if (this.ctx.me.canAttackPlayer(bot) && this.reachable(bot) && this.q.outgoingTo(bot)) this.tribeFollowUp(bot);
   }
 
   private threatFired = -1e9;
@@ -436,6 +481,13 @@ export class Military {
   private history = new Map<Player, { tick: number; troops: number; tiles: number; collapsedUntil: number }>();
 
   fight(): void {
+    if (this.ctx.p.campaigns) this.campaignTick();
+    const pick = this.warPick();
+    if (pick !== null) this.actWar(pick);
+  }
+  /** The decision half of the war rule: gates, candidates, the scorer (or simWars' estimator) and the wave size.
+   *  Returns the war fight() would open now, or null. Side effects are the log and the flag counters only. */
+  private warPick(): WarPick | null {
     const me = this.ctx.me;
     const cap = this.q.cap();
     const nb = this.q.neighbours();
@@ -451,26 +503,26 @@ export class Military {
     const affordableAt = (r: Player) => r.troops() * (this.drained(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio) + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare;
     const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
     if (affordable && !nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) this.lim.fire("drainedNations", "affordable");
-    if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return; // a 1.67× push that keeps home healthy is always taken
+    if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove) return null; // a 1.67× push that keeps home healthy is always taken
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
     const nonBot = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
     const wars = nonBot.filter((a) => !this.counters.has(a.target() as Player)).length;
     const limit = this.ctx.mg.ticks() >= 15000 && atCapNow ? 2 : 1;
-    if (wars >= limit && !opportunity) return;
+    if (wars >= limit && !opportunity) return null;
     // `strictOneWar`: counters occupy the second slot — one war plus counters, but no second war (opportunity wars
     // included) while a counter runs. A counter on the current target is that war (the old count skipped it, so
     // wars read 0 and another war could open beside it).
     if (this.ctx.p.strictOneWar) {
       const countersRunning = nonBot.some((a) => this.counters.has(a.target() as Player));
       const warsStrict = wars + nonBot.filter((a) => this.counters.has(a.target() as Player) && a.target() === this.currentTarget_).length;
-      if (countersRunning && warsStrict >= 1) { if (this.ctx.mg.ticks() - this.strictFired >= 100) { this.strictFired = this.ctx.mg.ticks(); this.ctx.fire("strictOneWar"); } return; }
+      if (countersRunning && warsStrict >= 1) { if (this.ctx.mg.ticks() - this.strictFired >= 100) { this.strictFired = this.ctx.mg.ticks(); this.ctx.fire("strictOneWar"); } return null; }
     }
     const early = !atCapNow && !opportunity && (this.ctx.mg.ticks() < this.ctx.p.fightNotBeforeTick || me.unitsOwned(UnitType.City) < this.ctx.p.fightMinCities);
     let { rivals } = nb;
     // before the 5-minute mark only clear prey: a neighbour we can hit with 2.5× its whole army
     if (early) rivals = rivals.filter((r) => r.troops() * 2.5 <= me.troops() * this.ctx.p.fightMaxShare && r.numTilesOwned() <= me.numTilesOwned());
-    if (rivals.length === 0) return;
+    if (rivals.length === 0) return null;
     if (this.currentTarget_ && (!this.currentTarget_.isAlive() || !rivals.includes(this.currentTarget_))) this.currentTarget_ = null;
     let candidates = rivals.filter((r) => me.canAttackPlayer(r) && !this.q.outgoingTo(r) && this.reachable(r));
     // one enemy at a time, to the end: nations nuke whoever attacks them, and eight half-wars make eight nuclear enemies.
@@ -488,7 +540,7 @@ export class Military {
         return ally === null;
       });
     }
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) return null;
     const atCap = me.troops() >= cap * 0.95;
     const endgame = this.ctx.mg.ticks() >= 15000 || this.ctx.sit.mode === "push"; // 25:00 or the push — land now is worth more than troops later
     // review #5 (`threatMap`): prefer a rival whose army is committed on its other borders (+3 × busyElsewhere) and
@@ -525,18 +577,24 @@ export class Military {
       const underFire = r.incomingAttacks().reduce((acc, a) => acc + a.troops(), 0) / Math.max(1, r.troops());
       const bonus = Math.min(underFire, 1) * 4 + (r.isTraitor() ? 2 : 0) + (r === this.plannedTarget() ? 4 : 0);
       if (shadowed) this.lim.fire("retaliateAware", "score");
-      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r);
+      return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ || r === this.prepTarget ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r);
     };
+    const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r);
+    // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
+    // shadowWave's test above), else fightRatio
+    const wantFor = (r: Player) => { const mult = this.drained(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : shadow(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
     let best: Player | null = null, bestS = 0;
     if (this.ctx.p.simWars) {
       // #4 (B1 restored on calibrated numbers): the estimator picks the target and the size. For each candidate the
       // smallest wave (1k steps) that wins with a margin is found by bisection; the candidate with the most tiles per
       // troop lost wins, keeping the opportunity bonuses (collapsed / gap owner / planned target) of the heuristic scorer.
       let bestSim: { r: Player; sim: SimPick } | null = null;
+      const simAlts: WarPick["alts"] = [];
       for (const r of candidates) {
         const sim = this.simPick(r, maxSend, gapOwner, threatHere);
         if (sim === null) continue;
-        const value = sim.tilesPerLoss * 100 + (this.collapsed(r) ? 20 : 0) + (r === gapOwner ? 30 : 0) + (r === threatHere ? 25 : 0) + (r === this.plannedTarget() ? 4 : 0) + (r === this.currentTarget_ ? 3 : 0) + (r.isTraitor() ? 2 : 0) + trustBonus(r);
+        const value = sim.tilesPerLoss * 100 + (this.collapsed(r) ? 20 : 0) + (r === gapOwner ? 30 : 0) + (r === threatHere ? 25 : 0) + (r === this.plannedTarget() ? 4 : 0) + (r === this.currentTarget_ || r === this.prepTarget ? 3 : 0) + (r.isTraitor() ? 2 : 0) + trustBonus(r);
+        simAlts.push({ r, want: sim.troops, sim, score: value, opportunity: isOpp(r) });
         if (bestSim === null || value > bestSim.sim.value) { sim.value = value; bestSim = { r, sim }; }
       }
       // liveness: the flag changed a decision when it picks another target or size than the scorer would, or nothing
@@ -545,41 +603,227 @@ export class Military {
       if (bestSim === null) {
         if (best !== null && heurWant >= 1000 && this.ctx.mg.ticks() - this.simFired >= 100) { this.simFired = this.ctx.mg.ticks(); this.ctx.fire("simWars"); }
         if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap (sim): ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
-        return;
+        return null;
       }
       const { r, sim } = bestSim;
       if (r !== best || Math.abs(sim.troops - heurWant) > 1000) this.ctx.fire("simWars");
-      this.currentTarget_ = r;
-      if (!me.hasEmbargoAgainst(r) && r.type() !== PlayerType.Nation) { me.addEmbargo(r, false); this.embargoedAt_.set(r, this.ctx.mg.ticks()); }
-      const want = this.ctx.send(r.id(), sim.troops, "war", 1000, 0.3);
-      if (want === 0) return;
-      this.lastWarTick = this.ctx.mg.ticks();
-      this.noteSent(r);
-      this.simCache.clear();
-      this.ctx.log(`t${this.ctx.mg.ticks()} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×) sim: ${sim.est.tilesTaken}t for ${Math.round(sim.est.attackerLoss / 1000)}k in ${sim.est.ticks} ticks${sim.est.wins ? "" : ", still going at the horizon"}`);
-      this.noteWave(r, want, sim.est);
-      return;
+      simAlts.sort((a, b) => (a.r === r ? -1 : b.r === r ? 1 : b.score - a.score));
+      return { r, want: sim.troops, sim, bomb: false, opportunity: isOpp(r), alts: simAlts };
     }
-    for (const r of candidates) { const sc = score(r); if (sc > bestS) { bestS = sc; best = r; } }
+    const alts: WarPick["alts"] = [];
+    for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), sim: null, score: sc, opportunity: isOpp(r) }); if (sc > bestS) { bestS = sc; best = r; } }
     if (best === null) {
       if (atCapNow && this.ctx.mg.ticks() % 1200 < this.ctx.p.expandEvery) this.ctx.log(`t${this.ctx.mg.ticks()} idle at cap: ${rivals.map((r) => `${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k d${Math.round(this.q.density(r))} p${r.units(UnitType.DefensePost).length} ${candidates.includes(r) ? "" : "(no)"}`).join("; ")}`);
-      return;
+      return null;
     }
-    // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
-    // shadowWave's test above), else fightRatio
-    const mult = this.drained(best) ? Math.min(this.ctx.p.fightRatio, 1.5) : shadow(best) ? Math.min(this.ctx.p.fightRatio, 1.2) : richer(best) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio;
-    const wantRaw = Math.min(Math.ceil(best.troops() * mult) + 1000, maxSend);
-    if (richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100) { this.currentTarget_ = best; this.maybeBomb(this.ctx.mg.ticks()); } // open the war with a bomb on their cluster
-    if (wantRaw < 1000) return;
-    this.currentTarget_ = best;
-    if (!me.hasEmbargoAgainst(best) && best.type() !== PlayerType.Nation) { me.addEmbargo(best, false); this.embargoedAt_.set(best, this.ctx.mg.ticks()); }
-    const want = this.ctx.send(best.id(), wantRaw, "war", 1000, 0.3);
-    if (want === 0) return;
-    this.lastWarTick = this.ctx.mg.ticks();
-    this.noteSent(best);
-    this.ctx.log(`t${this.ctx.mg.ticks()} ATTACK ${best.name()} ${best.numTilesOwned()}t/${Math.round(best.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, best.troops())).toFixed(2)}×)${this.drained(best) ? " drained" : shadow(best) ? " as the smaller attacker" : ""}`);
-    this.noteWave(best, want);
-    this.mark(best, "war");
+    const b = best;
+    alts.sort((x, y) => (x.r === b ? -1 : y.r === b ? 1 : y.score - x.score));
+    const bomb = richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100;
+    return { r: best, want: wantFor(best), sim: null, bomb, opportunity: isOpp(best), alts };
+  }
+  /** The action half of the war rule: the embargo, the wave (whole or not at all), the log, the calibration record,
+   *  the mark. With `campaigns` on, a normal target goes through its Campaign first. Returns true when a wave went. */
+  private actWar(pick: WarPick): boolean {
+    const me = this.ctx.me, r = pick.r, now = this.ctx.mg.ticks();
+    if (pick.sim === null) {
+      if (pick.bomb) { this.currentTarget_ = r; this.maybeBomb(now); } // open the war with a bomb on their cluster
+      if (pick.want < 1000) return false;
+    }
+    if (this.ctx.p.campaigns && !this.campaignAllows(pick)) return false;
+    this.currentTarget_ = r;
+    if (!me.hasEmbargoAgainst(r) && r.type() !== PlayerType.Nation) { me.addEmbargo(r, false); this.embargoedAt_.set(r, now); }
+    const want = this.ctx.send(r.id(), pick.want, "war", 1000, 0.3);
+    if (want === 0) return false;
+    this.lastWarTick = now;
+    this.noteSent(r);
+    if (pick.sim !== null) {
+      this.simCache.clear();
+      this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×) sim: ${pick.sim.est.tilesTaken}t for ${Math.round(pick.sim.est.attackerLoss / 1000)}k in ${pick.sim.est.ticks} ticks${pick.sim.est.wins ? "" : ", still going at the horizon"}`);
+      this.noteWave(r, want, pick.sim.est);
+    } else {
+      this.ctx.log(`t${now} ATTACK ${r.name()} ${r.numTilesOwned()}t/${Math.round(r.troops() / 1000)}k ← ${Math.round(want / 1000)}k (${(want / Math.max(1, r.troops())).toFixed(2)}×)${this.drained(r) ? " drained" : this.shadowWave(r) >= Math.ceil(r.troops() * 1.2) + 1000 ? " as the smaller attacker" : ""}`);
+      this.noteWave(r, want);
+      this.mark(r, "war");
+    }
+    if (this.campaign !== null && this.campaign.target === r && this.campaign.phase !== "consolidate") { this.campaign.onWave(now, want); this.flushCampaignLog(); }
+    return true;
+  }
+
+  // ---------------------------------------------------------------- utility (#3): one currency for troops
+  private utilEst = new Map<Player, { tick: number; troops: number; est: AttackEstimate }>();
+  private utilLogged = -1e9;
+  /** The estimate of `troops` against `t` over the phase horizon, cached UTIL_EST_EVERY ticks (re-run when the wave moves by 20 %). */
+  private utilEstimate(t: Player, troops: number): AttackEstimate {
+    const now = this.ctx.mg.ticks(), c = this.utilEst.get(t);
+    if (c && now - c.tick < UTIL_EST_EVERY && Math.abs(c.troops - troops) <= c.troops * 0.2) return c.est;
+    const est = estimateAttack(this.ctx.mg, this.ctx.me, t, troops, { horizonTicks: this.utilHorizon(), ...this.estOpts(t) });
+    this.utilEst.set(t, { tick: now, troops, est });
+    return est;
+  }
+  /** The currency: tiles per troop LOST — free land's 16–24 a tile is the click's losses (the rest comes home), so a
+   *  tribe or a war counts its estimated losses too, never under a tenth of the wave (troops tied up are not free). */
+  private tilesPerTroop(est: AttackEstimate, want: number): number {
+    return est.tilesTaken / Math.max(1, est.attackerLoss, want * 0.1);
+  }
+  /** How far ahead an option is judged: 2:30 in the opening (free land is cheaper than anything that takes longer),
+   *  5:00 in consolidate / war, what is left of the 30-minute clock in the endgame (at least a minute). */
+  private utilHorizon(): number {
+    const ph = this.ctx.sit.phase;
+    if (ph === "opening") return 1500;
+    if (ph === "endgame") return Math.max(600, Math.min(3000, 18000 - this.ctx.sit.tick));
+    return 3000;
+  }
+  /** Border-threat consideration shared by every option: 1 on a calm border, down to 0.5 when the unanswered pressure
+   *  (threatMap) equals our army, or (without the map) when the worst border-security ratio reaches 2. */
+  private utilThreat(): number {
+    if (this.ctx.p.threatMap) return 1 - 0.5 * clamp(this.q.rivals.threat.undefended / Math.max(1, this.ctx.sit.troops));
+    let maxBsr = 0;
+    for (const [r, v] of this.ctx.sit.rival) if (!this.ctx.me.isFriendly(r) && v.bsr > maxBsr) maxBsr = v.bsr;
+    return 1 - 0.5 * clamp(maxBsr - 1);
+  }
+  /** `utility`: the one troops rule. Counters (rank 0) and tribe follow-ups (commitments) go first; then every expand
+   *  click, tribe click and war wave the chain could send this pass is an Option scored in tiles per troop (free land
+   *  at FREE_LAND_TROOPS_PER_TILE, tribes and wars by the estimator over the phase horizon) × compensated
+   *  considerations, and the options execute by rank then weight through the same act* paths and the same send():
+   *  the reserve, whole-or-nothing wars, one war per pass, the tribe concurrency cap, hold and the sticky target all
+   *  stay. Fires when the first thing sent differs from what the ordered rules would have sent first. */
+  troopsRule(): void {
+    const me = this.ctx.me, sit = this.ctx.sit, p = this.ctx.p, now = this.ctx.mg.ticks();
+    this.counterAttack();
+    this.tribeFollowUps();
+    if (p.campaigns) this.campaignTick();
+    const threat = this.utilThreat();
+    const options: Option[] = [];
+    const ex = this.expandOption();
+    if (ex !== null && ex.troops >= 100) options.push({ kind: "expand", target: null, troops: ex.troops, rank: 2, weight: (1 / FREE_LAND_TROOPS_PER_TILE) * compensate([threat]), why: `${ex.contested ? "contested" : "free"} land at ${FREE_LAND_TROOPS_PER_TILE}/tile, border ${threat.toFixed(2)}` });
+    const tribes = this.tribeOptions();
+    for (const { bot, want } of tribes) {
+      const est = this.utilEstimate(bot, want);
+      const size = 1 - 0.5 * linear(want / Math.max(1, sit.spendable)); // a click that eats the spendable leaves nothing for the next pass
+      options.push({ kind: "tribe", target: bot, troops: want, rank: 2, weight: this.tilesPerTroop(est, want) * compensate([threat, size]), why: `${est.tilesTaken}t for ${Math.round(want / 1000)}k${est.wins ? "" : " (not won in the horizon)"}, border ${threat.toFixed(2)}, size ${size.toFixed(2)}` });
+    }
+    const war = this.warPick();
+    if (war !== null) {
+      for (const a of war.alts) {
+        const est = a.sim !== null ? a.sim.est : this.utilEstimate(a.r, a.want);
+        const tpt = this.tilesPerTroop(est, a.want);
+        const troopsC = logistic(sit.capShare, p.fightAbove, 10); // fightAbove is the midpoint, not a gate
+        const marginC = (est.wins ? 1 : 0.8) * (0.6 + 0.4 * linear(est.troopsLeft / a.want, 0, 0.5)); // what the wave has left over; an estimate still open at the horizon is judged on the same footing, discounted
+        const trustC = 0.5 + 0.5 * (1 - (sit.rival.get(a.r)?.trust ?? 0.5));
+        const expiryC = sit.expiring.some((o) => o !== a.r && o.type() === PlayerType.Nation) ? 0.7 : 1; // an alliance about to lapse elsewhere wants the army near home
+        const scoreC = 0.5 + 0.5 * linear(a.score, 0, 15); // the scorer's bonuses (trust, threat map, relation, shadow, buildings) modulate, they do not gate
+        const commit = (a.r === this.currentTarget_ && now - this.lastWarTick < 1800) || a.r === this.prepTarget ? 1.5 : 1; // the running war, or the campaign being prepared
+        const weight = tpt * compensate(a.opportunity ? [marginC, scoreC] : [troopsC, marginC, threat, trustC, expiryC, scoreC]) * commit;
+        options.push({ kind: "war", target: a.r, troops: a.want, rank: a.opportunity ? 1 : 2, weight, why: `${est.tilesTaken}t for ${Math.round(a.want / 1000)}k ${est.wins ? "wins" : "open"}, cap ${troopsC.toFixed(2)}, margin ${marginC.toFixed(2)}, border ${threat.toFixed(2)}, trust ${trustC.toFixed(2)}, expiry ${expiryC}, score ${a.score.toFixed(1)}${a.opportunity ? ", opportunity" : ""}${commit > 1 ? ", committed" : ""}` });
+      }
+    }
+    const ranked = rankOptions(options);
+    if (ranked.length > 0 && now - this.utilLogged >= 300) { this.utilLogged = now; this.ctx.log(`t${now} UTIL ${ranked.slice(0, 3).map(describeOption).join(" | ")}`); }
+    const plentiful = me.troops() > this.q.cap() * p.fightAbove;
+    const maxConcurrent = p.tribeConcurrency + (sit.capShare > 0.6 ? 1 : 0);
+    let active = sit.tribeAttacks, clicks = 0, warDone = false, first: Option | null = null;
+    for (const o of ranked) {
+      let ok = false;
+      if (o.kind === "war") {
+        if (warDone || war === null) continue;
+        const alt = war.alts.find((a) => a.r === o.target);
+        if (alt === undefined) continue;
+        ok = this.actWar(alt.r === war.r ? war : { r: alt.r, want: alt.want, sim: alt.sim, bomb: false, opportunity: alt.opportunity, alts: war.alts });
+        if (ok) warDone = true;
+      } else if (o.kind === "expand") ok = this.actExpand(o.troops) > 0;
+      else if (o.kind === "tribe" && o.target !== null) {
+        if (active >= maxConcurrent || clicks >= (plentiful ? 2 : 1)) continue;
+        ok = this.tribeClick(o.target, o.troops);
+        if (ok) { active++; clicks++; }
+      }
+      if (ok && first === null) first = o;
+    }
+    // liveness: the chain sends the expand click whenever it can, else the cheapest affordable tribe, else the war
+    const chainFirst = ex !== null && ex.troops >= 100 ? "expand" : tribes.length > 0 ? `tribe ${tribes[0].bot.id()}` : war !== null ? `war ${war.r.id()}` : null;
+    const key = first === null ? null : first.kind === "expand" ? "expand" : `${first.kind} ${first.target?.id()}`;
+    if (key !== null && key !== chainFirst) this.lim.fire("utility", "pick");
+  }
+
+  // ---------------------------------------------------------------- campaigns (#6): the war plan
+  private campaign: Campaign | null = null;
+  private campaignRefused = new Map<Player, number>();
+  /** The target of a campaign in prepare (Economy: a threat post on that border; Diplomacy: no alliance with it). */
+  get prepTarget(): Player | null {
+    return this.ctx.p.campaigns && this.campaign !== null && this.campaign.phase === "prepare" ? this.campaign.target : null;
+  }
+  /** Troops held for the planned wave while a campaign prepares: send()/boat() keep the spendable above it for
+   *  anything that is not the war or a counter. 0 without a campaign in prepare. */
+  get escrow(): number {
+    return this.prepTarget !== null && this.campaign !== null ? this.campaign.want : 0;
+  }
+  private flushCampaignLog(): void {
+    if (this.campaign !== null) for (const l of this.campaign.drain()) this.ctx.log(l);
+  }
+  private campaignFacts(c: Campaign): CampaignFacts {
+    const me = this.ctx.me, t = c.target, sit = this.ctx.sit;
+    const room = Math.floor(Math.min(sit.spendable, sit.troops - sit.cap * 0.3)); // send()'s room for a war (capFloor 0.3)
+    const myAllies = new Set(me.allies());
+    const theirAllies = t.allies();
+    let allyExpiryOK = true;
+    for (const al of me.alliances()) { const o = al.other(me); if (theirAllies.includes(o) && al.expiresAt() - sit.tick < ALLY_EXPIRY_MIN) allyExpiryOK = false; }
+    return {
+      tick: sit.tick,
+      affordable: room >= c.want * 0.9, // send()'s whole-or-nothing test
+      allyExpiryOK,
+      postFacing: this.q.postFacing(t),
+      opportunity: this.drained(t) || (this.collapsed(t) && t.troops() < sit.troops * 0.5),
+      targetAlive: t.isAlive(),
+      targetFriendly: me.isFriendly(t),
+      bigIncoming: sit.incoming.some((a) => a.troops() > sit.troops * 0.15),
+      targetAlliedWithOurAlly: theirAllies.some((a) => myAllies.has(a)),
+      ratio: c.want / Math.max(1, t.troops()),
+      attacking: this.q.outgoingTo(t) !== undefined,
+    };
+  }
+  /** Every war pass: advance the plan (phase changes are logged as CAMPAIGN lines); drop it once its cooldown is over. */
+  private campaignTick(): void {
+    const c = this.campaign;
+    if (c === null) return;
+    if (c.advance(this.campaignFacts(c), this.ctx.p.fightRatio)) { this.flushCampaignLog(); if (c.phase === "consolidate") this.lim.fire("campaigns", "end"); }
+    if (c.done) this.campaign = null;
+  }
+  /** actWar's gate. An opportunity target (collapsed / gap owner / MIRV threat / drained) goes now, as without the
+   *  flag. A normal target opens a campaign — prepare: the wave is escrowed, a post is asked for, no alliance — and
+   *  goes when Campaign.ready says; follow-ups on the campaign target flow; during a consolidate cooldown no new
+   *  campaign opens. Fires whenever the wave the chain would have sent now is delayed. */
+  private campaignAllows(pick: WarPick): boolean {
+    const now = this.ctx.mg.ticks();
+    if (pick.opportunity) return true;
+    let c = this.campaign;
+    if (c !== null && c.phase === "consolidate") { this.lim.fire("campaigns", "cooldown"); return false; }
+    if (c !== null && c.target !== pick.r) {
+      if (c.phase !== "prepare") return true; // a running war follows the pick (the sticky target already prefers the campaign's)
+      if (now - c.since < RETARGET_AFTER && c.target.isAlive() && !this.ctx.me.isFriendly(c.target)) { this.lim.fire("campaigns", "sticky"); return false; } // a young plan holds: the scorer's +3 brings its target back next pass
+      this.ctx.log(`t${now} CAMPAIGN retarget ${c.target.name()} → ${pick.r.name()}`);
+      c = null;
+    }
+    if (c === null) {
+      c = new Campaign(pick.r, pick.want, now);
+      const reason = c.abortReason(this.campaignFacts(c), this.ctx.p.fightRatio);
+      if (reason !== null) {
+        // a plan that would abort on its first tick is not opened: no war on this target until the reason is gone
+        if (now - (this.campaignRefused.get(pick.r) ?? -1e9) >= 600) { this.campaignRefused.set(pick.r, now); this.ctx.log(`t${now} CAMPAIGN no war on ${pick.r.name()}: ${reason}`); }
+        this.lim.fire("campaigns", "refuse");
+        return false;
+      }
+      this.campaign = c;
+      this.flushCampaignLog();
+      this.lim.fire("campaigns", "prepare");
+      return false;
+    }
+    if (c.phase === "prepare") {
+      c.want = pick.want;
+      const { go, why } = c.ready(this.campaignFacts(c));
+      if (!go) { this.lim.fire("campaigns", "wait"); if (now % 300 === 0) this.ctx.log(`t${now} CAMPAIGN waiting on ${c.target.name()}: ${why}`); return false; }
+      this.ctx.log(`t${now} CAMPAIGN go ${c.target.name()}: ${why}`);
+      return true;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------- the estimator: calibration, simulated wars (simWars)
