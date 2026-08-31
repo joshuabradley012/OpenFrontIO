@@ -2027,3 +2027,7 @@ A/B (full games — the objective is `winner=us`):
 `CONFIGS='{"base":{},"cf":{"mirvCounterforce":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`, and
 the pairing with the wall `{"samOnRisk":true}` vs `{"samOnRisk":true,"mirvCounterforce":true}` (defence + strike
 against the same MIRVed-down cluster).
+
+## `flips1` — the shelf vs the combo baseline (2026-08-31, `lab-out/flips1`, SEED=flips, ~120 games each)
+
+None of the eight default-off candidates graduates against the new defaults: strictOneWar REJECT (−0.07), relationAware −0.31, plateauBreak −0.14, samOnRisk −0.07, retaliateAware −0.07, boatEscort +0.03 (its early leads faded a third time), contestLeader +0.00, drainedNations +0.01. Reading: the combo defaults banked the shelf's value; these stay off. First Hetzner run of the overlapped SPRT mode — worked cleanly.
