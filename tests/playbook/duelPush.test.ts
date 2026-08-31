@@ -26,7 +26,7 @@ import { PlaybookHarness, playbookSetup, PRE_COMBO, Rect } from "../util/Playboo
 // were sized against (as other tests pin): fightRatio 2 / fightAbove 0.7 / fightMaxShare 0.6 / reserveShare 0.3.
 const HOME: Partial<PlaybookParams> = { ...PRE_COMBO,
   expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false, fightNotBeforeTick: 0, fightMinCities: 0,
-  lapseToAttack: false, finishByBoat: false, multiWar: false, annexWars: false, contestLeader: false, plateauBreak: false,
+  lapseToAttack: false, finishByBoat: false, multiWar: false, annexWars: false, contestLeader: false,
   fightRatio: 2, fightAbove: 0.7, fightMaxShare: 0.6, reserveShare: 0.3, allianceEvery: 300,
 };
 const ME: Rect = [0, 0, 199, 59]; // 12 000 tiles
