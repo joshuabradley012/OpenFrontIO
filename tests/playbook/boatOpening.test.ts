@@ -426,6 +426,110 @@ describe("boatOpening", () => {
     expect(await mkC({ boatOpeningSailCost: 0, boatOpeningMinScore: 1e9 })).toEqual([]); // the floor: hold
   });
 
+  // ---- v5 fixtures ------------------------------------------------------------------------------------
+  // Own-mass empty shores (Josh's russia/asia coastline: opening boats kept sailing to the far coast of our
+  // OWN landmass — land expansion reaches it free; boats are for separate masses and tribes). The cove
+  // fixture: a far pocket of our mainland's west coast (free box x1481..1520 × y429..455, a free lane
+  // x1481..1488 up to the free connector rows y375..377 that touch our rect at x1560) — openingCutOff's
+  // flood over land no other player owns walks lane and connector and meets us (land-reachable, so
+  // boatOwnMassFactor applies), while the launch-time acrossWaterNear still calls the cove "across water"
+  // (its all-land BFS saturates its 4000-tile cap on the blocker mainland long before walking the ~140-step
+  // detour — the v2-caveat saturation ambiguity this flag mops up). The separate-mass alternative is the
+  // free 118-tile mass at 1585,435..1604,463 (grid shore hits 1598,445 and 1586,463, water-path ~70).
+  const V5: Partial<PlaybookParams> = { ...V4, boatOpeningSailCost: 0, boatEatRate: 0 }; // cost/eat off: these tests isolate the own-mass factor
+  function blockCove(h: PlaybookHarness, opts: { block118?: boolean } = {}): void {
+    const b = h.rival("Blocker");
+    conquerRect(h.game, b, [1614, 125, 1801, 377]); // east: Kuril-side chains
+    conquerRect(h.game, b, [1602, 125, 1801, 355]); // north-east coast
+    conquerRect(h.game, b, [1560, 125, 1601, 324]); // mainland north of our rect
+    conquerRect(h.game, b, [1602, 356, 1613, 377]); // the strait island
+    conquerRect(h.game, b, [1481, 325, 1559, 374]); // mainland north-west of us — only the connector rows stay free
+    conquerRect(h.game, b, [1489, 378, 1801, 428]); // mainland + chains between the connector and the cove box
+    conquerRect(h.game, b, [1521, 429, 1584, 464]); // east of the box, west of the 118-mass
+    conquerRect(h.game, b, [1585, 429, 1604, 434]); // north of the 118-mass
+    conquerRect(h.game, b, [1605, 429, 1801, 464]); // east of the 118-mass
+    if (opts.block118) conquerRect(h.game, b, [1585, 435, 1604, 463]); // the 118-mass itself (the hold test leaves only the cove)
+    conquerRect(h.game, b, [1481, 456, 1584, 600]); // below the box (the carve too)
+    conquerRect(h.game, b, [1585, 464, 1801, 600]); // below the 118-mass
+    conquerRect(h.game, b, [1360, 125, 1480, 600]); // west continent + the mainland's west edge column
+    conquerRect(h.game, b, [1360, 601, 1801, 730]); // the south
+  }
+  /** v4's clamp dance: plain waves stay under the 500-troop floor until the plain rule times out into
+   *  boatSent at t652, then troops jump — the extras run alone from there. */
+  function dance(h: PlaybookHarness, stop: () => boolean, max = 900): boolean {
+    return h.until(() => {
+      if (h.game.ticks() <= 651 && h.me.troops() > 2000) h.me.setTroops(2000);
+      if (h.game.ticks() === 652) h.me.setTroops(20_000);
+      return stop();
+    }, max);
+  }
+  const isOut = (l: string) => l.includes("BOAT OPENING") && l.includes("out →");
+
+  test("v5: an own-mass far coast loses to a separate-mass candidate; ×1 pinned takes the own coast (the factor decides)", async () => {
+    const mkO = async (over: Partial<PlaybookParams>) => {
+      const h = await playbookSetup({ map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 2_000, rivals: [BLOCKER], bot: { ...V5, boatShare: 0.2, boatOpeningMinScore: 0.25, ...over } });
+      blockCove(h);
+      dance(h, () => h.log.some(isOut));
+      return h.log.find(isOut)!;
+    };
+    const sep = await mkO({});
+    expect(sep).toBeDefined();
+    expect(sep).toContain("own=no"); // the 118-tile separate mass, not our own west coast
+    const own = await mkO({ boatOwnMassFactor: 1 });
+    expect(own).toContain("own=yes"); // ×1: the bigger own-coast basin wins — the factor is what excluded it
+    expect(own).not.toContain("blocked=yes"); // land-reachable through the lane: the escape hatch did NOT fire
+  });
+
+  test("v5: the penalized own coast falls under the score floor — the extras hold the boat; ×1 pinned launches it", async () => {
+    const mkH = async (over: Partial<PlaybookParams>) => {
+      const h = await playbookSetup({ map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 100_000, rivals: [BLOCKER], bot: { ...V5, boatOpeningMinScore: 2, ...over } });
+      blockCove(h, { block118: true });
+      h.until(() => h.log.some(isOut), 900);
+      return h.log.filter(isOut);
+    };
+    expect(await mkH({})).toEqual([]); // 0.15 × the cove's raw score is under the floor: hold home
+    const out = await mkH({ boatOwnMassFactor: 1 });
+    expect(out.length).toBeGreaterThanOrEqual(1); // the same fixture ×1 clears it: the factor held the boat, not the fixture
+    expect(out[0]).toContain("own=yes");
+  });
+
+  test("v5: a basin walled off by rivals keeps full score — the cut-off carve is boated even at factor 0 (blocked=yes)", async () => {
+    const h = await playbookSetup({ map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 100_000, rivals: [BLOCKER], bot: { ...V4, boatOwnMassFactor: 0 } });
+    blockFar(h);
+    conquerRect(h.game, h.rival("Blocker"), [1602, 356, 1613, 377]); // the island: only the carve stays free
+    conquerRect(h.game, h.rival("Blocker"), [1360, 581, 1801, 730]); // and the south
+    const done = h.until(() => h.log.some(isOut), 900);
+    expect(done).toBe(true);
+    const line = h.log.find(isOut)!;
+    expect(line).toContain("own=yes"); // cap-saturated mainland fill: treated as our own mass…
+    expect(line).toContain("blocked=yes"); // …but the Blocker walls the carve off — land expansion can never reach it
+    expect(sailOf(line)).toBeGreaterThan(BOAT_MAX_PATH.early); // the long crossing to the carve
+    expect(h.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1);
+  });
+
+  test("v5: a tribe on our own mass is exempt — boated at factor 0, own=yes without blocked", async () => {
+    const h = await playbookSetup({
+      map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 2_000,
+      rivals: [BLOCKER, { name: "MassTribe", type: PlayerType.Bot, at: [1560, 490], troops: 1_000, tiles: [1539, 465, 1599, 509] }],
+      bot: { ...V4, boatOwnMassFactor: 0, boatShare: 1.0 },
+    });
+    blockFar(h);
+    conquerRect(h.game, h.rival("Blocker"), [1602, 356, 1613, 377]);
+    conquerRect(h.game, h.rival("Blocker"), [1360, 581, 1801, 730]);
+    const tribe = h.rival("MassTribe");
+    const done = h.until(() => {
+      if (tribe.isAlive() && tribe.troops() > 1000) tribe.setTroops(1000);
+      if (h.game.ticks() <= 651 && h.me.troops() > 2000) h.me.setTroops(2000);
+      if (h.game.ticks() === 652) h.me.setTroops(20_000);
+      return h.log.some(isOut);
+    }, 900);
+    expect(done).toBe(true);
+    const line = h.log.find(isOut)!;
+    expect(line).toContain("tribe MassTribe"); // a tribe across the bay on our own mass is still a fine boat
+    expect(line).toContain("own=yes");
+    expect(line).not.toContain("blocked=yes");
+  });
+
   test("an opening that never becomes active is decision-identical to the plain bot (log equality)", async () => {
     const a = await playbookSetup({ map: "world", spawn: SPAWN, tiles: ME, troops: 100_000, bot: { ...QUIET } });
     const b = await playbookSetup({ map: "world", spawn: SPAWN, tiles: ME, troops: 100_000, bot: { ...QUIET, boatOpening: true, boatOpeningUntil: 40 } }); // cutoff before boatAtTick: the flag never changes a decision

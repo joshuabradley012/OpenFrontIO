@@ -35,6 +35,7 @@ export interface PlaybookParams {
   boatOceanBonus: number; // boatOpening v3: score multiplier on a new-landmass candidate whose sail exceeds BOAT_MAX_PATH.early while the ocean window is open
   boatOpeningSailCost: number; // boatOpening v4: worth-tiles charged per sail tile beyond BOAT_MAX_PATH.early (80) — the opportunity cost of a long crossing (troops locked at sea, growth deferred), so "big but far and empty" loses to "smaller, near, growable" (the arctic-magnet fix, Josh's east-asia GUI session)
   boatOpeningMinScore: number; // boatOpening v4: tiles-per-sail-tick floor an EMPTY-SHORE opening candidate must clear or it is no target at ANY rank (the extras hold the boat) — the junk tail of basin<200 picks once good targets are taken; tribe candidates are exempt (their 2× wave is affordability-gated and takes real enemy tiles — far tribe junk dies to boatOpeningSailCost instead)
+  boatOwnMassFactor: number; // boatOpening v5: score multiplier on an empty-shore opening candidate whose landmass is our OWN (a capped fill counts as own — conservative): land expansion reaches our own coast free, opening boats are for separate masses and tribes (exempt); not applied when the shore's basin is walled off from us by other players' land (openingCutOff — a cut-off peninsula behind a rival IS boat-worthy). Josh's russia/asia far-coast GUI finding
   fightAbove: number; // start fighting rivals when troops exceed this share of cap
   fightRatio: number; // attack size as multiple of the target's whole army
   fightNotBeforeTick: number; // no wars with nations/humans before this tick
@@ -156,6 +157,7 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   boatOceanBonus: 1.3,
   boatOpeningSailCost: 8, // at sail 150 a candidate forfeits 560 worth-tiles: the 100-tile junk crossings die, a genuinely rich far basin still clears it
   boatOpeningMinScore: 4, // ~80 discounted tiles for a short hop (sail floor 20), ~600 for a 150-tile crossing
+  boatOwnMassFactor: 0.15, // steep: an own-mass shore needs a raw score of ~27 (vs the floor of 4) — effectively excluded unless nothing else exists
   fightAbove: 0.7,
   fightRatio: 2.0, // Medium 30-game sweep hz3: 1.67× = +1 crown but −13% land, 3 fewer top-3, loses paired 13–17; the gate (attack whenever affordable, from 3:00) stays
   fightNotBeforeTick: 1800,
