@@ -178,5 +178,41 @@
     "lo": 1.0,
     "hi": 2.0,
     "init": 1.2
+  },
+  "escortMinSail": {
+    "lo": 20,
+    "hi": 150,
+    "init": 60,
+    "int": true
+  },
+  "escortFromTick": {
+    "lo": 600,
+    "hi": 3000,
+    "init": 1200,
+    "int": true
+  },
+  "escortThreatRange": {
+    "lo": 30,
+    "hi": 200,
+    "init": 130,
+    "int": true
+  },
+  "escortMaxShips": {
+    "lo": 1,
+    "hi": 4,
+    "init": 2,
+    "int": true
+  },
+  "escortSwarm": {
+    "lo": 2,
+    "hi": 5,
+    "init": 3,
+    "int": true
+  },
+  "escortDeferTicks": {
+    "lo": 200,
+    "hi": 1800,
+    "init": 600,
+    "int": true
   }
 }

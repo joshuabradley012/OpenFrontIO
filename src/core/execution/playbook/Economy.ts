@@ -294,10 +294,35 @@ export class Economy {
     // #7 buildSearch: the planner replaces steps 3–9 (posts under attack, the first SAM under an enemy silo, mirvFund
     // and the silo escrow stayed above / are passed in)
     if (this.ctx.p.buildSearch) { this.buildBySearch(ticks, gold, mirvFund + fund, cost, cities, cityUnits, ports, portLevels, capFull, rivals, enemySilos, myRank, seaFull, cityCapHit, upgrade, nearLine); if (fund > 0n && this.lastPlanCost > 0 && Number(gold - mirvFund) >= this.lastPlanCost && Number(gold - mirvFund - fund) < this.lastPlanCost) this.lim.fire("bombBudget", "plan"); return; } // bombBudget: the planner sees the gold net of the fund
+    // the silo plan (step 6) and its escrow (step 7), read up here too by the `boatEscort` purchase — pure consts, hoisted
+    const idleAtCap = capFull && me.troops() > this.q.cap() * 0.9 && me.outgoingAttacks().length === 0;
+    const silos = me.units(UnitType.MissileSilo);
+    const baseSiloTarget = cityUnits.length >= 25 ? 3 : cityUnits.length >= 14 ? 2 : (ticks >= this.ctx.p.siloAtTick || idleAtCap) && (portLevels >= 1 || me.unitsOwned(UnitType.Factory) > 0 || idleAtCap) ? 1 : 0; // v8 (silo at 4 cities, SAM per 5, warships early) cost 36 % of land: the ratios wait for the economy
+    const siloTarget = onRisk ? Math.max(baseSiloTarget, 2) : baseSiloTarget; // `samOnRisk`: the counter silo
+    const wantSilo = silos.length < siloTarget && this.ctx.mg.ticks() >= 3000;
+    const siloReserve = wantSilo ? cost(UnitType.MissileSilo) + 400_000n : 0n;
     // 3. first three city levels
     if (cities < 3 && spare("city", gold, cost(UnitType.City))) {
       const tile = this.railInfillTile() ?? this.interiorTile(UnitType.City);
       if (tile !== null && this.tryBuild(UnitType.City, tile)) return;
+    }
+    // `boatEscort`: a contested corridor holds a boat for want of a warship (Military.escortWant) — buy one patrolling
+    // the corridor point (it spawns at our nearest port on that water, PlayerImpl.warshipSpawn), under escortMaxShips
+    // and behind the bomb / SAM funds, mirvFund and the silo escrow like every discretionary buy; ahead of port levels
+    // and rail (a held crossing is a live need, a level is not), behind the first three cities. The plain warship rule
+    // (step 9, from 15:00) is untouched. No port on that water: the request is dropped (the corridor swarms or waits).
+    const escortWant = this.ctx.p.boatEscort ? this.military.escortWant : null;
+    if (escortWant !== null && me.units(UnitType.Warship).length < this.ctx.p.escortMaxShips && !this.ctx.mg.config().isUnitDisabled(UnitType.Warship)) {
+      if (me.canBuild(UnitType.Warship, escortWant.point) === false) this.military.escortWant = null;
+      else if (spare("escort", gold - mirvFund - siloReserve, cost(UnitType.Warship))) {
+        this.ctx.mg.addExecution(new ConstructionExecution(me, UnitType.Warship, escortWant.point));
+        this.spentThisPass += cost(UnitType.Warship);
+        this.lastWarshipTick = ticks;
+        this.military.escortWant = null;
+        this.lim.fire("boatEscort", "buy");
+        this.ctx.log(`t${ticks} ESCORT buy Warship for corridor (${this.ctx.mg.x(escortWant.point)},${this.ctx.mg.y(escortWant.point)})`);
+        return;
+      }
     }
     // 4. ports: first port when a partner exists; level the best one to 3 before a second; never past the unit cap or on a full sea
     const partnerTile = cities >= this.ctx.p.citiesBeforePort ? this.portTile() : null;
@@ -321,11 +346,6 @@ export class Economy {
     if (!wantRail && cities >= 3 && ticks % 1200 < 10) this.ctx.log(`t${ticks} no rail wanted: ports=${ports.length} partner=${partnerTile !== null} friends=${friends.length} seaFull=${seaFull}`);
     // 6. silos, nation-style: the first at four city units or 10:00 (whichever comes first, once a port or factory pays),
     //    a second at twelve, a third at twenty; a level when a bomb target sat out of range
-    const idleAtCap = capFull && me.troops() > this.q.cap() * 0.9 && me.outgoingAttacks().length === 0;
-    const silos = me.units(UnitType.MissileSilo);
-    const baseSiloTarget = cityUnits.length >= 25 ? 3 : cityUnits.length >= 14 ? 2 : (ticks >= this.ctx.p.siloAtTick || idleAtCap) && (portLevels >= 1 || me.unitsOwned(UnitType.Factory) > 0 || idleAtCap) ? 1 : 0; // v8 (silo at 4 cities, SAM per 5, warships early) cost 36 % of land: the ratios wait for the economy
-    const siloTarget = onRisk ? Math.max(baseSiloTarget, 2) : baseSiloTarget; // `samOnRisk`: the counter silo
-    const wantSilo = silos.length < siloTarget && this.ctx.mg.ticks() >= 3000;
     if (wantSilo && gold >= cost(UnitType.MissileSilo) + (onRisk ? 0n : 400_000n)) {
       if (onRisk && silos.length >= baseSiloTarget) this.lim.fire("samOnRisk", "silo", 300);
       const tile = silos.length === 0 ? this.interiorTile(UnitType.MissileSilo) : this.sampleTerritory(30).find((t) => silos.every((sl) => this.ctx.mg.euclideanDistSquared(sl.tile(), t) > 50 * 50) && me.canBuild(UnitType.MissileSilo, t) !== false) ?? null;
@@ -335,8 +355,7 @@ export class Economy {
       const low = silos.find((sl) => sl.level() < 4 && me.canUpgradeUnit(sl));
       if (low) { upgrade(low); this.military.bombOutOfRange = 0; return; }
     }
-    // 7. troop cap when full — unless we are saving for a silo
-    const siloReserve = wantSilo ? cost(UnitType.MissileSilo) + 400_000n : 0n;
+    // 7. troop cap when full — unless we are saving for a silo (siloReserve, above step 3)
     if (capFull && gold - siloReserve - mirvFund >= cost(UnitType.City)) {
       const rt = cityCapHit ? null : this.railInfillTile();
       if (rt !== null && this.tryBuild(UnitType.City, rt)) { this.rail.infilled++; return; }

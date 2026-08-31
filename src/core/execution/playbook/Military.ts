@@ -1,9 +1,10 @@
 // Military: expansion, tribe harvesting, counter-attacks, wars and retreats, boats, bombs, MIRV, split watch.
 
-import { Attack, Game, Player, PlayerType, Relation, UnitType } from "../../game/Game";
+import { Attack, Game, Player, PlayerType, Relation, Unit, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { MirvExecution } from "../MIRVExecution";
+import { MoveWarshipExecution } from "../MoveWarshipExecution";
 import { RetreatExecution } from "../RetreatExecution";
 import { TargetPlayerExecution } from "../TargetPlayerExecution";
 import { calculateTerritoryCenter, listNukeBreakAlliance } from "../Util";
@@ -41,6 +42,26 @@ export class WaterPath {
     for (const n of mg.neighbors(t)) { if (!mg.isWater(n)) continue; const d = dist[n]; if (d !== 0 && d < best) best = d; } // d = length + 1: the step ashore
     return best;
   }
+  /** `boatEscort`: the tiles of the fill's shortest path to `t` — from the first water tile off our shore to the water
+   *  tile beside the landing (a water `t`: to `t` itself), in sailing order; null when len(t) is Infinity. */
+  path(t: TileRef): TileRef[] | null {
+    const mg = this.mg, dist = this.dist;
+    let cur: TileRef | null = null;
+    if (mg.isWater(t)) { if (dist[t] !== 0) cur = t; }
+    else { let best = Infinity; for (const n of mg.neighbors(t)) { if (!mg.isWater(n)) continue; const d = dist[n]; if (d !== 0 && d < best) { best = d; cur = n; } } }
+    if (cur === null) return null;
+    const out: TileRef[] = [];
+    while (cur !== null) {
+      out.push(cur);
+      const d: number = dist[cur];
+      if (d <= 2) break;
+      let next: TileRef | null = null;
+      for (const n of mg.neighbors(cur)) if (mg.isWater(n) && dist[n] === d - 1) { next = n; break; }
+      cur = next;
+    }
+    out.reverse();
+    return out;
+  }
 }
 /** A war fight() would open: the decision half of the old fight(); actWar() is the other half. */
 interface WarPick {
@@ -75,6 +96,8 @@ const OPENING_MIN_SAIL = 20; // boatOpening: sail-distance floor in the basin/sa
 const OPENING_CONTESTED = 1.5; // boatOpening: score boost on a tribe candidate with a rival (nation/human) adjacent — the wilderness near it will be eaten soon anyway, the tribe is ours alone (the tribe-tile coefficient itself is PlaybookParams.boatTribeWorth)
 const OPENING_PUSH_TICKS = 600; // boatOpening: how long a recorded opening landing is watched for a tribe having eaten its basin (sail + the wave's fight)
 const OPENING_REACH_TILES = 8000; // boatOpening v5: cap of openingCutOff's flood over land no other player owns — big enough to fully enumerate a rival-walled pocket (the escape hatch needs the fill to FINISH to call a basin cut off); a capped fill is treated as land-reachable
+const ESCORT_SWARM_GAP = 10; // boatEscort: ticks between a swarm's boats — the escorts rule's cadence (one launch per pass)
+const ESCORT_CORRIDOR_STEP = 4; // boatEscort: every k-th path tile is a corridor sample (a 250-tile path → ~60 tiles × a handful of warships per check)
 /** A bomb maybeBomb's value search picked: where, of what type, at whom, and its value per 100k of gold. */
 export interface BombPick { tile: TileRef; value: number; type: UnitType; enemy: Player; cost: bigint }
 
@@ -194,6 +217,10 @@ export class Military {
     const targets = new Set(me.outgoingAttacks().map((a) => a.target()));
     for (const p of this.waves.keys()) if (!targets.has(p)) this.waves.delete(p); // read only while an attack on that tribe runs
     for (const p of this.counters) if (dead(p)) this.counters.delete(p);
+    // `boatEscort`: manageEscorts releases on its own cadence; this is the backstop for a flag turned off mid-game
+    this.escorts = this.escorts.filter((e) => e.ship.isActive() && t - e.since < 4 * this.ctx.p.escortDeferTicks);
+    this.deferrals = this.deferrals.filter((d) => t - d.since < 2 * this.ctx.p.escortDeferTicks);
+    this.swarmQueue = this.swarmQueue.filter((s) => t - s.at < 300);
   }
 
   // ---------------------------------------------------------------- boatsNearest: measure from where the engine launches
@@ -366,6 +393,7 @@ export class Military {
       if (c.score <= -1e9) continue;
       if (c.troops > this.ctx.sit.spendable) continue;
       if (!across(c.tile, c.dm)) continue;
+      if (forced) this.nextBoatWorthy = this.ctx.mg.ticks(); // `boatEscort`: a plateau-forced crossing is worth a swarm if contested
       const sent = this.ctx.boat(c.tile, c.troops, `sea expansion → ${c.what}${wp ? ` (${wp.len(c.tile)} tiles by water)` : nearest ? ` (${dist(c.tile)} tiles)` : ""}`);
       if (sent === 0) continue;
       this.lastSeaTick = this.ctx.mg.ticks();
@@ -1592,6 +1620,7 @@ export class Military {
       cands.push({ tile: t, troops: Math.floor(me.troops() * this.ctx.p.boatShare), d: wp && d > earlyCap ? 1e9 : d, dm, sail: wp && d > earlyCap ? 1e9 : d, tribeTiles: 0, contested: false, slOk, oldD: dOld, oldOk: dOld >= 30 && Math.abs(x - fx) <= 200 && Math.abs(y - fy) <= 200 && (x - fx) % 6 === 0 && (y - fy) % 6 === 0, what: "empty shore" });
     }
     cands.sort((a, b) => a.d - b.d);
+    const openingScore = new Map<(typeof cands)[number], number>(); // `boatEscort`: an opening pick's score, for the swarm's worth test
     if (opening) {
       // `boatOpening`: rank the head of the list by free land behind the landing per tile sailed (the GUI showed
       // the pure-distance pick ignoring a big wilderness mass for a nearby scrap). One candidate per landmass, the
@@ -1641,11 +1670,13 @@ export class Military {
       // min-sail rep, never scored either) launched a 179-tile-sail basin=118 crossing when their rep was dead.
       // A refused or dropped top pick now means the extras hold this pass and re-scan 20 ticks later.
       cands.splice(0, cands.length, ...scored.map((x) => x.c));
+      for (const x of scored) openingScore.set(x.c, x.s);
     }
     // `boatsWaterPath` liveness: what the straight-line ranking (this rule with the flag off) would have launched at
     const slPick = () => cands.filter((o) => o.slOk).sort((a, b) => a.dm - b.dm).slice(0, 16).find((o) => o.troops >= 500 && across(o.tile, o.dm));
     for (const c of cands.slice(0, wp ? 48 : 16)) {
       if (c.d >= 1e9 || c.troops < 500 || !across(c.tile, c.dm)) continue;
+      if (opening && (openingScore.get(c) ?? 0) >= 2 * this.ctx.p.boatOpeningMinScore) this.nextBoatWorthy = this.ctx.mg.ticks(); // `boatEscort`: worth a swarm if contested
       if (this.ctx.boat(c.tile, c.troops, `early boat → ${c.what}, ${c.d} tiles${wp ? " by water" : ""}`) === 0) continue;
       // every early-boat landing (the plain first boat included) is watched by openingPush: a tribe may eat the
       // basin before the wave finishes. Pure bookkeeping with the flag off — only openingPush (flag-gated) reads it.
@@ -1811,6 +1842,160 @@ export class Military {
       this.ctx.log(`t${now} FINISH BY BOAT ${t.name()} ${part.tiles} unreachable tiles of ${t.numTilesOwned()}, troops ${Math.round(theirs)} spendable ${Math.floor(spendable)} → ${sent} landing ${dist} tiles out`);
       return;
     }
+  }
+
+  // ---------------------------------------------------------------- boatEscort: warships on the corridor a boat will sail
+  /** An escort: `ship` was sent to `point`, the corridor tile nearest the threat, for the crossing to `target`;
+   *  `sailedAt` ≥ 0 once that crossing launched (the transport is then tracked by its destination) and the entry is
+   *  released when it has landed or died — or, never launched, after 2 × escortDeferTicks. */
+  private escorts: { ship: Unit; point: TileRef; target: TileRef; since: number; sailedAt: number }[] = [];
+  /** Landings held and since when (matched within boatDedupeRadius): the deferral clock a worthy crossing swarms on. */
+  private deferrals: { target: TileRef; since: number }[] = [];
+  /** A swarm's follow-up boats, launched by manageEscorts ESCORT_SWARM_GAP ticks apart. */
+  private swarmQueue: { tile: TileRef; troops: number; at: number; k: number; n: number }[] = [];
+  /** A contested corridor that wants a warship bought (Economy.build buys it patrolling `point` and clears this). */
+  escortWant: { point: TileRef; since: number } | null = null;
+  /** The tick a boat rule stamped just before ctx.boat() to say its target is worth a swarm (an opening pick scoring
+   *  ≥ 2 × boatOpeningMinScore, a plateau-forced pass); read for that tick only, so a refused launch leaves no residue. */
+  nextBoatWorthy = -1;
+  private lastEscortLog = -1e9;
+  private sameLanding(a: TileRef, b: TileRef): boolean { return this.ctx.mg.euclideanDistSquared(a, b) <= this.ctx.p.boatDedupeRadius ** 2; }
+  /** `boatEscort`: the loop's boat() asks before every launch. Returns the troops to launch now — `troops` (sail as
+   *  planned), a swarm's per-boat share (the rest queued), or 0 (the crossing is held this pass; the rule moves on to
+   *  its next candidate and re-picks next pass). Engine facts this rests on (WarshipExecution, ShellExecution): a
+   *  warship shells any enemy transport within warshipTargettingRange (130) — transports first, no reload against
+   *  them, one homing shell each — and a transport has no health, so a transport whose path comes within 130 of a
+   *  live enemy warship is sunk whether or not a warship of ours is beside it: an escort cannot screen a crossing,
+   *  it can only CLEAR the corridor (warship 1000 HP, ~262 a shell per 20 ticks, retreat at 75 %, no fire once
+   *  docked). Hence hold + send the escort at the threat + sail once the corridor reads clear; a worthy target with
+   *  no escort possible, or held escortDeferTicks, swarms (the threat's no-reload rule means only what it has not
+   *  reached yet gets through — Josh asked for the attempt; the A/B judges it). */
+  escortGate(tile: TileRef, troops: number, why: string): number {
+    const p = this.ctx.p, mg = this.ctx.mg, me = this.ctx.me, now = mg.ticks();
+    const worthy = this.nextBoatWorthy === now || why.startsWith("CONTEST") || (this.ctx.sit.duel !== null && mg.hasOwner(tile) && mg.owner(tile) === this.ctx.sit.duel);
+    this.nextBoatWorthy = -1;
+    if (!p.boatEscort || now < p.escortFromTick) return troops;
+    const cor = this.corridor(tile);
+    if (cor === null || cor.len <= p.escortMinSail) return troops; // a short hop sails as before
+    const threat = this.corridorThreat(cor.tiles);
+    if (threat === null) { this.deferrals = this.deferrals.filter((d) => !this.sameLanding(d.target, tile)); this.escortSailed(tile); return troops; }
+    // contested. The deferral clock for this landing first: it decides whether a purchase is still worth asking for
+    let def = this.deferrals.find((d) => this.sameLanding(d.target, tile));
+    if (def === undefined) { def = { target: tile, since: now }; this.deferrals.push(def); }
+    const timedOut = now - def.since >= p.escortDeferTicks;
+    // (1) an escort for this corridor: the idle warship nearest the threat, else a purchase request while the clock runs
+    let esc = this.escorts.find((e) => this.sameLanding(e.target, tile));
+    if (esc === undefined) {
+      const ship = this.idleWarship(threat.at);
+      if (ship !== null) {
+        mg.addExecution(new MoveWarshipExecution(me, [ship.id()], threat.at));
+        esc = { ship, point: threat.at, target: tile, since: now, sailedAt: -1 };
+        this.escorts.push(esc);
+        this.lim.fire("boatEscort", "move");
+        this.ctx.log(`t${now} ESCORT ${ship.id()} → corridor (${mg.x(threat.at)},${mg.y(threat.at)}) for boat to (${mg.x(tile)},${mg.y(tile)}); threat ${threat.owner.name()} at ${threat.d}`);
+      } else if (p.escortBuy && !timedOut && this.escortWant === null && me.units(UnitType.Warship).length < p.escortMaxShips && !mg.config().isUnitDisabled(UnitType.Warship)) {
+        this.escortWant = { point: threat.at, since: now };
+      }
+    }
+    const canEscort = esc !== undefined || this.escortWant !== null;
+    // (2) a worthy target with no escort possible — or held long enough — swarms: the same troops over n boats
+    if (worthy && (!canEscort || timedOut)) {
+      const n = Math.min(p.escortSwarm, Math.floor(troops / 500));
+      if (n >= 2) {
+        const per = Math.floor(troops / n);
+        for (let k = 1; k < n; k++) this.swarmQueue.push({ tile, troops: per, at: now + k * ESCORT_SWARM_GAP, k: k + 1, n });
+        this.deferrals = this.deferrals.filter((d) => d !== def);
+        this.lim.fire("boatEscort", "swarm");
+        this.ctx.log(`t${now} ESCORT swarm ${n} boats → (${mg.x(tile)},${mg.y(tile)}) ${Math.round(per / 1000)}k each (${why}); threat ${threat.owner.name()} at ${threat.d}${esc ? `, escort ${esc.ship.id()}` : ""}`);
+        this.escortSailed(tile);
+        return per;
+      }
+    }
+    // (3) held
+    this.lim.fire("boatEscort", "defer");
+    if (now - this.lastEscortLog >= 100) {
+      this.lastEscortLog = now;
+      this.ctx.log(esc !== undefined
+        ? `t${now} ESCORT hold: crossing to (${mg.x(tile)},${mg.y(tile)}) waits for escort ${esc.ship.id()} (${why}, ${cor.len} tiles; threat ${threat.owner.name()} at ${threat.d})`
+        : `t${now} ESCORT none: crossing deferred (${why}, ${cor.len} tiles; threat ${threat.owner.name()} warship ${threat.d} from the corridor${this.escortWant !== null ? ", buying" : ""})`);
+    }
+    return 0;
+  }
+  /** The crossing to `tile` launched: its escorts now watch that transport. */
+  private escortSailed(tile: TileRef): void {
+    const now = this.ctx.mg.ticks();
+    for (const e of this.escorts) if (e.sailedAt < 0 && this.sameLanding(e.target, tile)) e.sailedAt = now;
+  }
+  /** The water a transport to `tile` will sail: the water path (WaterPath.path — the engine's WaterPathFinder takes
+   *  the same shortest route, give or take), every ESCORT_CORRIDOR_STEP-th tile, with the sail length; beyond the
+   *  fill's reach, the straight line from our nearest sampled shore tile (its water tiles) at manhattan length. */
+  private corridor(tile: TileRef): { tiles: TileRef[]; len: number } | null {
+    const mg = this.ctx.mg;
+    const path = this.waterPath().path(tile);
+    if (path !== null) {
+      const tiles: TileRef[] = [];
+      for (let i = 0; i < path.length; i += ESCORT_CORRIDOR_STEP) tiles.push(path[i]);
+      if ((path.length - 1) % ESCORT_CORRIDOR_STEP !== 0) tiles.push(path[path.length - 1]);
+      return { tiles, len: path.length };
+    }
+    const sample = this.shoreSample();
+    if (sample.length === 0) return null;
+    let from = sample[0], best = Infinity;
+    for (const s of sample) { const d = mg.manhattanDist(s, tile); if (d < best) { best = d; from = s; } }
+    const tiles: TileRef[] = [];
+    const x0 = mg.x(from), y0 = mg.y(from), x1 = mg.x(tile), y1 = mg.y(tile), n = Math.max(1, Math.ceil(best / ESCORT_CORRIDOR_STEP));
+    for (let i = 0; i <= n; i++) {
+      const x = Math.round(x0 + ((x1 - x0) * i) / n), y = Math.round(y0 + ((y1 - y0) * i) / n);
+      if (mg.isValidCoord(x, y) && mg.isWater(mg.ref(x, y))) tiles.push(mg.ref(x, y));
+    }
+    return tiles.length === 0 ? null : { tiles, len: best };
+  }
+  /** The live enemy warship (one whose owner may attack us; a docked one does not fire) nearest the corridor, within
+   *  escortThreatRange of one of its tiles — with that tile and the distance. Euclidean, as the engine's targeting. */
+  private corridorThreat(tiles: TileRef[]): { ship: Unit; owner: Player; at: TileRef; d: number } | null {
+    const mg = this.ctx.mg, me = this.ctx.me, r2 = this.ctx.p.escortThreatRange ** 2;
+    let best: { ship: Unit; owner: Player; at: TileRef; d: number } | null = null, bestD2 = Infinity;
+    for (const u of mg.units(UnitType.Warship)) {
+      const o = u.owner();
+      if (o === me || !u.isActive() || u.warshipState().state === "docked" || !o.canAttackPlayer(me, true)) continue;
+      let d2 = Infinity, at = tiles[0];
+      for (const t of tiles) { const dd = mg.euclideanDistSquared(t, u.tile()); if (dd < d2) { d2 = dd; at = t; } }
+      if (d2 <= r2 && d2 < bestD2) { bestD2 = d2; best = { ship: u, owner: o, at, d: Math.round(Math.sqrt(d2)) }; }
+    }
+    return best;
+  }
+  /** Our warship nearest `point` on the same water, not docked and not already on an escort. */
+  private idleWarship(point: TileRef): Unit | null {
+    const mg = this.ctx.mg, comp = mg.getWaterComponent(point);
+    const busy = new Set(this.escorts.map((e) => e.ship));
+    let best: Unit | null = null, bestD = Infinity;
+    for (const u of this.ctx.me.units(UnitType.Warship)) {
+      if (!u.isActive() || busy.has(u) || u.warshipState().state === "docked") continue;
+      if (comp !== null && !mg.hasWaterComponent(u.tile(), comp)) continue;
+      const d = mg.manhattanDist(u.tile(), point);
+      if (d < bestD) { bestD = d; best = u; }
+    }
+    return best;
+  }
+  /** Every 10 ticks (rule "escorts"): the swarm's follow-up boats due this pass, an unaffordable purchase request
+   *  expiring, and the releases — a ship gone, a sailed crossing's transport landed or dead (no transport of ours
+   *  bound within boatDedupeRadius of the landing, 20 ticks after the launch), a corridor never sailed for
+   *  2 × escortDeferTicks. A released ship is idle for the next corridor; it is not moved back. */
+  manageEscorts(): void {
+    const p = this.ctx.p;
+    if (!p.boatEscort) return;
+    const mg = this.ctx.mg, me = this.ctx.me, now = mg.ticks();
+    if (this.swarmQueue.length > 0) {
+      const due = this.swarmQueue.filter((s) => s.at <= now);
+      this.swarmQueue = this.swarmQueue.filter((s) => s.at > now);
+      for (const s of due) this.ctx.boat(s.tile, s.troops, `ESCORT swarm ${s.k}/${s.n} → (${mg.x(s.tile)},${mg.y(s.tile)})`);
+    }
+    if (this.escortWant !== null && now - this.escortWant.since >= p.escortDeferTicks) this.escortWant = null;
+    if (this.escorts.length === 0 && this.deferrals.length === 0) return;
+    const boats = me.units(UnitType.TransportShip);
+    const bound = (t: TileRef) => boats.some((u) => { const d = u.targetTile(); return d !== undefined && this.sameLanding(d, t); });
+    this.escorts = this.escorts.filter((e) => e.ship.isActive() && e.ship.owner() === me && (e.sailedAt >= 0 ? now - e.sailedAt <= 20 || bound(e.target) : now - e.since < 2 * p.escortDeferTicks));
+    this.deferrals = this.deferrals.filter((d) => now - d.since < 2 * p.escortDeferTicks);
   }
 
   // ---------------------------------------------------------------- nukes
