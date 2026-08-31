@@ -130,6 +130,9 @@ export interface PlaybookParams {
   plateauWindow: number; // plateauBreak: ticks of flat growth before the escalation, and between escalations (int, a multiple of the 300-tick sample)
   plateauGrowth: number; // plateauBreak: tile growth over the window below which we count as plateaued
   multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
+  duelPush: boolean; // finish a won duel (GUI 2026-08-30: two non-bot players left, us at 38 % of the land with 13.3M troops vs 7.55M, and the bot spent 10+ minutes requesting alliances with its only rival — the finish rule's push needs 45 % of the map and requestAlliances courts the sole rival forever): while the living non-bot, non-teammate players are ≤ duelPlayers (us included) and our troops are ≥ duelRatio × the strongest other's (the foe), Diplomacy never asks, accepts or renews an alliance with the foe (an existing one lapses through the planned-target mechanism, never a betrayal), the mode is `push` whatever our share (hold still wins: a MIRV-capable foe over the denial line fires whatever we do), the war rule takes the foe as an opportunity at duelRatio (no affordability / fightAbove gate, the war-count invariant lets it run beside counters, the posts / thin-empire gates do not apply — it is the only target left) with a duelRatio wave, and bombs / MIRV take the foe as a priority target like the threats. Behind (troops < duelRatio × the foe's) nothing changes — the flag finishes a won game. Default off until the full-game A/B
+  duelPlayers: number; // duelPush: a duel while the living non-bot, non-teammate players (us included) number at most this (int)
+  duelRatio: number; // duelPush: our troops over the foe's from which the duel counts as won — and the ratio the duel war is sent at
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -217,6 +220,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   contestLeader: false, // default off until the 30-game Medium A/B
   contestRank: 3,
   contestLeadRatio: 1.5,
+  duelPush: false, // default off until the full-game A/B
+  duelPlayers: 2,
+  duelRatio: 1.2, // the endgame war ratio (atCap / on the clock) the plain rule already accepts
   boatsWaterPath: false, // OFF again 2026-08-30: rm1 (96 mirrored full games, wins objective, docs/PlaybookBotPlan.md) — removal won 63/96 vs base 48 (p=0.032); the water-path ranking hurts full games
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B

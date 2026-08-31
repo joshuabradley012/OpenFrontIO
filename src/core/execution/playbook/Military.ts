@@ -462,6 +462,12 @@ export class Military {
     if (this.ctx.sit.mode !== "grow") { const t = this.ctx.sit.threats.filter((p) => others.includes(p)).sort((a, b) => Number(b.gold() - a.gold()))[0]; if (t !== undefined) { target = t; why = `finish: ${this.ctx.sit.mode}, richest MIRV-capable rival`; } }
     if (!target) for (const p of others) for (const m of p.units(UnitType.MIRV)) { const d = m.targetTile(); if (d && this.ctx.mg.hasOwner(d) && this.ctx.mg.owner(d) === me) { target = p; why = "counter"; } }
     if (!target) { const t = others.filter((p) => p.numTilesOwned() / total >= 0.5).sort((a, b) => b.numTilesOwned() - a.numTilesOwned())[0]; if (t) { target = t; why = "victory denial"; } }
+    // `duelPush`: the foe of a won duel is a priority MIRV target like the threats (the finish branch above already
+    // takes it when it is MIRV-capable); with `nationMirvAware` on, never at a foe that can counter
+    if (!target) {
+      const foe = this.ctx.sit.duel;
+      if (foe !== null && others.includes(foe) && !(this.ctx.p.nationMirvAware && this.risk.canCounter(foe))) { target = foe; why = `duel foe (${Math.round(foe.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`; } // the contest branch below is moot: one target
+    }
     // `contestLeader`: the runaway leader is a priority MIRV target like the threats — no 12000-tick or 0.8× gate
     // beyond the contest state itself (rank ≤ contestRank, > contestLeadRatio × our tiles, still rising). With
     // `nationMirvAware` on it keeps that flag's crown discipline: never at a target that can counter.
@@ -501,6 +507,7 @@ export class Military {
     this.lastMirvTick = this.ctx.mg.ticks();
     this.bombs++;
     if (why.startsWith("contest leader")) this.lim.fire("contestLeader", "mirv", 600); // only the flag's branch picked this target
+    if (why.startsWith("duel foe")) this.lim.fire("duelPush", "mirv", 600);
     this.ctx.log(`t${this.ctx.mg.ticks()} MIRV ${target.name()} ${target.numTilesOwned()}t (${why})${tile === center ? "" : " — aimed off-centre, the centre is under a SAM"}`);
   }
   /** The territory centre unless one of the target's SAMs covers it (Config.samRange(level) + 5, as maybeBomb): then
@@ -789,7 +796,10 @@ export class Military {
     // attack from most of its border and nobody can reinforce it, so 1.2× is enough and the usual gates do not apply
     const annex = new Set<Player>();
     if (this.ctx.p.annexWars) for (const r of nb.rivals) if (this.q.annexable(r)) annex.add(r);
-    const opportunity = (this.ctx.mg.ticks() >= 3000 && nb.rivals.some((r) => this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5)) || gapOwner !== null || threatHere !== null || annex.size > 0;
+    // `duelPush`: the foe of a won duel on our border is an opportunity — the only target left, taken at duelRatio with
+    // no affordability / fightAbove gate and beside any counter; the hold's own filter (threats only) still applies
+    const duelFoe = this.ctx.sit.duel !== null && nb.rivals.includes(this.ctx.sit.duel) ? this.ctx.sit.duel : null;
+    const opportunity = (this.ctx.mg.ticks() >= 3000 && nb.rivals.some((r) => this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5)) || gapOwner !== null || threatHere !== null || annex.size > 0 || duelFoe !== null;
     // crown, not survival: a war is on when we can afford 2× someone's whole army out of the spendable troops,
     // not only when troops reach 70 % of a cap that cities keep raising
     // `drainedNations`: a drained nation is affordable at 1.5× — it cannot answer until it regrows past its reserve ratio
@@ -797,6 +807,7 @@ export class Military {
     const affordable = this.ctx.mg.ticks() >= this.ctx.p.fightNotBeforeTick && nb.rivals.some(affordableAt);
     if (affordable && !nb.rivals.some((r) => r.troops() * this.ctx.p.fightRatio + 1000 <= this.ctx.sit.spendable * this.ctx.p.fightMaxShare)) this.lim.fire("drainedNations", "affordable");
     if (!affordable && !opportunity && me.troops() < cap * this.ctx.p.fightAbove && !forced) return null; // a 1.67× push that keeps home healthy is always taken
+    if (duelFoe !== null && !affordable && me.troops() < cap * this.ctx.p.fightAbove && !forced) this.lim.fire("duelPush", "gate"); // the plain gates would have refused the pass
     const atCapNow = me.troops() >= cap * 0.95;
     // invariant: one war at a time (two at cap); seven at once is how a 17M army evaporates
     const nonBot = this.ctx.sit.outgoing.filter((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
@@ -838,7 +849,7 @@ export class Military {
     // `warRoiCap`: a vetoed sticky target releases the filter — the scorer refuses it anyway, and holding every
     // other candidate hostage to a war we just abandoned would idle the army for the whole cooldown.
     if (!extra && this.currentTarget_ && this.currentTarget_.isAlive() && rivals.includes(this.currentTarget_) && this.ctx.mg.ticks() - this.lastWarTick < 1800 && !this.roiVetoed(this.currentTarget_)) {
-      candidates = candidates.filter((r) => r === this.currentTarget_ || this.collapsed(r) || this.drained(r) || r === gapOwner || r === threatHere || annex.has(r));
+      candidates = candidates.filter((r) => r === this.currentTarget_ || this.collapsed(r) || this.drained(r) || r === gapOwner || r === threatHere || annex.has(r) || r === duelFoe);
     }
     if (this.ctx.sit.mode === "hold") candidates = candidates.filter((r) => this.ctx.sit.threats.includes(r)); // the hold is spent removing whoever can fire
     if (this.ctx.p.trustWars) {
@@ -851,7 +862,7 @@ export class Military {
       });
     }
     if (candidates.length === 0) return null;
-    const { score, isOpp, wantFor, richer, yieldBonus, contestBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom, forced, forced);
+    const { score, isOpp, wantFor, richer, yieldBonus, contestBonus } = this.warScorer(gapOwner, threatHere, annex, extra, extraRoom, forced, forced, duelFoe);
     let best: Player | null = null, bestS = 0, best0: Player | null = null, bestS0 = 0, bestC: Player | null = null, bestSC = 0;
     const alts: WarPick["alts"] = [];
     for (const r of candidates) { const sc = score(r); if (sc > 0) alts.push({ r, want: wantFor(r), score: sc, opportunity: isOpp(r), annex: annex.has(r) }); if (sc > bestS) { bestS = sc; best = r; } const sc0 = sc - yieldBonus(r); if (sc0 > bestS0) { bestS0 = sc0; best0 = r; } const scC = sc - contestBonus(r); if (scC > bestSC) { bestSC = scC; bestC = r; } }
@@ -871,7 +882,7 @@ export class Military {
   }
   /** The scorer half of warPick, shared with wouldTarget(): the gates on ratio / posts / density / size and every
    *  bonus. `quiet` skips the flag counters (a what-if question, not a decision). */
-  private warScorer(gapOwner: Player | null, threatHere: Player | null, annex: Set<Player>, extra = false, extraRoom = Infinity, quiet = false, forced = false) {
+  private warScorer(gapOwner: Player | null, threatHere: Player | null, annex: Set<Player>, extra = false, extraRoom = Infinity, quiet = false, forced = false, duelFoe: Player | null = null) {
     const me = this.ctx.me, cap = this.q.cap();
     const atCap = me.troops() >= cap * 0.95;
     const endgame = onTheClock(this.ctx.p, this.ctx.mg.ticks()) || this.ctx.sit.mode === "push"; // 25:00 (clockTicks − 3000) or the push — land now is worth more than troops later
@@ -915,6 +926,10 @@ export class Military {
       if (r === threatHere) return ratio >= 1.5 ? 25 + ratio : -1; // a MIRV-capable rival next door during the hold
       if (annex.has(r)) return ratio >= 1.2 ? 25 + ratio : -1; // `annexWars`: encircled — we come from most of its border, it cannot be reinforced
       if (steamrollGuard && !lastThreat(r)) { const s = this.risk.steamroll(r.unitCount(UnitType.City), r); if (s.over) return guard(r, "steamroll", `its ${r.unitCount(UnitType.City)} cities would carry us over the steamroll line (${s.units} vs ${s.threshold})`); }
+      // `duelPush`: the foe of a won duel goes at duelRatio (the endgame ratio) — the posts / thin-empire gates and the
+      // bonuses (contestLeader's +4 among them: the foe is usually the leader, and an opportunity rank needs no bonus)
+      // do not apply; the MIRV guards above keep their say
+      if (r === duelFoe) { if (!quiet) this.lim.fire("duelPush", "score"); return ratio >= this.ctx.p.duelRatio ? 22 + ratio : -1; }
       if (this.drained(r)) { if (!quiet) this.lim.fire("drainedNations", "score"); return ratio >= this.ctx.p.drainRatio ? 18 + ratio : -1; } // under its reserve ratio: it cannot answer until it regrows
       if (this.ctx.p.warYield && this.ctx.mg.ticks() - (this.yieldRetreatAt.get(r) ?? -1e9) < YIELD_COOLDOWN) return -1; // `warYield`: its tiles were too dear a minute ago
       const shadowed = shadow(r);
@@ -934,7 +949,7 @@ export class Military {
       if (shadowed && !quiet) this.lim.fire("retaliateAware", "score");
       return ratio * 2 + buildings + Math.min(this.q.density(r), 200) / 50 - posts * 3 - sizePenalty * 2 + bonus + (r === this.currentTarget_ ? 3 : 0) + trustBonus(r) + threatBonus(r) + (shadowed ? 2 : 0) + relationBonus(r) + yieldBonus(r) + contestBonus(r);
     };
-    const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r) || annex.has(r);
+    const isOpp = (r: Player) => (this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5) || r === gapOwner || r === threatHere || this.drained(r) || annex.has(r) || r === duelFoe;
     // `warRoiCap`: the abandon blacklist is a veto below opportunity rank — a candidate the plain scorer accepts
     // (the opportunity branches return from scoreBase before it matters) is refused while its cooldown runs.
     const score = (r: Player) => {
@@ -951,7 +966,7 @@ export class Military {
     };
     // the wave: 1.5× on a drained or a richer target, 1.2× as the smaller attacker (kept under the bigger wave by
     // shadowWave's test above) or on an annexable one, else fightRatio
-    const wantFor = (r: Player) => { const mult = annex.has(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
+    const wantFor = (r: Player) => { const mult = r === duelFoe ? Math.min(this.ctx.p.fightRatio, this.ctx.p.duelRatio) : annex.has(r) ? Math.min(this.ctx.p.fightRatio, 1.2) : this.drained(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.drainRatio) : shadow(r) ? Math.min(this.ctx.p.fightRatio, this.ctx.p.retalRatio) : richer(r) ? Math.min(this.ctx.p.fightRatio, 1.5) : this.ctx.p.fightRatio; return Math.min(Math.ceil(r.troops() * mult) + 1000, maxSend); };
     return { score, isOpp, wantFor, richer, yieldBonus, contestBonus };
   }
   /** `lapseToAttack`: would the war rule take `p` if it were an unfriendly neighbour right now? The same gates as
@@ -1256,7 +1271,7 @@ export class Military {
   /** The opportunity targets the ROI cap never touches: collapsed, the gap owner, a hold-mode threat, drained,
    *  annexable — the tiles (or the removal) are the point, whatever they cost. */
   private roiOpportunity(t: Player): boolean {
-    return this.collapsed(t) || t === this.splitOwner || (this.ctx.sit.mode === "hold" && this.ctx.sit.threats.includes(t)) || this.drained(t) || (this.ctx.p.annexWars && this.q.annexable(t));
+    return this.collapsed(t) || t === this.splitOwner || (this.ctx.sit.mode === "hold" && this.ctx.sit.threats.includes(t)) || this.drained(t) || (this.ctx.p.annexWars && this.q.annexable(t)) || t === this.ctx.sit.duel;
   }
 
   // ---------------------------------------------------------------- allies that can pile in (trustWars)
@@ -1862,6 +1877,10 @@ export class Military {
     // `contestLeader`: the runaway leader is a bomb target like the threats — the value search does the prioritising
     // (its clusters are usually the richest on the map, and range/affordability keep their say). `contest` reports it
     // only when the flag ADDED it, so a pick on it counts as a decision the flag changed.
+    // `duelPush`: the foe of a won duel is a bomb target like the threats (added before the contest leader — the foe is
+    // usually the leader, and one entry is one entry); the value search prioritises
+    const foe = this.ctx.sit.duel;
+    if (foe !== null && foe.isAlive() && !me.isFriendly(foe) && !enemies.has(foe)) { enemies.add(foe); if (mutate) this.lim.fire("duelPush", "bomb", 300); }
     let contest: Player | null = null;
     const lead = this.ctx.p.contestLeader ? this.ctx.sit.contest : null;
     if (lead !== null && lead.isAlive() && !me.isFriendly(lead) && !enemies.has(lead)) { enemies.add(lead); contest = lead; }
