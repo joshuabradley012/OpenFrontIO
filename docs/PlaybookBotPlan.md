@@ -2147,3 +2147,16 @@ from the fill the flag runs on its own):
 `CONFIGS='{"base":{},"esc":{"boatEscort":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`, and the
 opening pairing `{"boatOpening":true}` vs `{"boatOpening":true,"boatEscort":true}` (the opening's ocean window could
 then be widened: `boatOceanUntil` up, escorts covering what sails after it).
+
+## `boat1` — boatOpening v5 / duelPush / boatEscort, full games (2026-08-30 evening, `lab-out/boat1`)
+
+120 mirrored full games per config on 896b7f749 (5× cpx62 IPv6, nbg1). Base wins 78/120 (65 %).
+
+| config | wins | pairs (cand-only / base-only) | McNemar p |
+|---|---|---|---|
+| boatEscort | 82 | 24 / 20 | 0.65 |
+| all three | 82 | 27 / 23 | 0.67 |
+| duelPush | 81 | **3 / 0** (fires only in won duels; converts every time) | 0.25 |
+| boatOpening | 73 | 22 / 27 | 0.57 |
+
+None decisive at default constants. duelPush is a rare-but-clean converter; boatEscort leans positive; boatOpening leans negative on full games despite its opening dominance (the escort absorbs the downside: all3 ≈ escort alone). Constants of all three are in specs/wins.json for the full-game CMA.
