@@ -1,5 +1,6 @@
 // Military: expansion, tribe harvesting, counter-attacks, wars and retreats, boats, bombs, MIRV, split watch.
 
+import { borderOf } from "./Border";
 import { Attack, Game, Player, PlayerType, Relation, Unit, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
@@ -233,7 +234,7 @@ export class Military {
     const t = this.ctx.mg.ticks();
     if (this.shoreCache !== null && this.shoreCache.tick === t) return this.shoreCache.shore;
     const all: TileRef[] = [];
-    for (const b of this.ctx.me.borderTiles()) if (this.ctx.mg.isOceanShore(b)) all.push(b);
+    for (const b of borderOf(this.ctx.me)) if (this.ctx.mg.isOceanShore(b)) all.push(b);
     const step = Math.max(1, Math.ceil(all.length / 200));
     const shore: TileRef[] = [];
     for (let i = 0; i < all.length; i += step) shore.push(all[i]);
@@ -305,7 +306,7 @@ export class Military {
     if (!forced && this.ctx.sit.wilderness && this.ctx.sit.capShare < 0.4) return false; // land first while it is free and we are small
     if (!forced && this.ctx.sit.incoming.length > 0 && this.ctx.sit.capShare < 0.6) return false; // under attack: the army stays
     const relax = forced ? 1.5 : 1;
-    const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isOceanShore(t));
+    const shore = borderOf(me).filter((t) => this.ctx.mg.isOceanShore(t));
     if (shore.length === 0) return false;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
@@ -353,7 +354,7 @@ export class Military {
       const want = Math.ceil(o.troops() * (isBot ? 2 : 3)) + 2000;
       if (want > this.ctx.sit.spendable * 0.5) continue;
       let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9, slT: TileRef | null = null, slD = 1e9;
-      for (const t of o.borderTiles()) {
+      for (const t of borderOf(o)) {
         if ((i++ % 9) !== 0 || !this.ctx.mg.isOceanShore(t)) continue;
         const dm = dist(t); if (dm < slD) { slD = dm; slT = t; }
         const d = wp ? wp.len(t) : dm; if (d < bestD) { bestD = d; bestT = t; }
@@ -545,7 +546,7 @@ export class Military {
     const sams = target.units(UnitType.SAMLauncher);
     const covered = (t: TileRef) => sams.some((s) => mg.euclideanDistSquared(s.tile(), t) <= (mg.config().samRange(s.level()) + 5) ** 2);
     if (!covered(center)) return center;
-    const border = target.borderTiles(), step = Math.max(1, Math.floor(border.size / 120));
+    const border = borderOf(target), step = Math.max(1, Math.floor(border.length / 120));
     let best: TileRef | null = null, bestD = 1e18, i = 0;
     for (const t of border) {
       if ((i++ % step) !== 0 || covered(t)) continue;
@@ -591,7 +592,7 @@ export class Military {
   static pieces(mg: Game, p: Player): { tiles: number; border: TileRef[] }[] {
     const w = mg.width(), h = mg.height(), pid = p.smallID();
     const rows = new Map<number, TileRef[]>();
-    for (const t of p.borderTiles()) { const y = mg.y(t); let r = rows.get(y); if (!r) { r = []; rows.set(y, r); } r.push(t); }
+    for (const t of borderOf(p)) { const y = mg.y(t); let r = rows.get(y); if (!r) { r = []; rows.set(y, r); } r.push(t); }
     if (rows.size === 0) return [];
     const owned = (x: number, y: number) => mg.ownerID(mg.ref(x, y)) === pid;
     // runs: [x0, x1, id] per row; border tiles keep the run they lie in
@@ -1559,7 +1560,7 @@ export class Military {
     const me = this.ctx.me;
     if (opening) this.openingPush(); // a stranded beachhead is pushed before another boat is considered
     if (me.unitCount(UnitType.TransportShip) >= this.ctx.mg.config().boatMaxNumber()) return false;
-    const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isShore(t));
+    const shore = borderOf(me).filter((t) => this.ctx.mg.isShore(t));
     if (shore.length === 0) return false;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
@@ -1589,7 +1590,7 @@ export class Military {
       // `boatOpening`: an opening boat takes at most boatShare of home — a tribe whose 2× wave would not fit is skipped (the usual ratio, the tighter cap)
       if (want > me.troops() * (opening ? this.ctx.p.boatShare : 0.4)) continue;
       let i = 0, bestT: TileRef | null = null, bestD = 1e9, oldT: TileRef | null = null, oldD = 1e9, slT: TileRef | null = null, slD = 1e9;
-      for (const t of bot.borderTiles()) {
+      for (const t of borderOf(bot)) {
         if ((i++ % 5) !== 0 || !this.ctx.mg.isShore(t)) continue;
         const dm = dist(t); if (dm < slD) { slD = dm; slT = t; }
         const d = wp ? wp.len(t) : dm; if (d < bestD) { bestD = d; bestT = t; }
@@ -1711,7 +1712,7 @@ export class Military {
     if (this.q.neighbours().bots.length > 0) return;
     if (me.units(UnitType.TransportShip).length > 0) return; // one landing at a time; a second boat to the same beach is the 'boat that takes no land'
     if (me.troops() < this.q.cap() * 0.4) return;
-    const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isShore(t));
+    const shore = borderOf(me).filter((t) => this.ctx.mg.isShore(t));
     if (shore.length === 0) return;
     const from = shore[Math.floor(shore.length / 2)];
     const fx = this.ctx.mg.x(from), fy = this.ctx.mg.y(from);
@@ -1726,7 +1727,7 @@ export class Military {
       if (want > me.troops() * 0.3) continue;
       // sample its border for a shore tile
       let i = 0;
-      for (const t of bot.borderTiles()) {
+      for (const t of borderOf(bot)) {
         if ((i++ % 7) !== 0) continue;
         if (!this.ctx.mg.isShore(t)) continue;
         const dO = Math.abs(this.ctx.mg.x(t) - fx) + Math.abs(this.ctx.mg.y(t) - fy);
@@ -1771,7 +1772,7 @@ export class Military {
     const mg = this.ctx.mg;
     const spots = [...lead.units(UnitType.Port), ...lead.units(UnitType.City)].map((u) => u.tile());
     let best: TileRef | null = null, bestD = 1e9, bestNear = false, i = 0;
-    for (const t of lead.borderTiles()) {
+    for (const t of borderOf(lead)) {
       if ((i++ % 9) !== 0 || !mg.isOceanShore(t)) continue;
       const near = spots.some((s) => mg.manhattanDist(s, t) <= 40);
       if (bestNear && !near) continue;

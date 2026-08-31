@@ -1,6 +1,7 @@
 // Situation: the per-tick picture every rule reads (built by PlaybookBotExecution.readSituation) and the
 // stateless-ish queries about the map and our neighbours that several modules share.
 
+import { borderOf } from "./Border";
 import { Attack, Game, Player, PlayerType, TerraNullius, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { BotContext } from "./Context";
@@ -174,7 +175,7 @@ export class SituationQueries {
     if (tick - this.falloutCache.tick < 100) return this.falloutCache.n;
     const mg = this.ctx.mg;
     let n = 0, i = 0;
-    for (const t of this.ctx.me.borderTiles()) {
+    for (const t of borderOf(this.ctx.me)) {
       if ((i++ % 3) !== 0) continue;
       for (const nb of mg.neighbors(t)) if (mg.isLand(nb) && !mg.hasOwner(nb) && mg.hasFallout(nb)) { n++; break; }
     }
@@ -271,7 +272,7 @@ export class SituationQueries {
     let ok = true, ours = 0, n = 0, i = 0;
     if (this.ctx.p.annexWars) {
       let other = 0, anyCoast = false;
-      for (const t of p.borderTiles()) {
+      for (const t of borderOf(p)) {
         if (mg.isOceanShore(t) || mg.isOnEdgeOfMap(t)) anyCoast = true;
         if ((i++ % 3) !== 0) continue;
         n++;
@@ -286,7 +287,7 @@ export class SituationQueries {
       if (ok && !(c && c.ok)) this.ctx.log(`t${mg.ticks()} ANNEX target ${p.name()} ${p.numTilesOwned()}t (${Math.round((100 * ours) / n)} % of its border is ours, ${Math.round((100 * other) / n)} % faces others${anyCoast ? ", coastal" : ""})`);
       return ok;
     }
-    for (const t of p.borderTiles()) {
+    for (const t of borderOf(p)) {
       if (mg.isOceanShore(t) || mg.isOnEdgeOfMap(t)) { ok = false; break; }
       if ((i++ % 3) !== 0) continue;
       n++;
@@ -308,7 +309,7 @@ export class SituationQueries {
     return this.landmassTiles(limit).size;
   }
   landmassTiles(limit: number): Set<TileRef> {
-    const start = this.ctx.me.borderTiles().values().next().value as TileRef | undefined;
+    const start: TileRef | undefined = borderOf(this.ctx.me)[0];
     const seen = new Set<TileRef>();
     if (start === undefined) return seen;
     seen.add(start);

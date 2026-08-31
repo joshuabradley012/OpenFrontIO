@@ -24,6 +24,7 @@
 // like the engine's); a war that has not resolved by then returns wins=false and the state so far. A 4000-tile
 // war costs about 100k troops at the cheapest, so the cap only bites on estimates that were never affordable.
 
+import { borderOf } from "./Border";
 import { Game, Player, TerrainType, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { PseudoRandom } from "../../PseudoRandom";
@@ -158,7 +159,7 @@ export function estimateAttack(
       heap.enqueue(nb, (random.nextInt(0, 7) + 10) * (1 - numOwnedByMe * 0.5 + mag / 2) + tickNow + simTick);
     }
   };
-  for (const tile of attacker.borderTiles()) addNeighbors(tile);
+  for (const tile of borderOf(attacker)) addNeighbors(tile);
   if (heap.size() === 0) return result; // no shared land border: nothing to take, wins=false
 
   let examined = 0;

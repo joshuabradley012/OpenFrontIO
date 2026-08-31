@@ -13,6 +13,7 @@
 // a rival whose army is committed on its other borders is the one to hit).
 // Cost: one pass over our border (shared with Rivals) plus one over each unfriendly rival's border, every 50 ticks.
 
+import { borderOf } from "./Border";
 import { Player, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { calculateTerritoryCenter } from "../Util";
@@ -104,7 +105,7 @@ export class ThreatMap {
     for (const a of r.outgoingAttacks()) { const t = a.target(); if (t.isPlayer() && t !== me) enemies.add((t as Player).smallID()); }
     if (enemies.size === 0) return 0;
     let total = 0, facing = 0;
-    for (const t of r.borderTiles()) {
+    for (const t of borderOf(r)) {
       total++;
       for (const nb of mg.neighbors(t)) { if (enemies.has(mg.ownerID(nb))) { facing++; break; } }
     }

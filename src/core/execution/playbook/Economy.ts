@@ -1,5 +1,6 @@
 // Economy: gold spending (posts, SAMs, cities, ports, rail, silos, warships) and the tile pickers behind it.
 
+import { borderOf } from "./Border";
 import { Player, PlayerType, Unit, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
@@ -147,7 +148,7 @@ export class Economy {
           for (let k = 0.1; k < 1 && ok; k += 0.1) { const sx = Math.round(fx + (x - fx) * k), sy = Math.round(fy + (y - fy) * k); if (!this.ctx.mg.isValidCoord(sx, sy) || this.ctx.mg.owner(this.ctx.mg.ref(sx, sy)) !== me) ok = false; }
           if (!ok) continue;
           if (me.canBuild(UnitType.City, t) === false) continue;
-          const [, db] = closestTile(this.ctx.mg, me.borderTiles(), t);
+          const [, db] = closestTile(this.ctx.mg, borderOf(me), t);
           const sc = dist / 10 + Math.min(db, 30) / 3;
           if (best === null || sc > best.score) best = { factory: f, anchor: t, score: sc };
           break;
@@ -581,7 +582,7 @@ export class Economy {
     if (this.interiorRank === null || this.interiorRank.tick !== t) {
       const mg = this.ctx.mg, samples = this.sampleTerritory(40);
       const sx = samples.map((s) => mg.x(s)), sy = samples.map((s) => mg.y(s)), d = samples.map(() => Infinity);
-      for (const b of this.ctx.me.borderTiles()) {
+      for (const b of borderOf(this.ctx.me)) {
         const bx = mg.x(b), by = mg.y(b);
         for (let i = 0; i < samples.length; i++) { const m = Math.abs(bx - sx[i]) + Math.abs(by - sy[i]); if (m < d[i]) d[i] = m; }
       }
@@ -593,7 +594,7 @@ export class Economy {
   }
   oceanShoreTile(): TileRef | null {
     const me = this.ctx.me;
-    const shore = Array.from(me.borderTiles()).filter((t) => this.ctx.mg.isOceanShore(t));
+    const shore = borderOf(me).filter((t) => this.ctx.mg.isOceanShore(t));
     const step = Math.max(1, Math.floor(shore.length / 40));
     for (let i = 0; i < shore.length; i += step) { if (me.canBuild(UnitType.Port, shore[i]) !== false) return shore[i]; }
     return null;
@@ -604,10 +605,12 @@ export class Economy {
    *  over the whole border and was ~10 % of a 170-minute headless game — nearly all of it in the stalled endgame, where
    *  the version holds for minutes at a time. */
   private shoreBorder(): TileRef[] {
-    const version = this.ctx.mg.territoryVersion();
+    // Keyed on OUR tileChangeVersion (not the map-wide territoryVersion): the border snapshot argument
+    // in Border.ts — so the memo also hits mid-game while other players fight far away.
+    const version = this.ctx.me.tileChangeVersion();
     if (this.shoreCache === null || this.shoreCache.version !== version) {
       const tiles: TileRef[] = [];
-      this.ctx.me.borderTiles().forEach((t) => { if (this.ctx.mg.isShore(t)) tiles.push(t); }); // one pass, no copy of the whole border
+      for (const t of borderOf(this.ctx.me)) if (this.ctx.mg.isShore(t)) tiles.push(t);
       this.shoreCache = { version, tiles };
     }
     return this.shoreCache.tiles;
@@ -644,7 +647,7 @@ export class Economy {
     const me = this.ctx.me;
     const aid = attacker.smallID();
     const candidates: TileRef[] = [];
-    for (const t of me.borderTiles()) {
+    for (const t of borderOf(me)) {
       let touches = false;
       this.ctx.mg.forEachNeighbor(t, (n) => { if (this.ctx.mg.ownerID(n) === aid) touches = true; });
       if (touches) candidates.push(t);

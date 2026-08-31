@@ -4,6 +4,7 @@
 //
 // Exposure only: nothing here changes behaviour until a consumer (C1) reads `sit.rival`.
 
+import { borderOf } from "./Border";
 import { Difficulty, GameMode, Player, PlayerType, Relation, TerraNullius } from "../../game/Game";
 import { BotContext, FireLimiter } from "./Context";
 import type { Situation } from "./Situation";
@@ -232,7 +233,7 @@ export class Rivals {
     const mg = this.ctx.mg, counts = new Map<number, number>();
     const tm = this.ctx.p.threatMap, cellsW = Math.ceil(mg.width() / CELL), buckets = new Map<number, Bucket>();
     let ourBorder = 0;
-    for (const tile of this.ctx.me.borderTiles()) {
+    for (const tile of borderOf(this.ctx.me)) {
       ourBorder++;
       const owners: number[] = []; // a tile counts once per neighbouring owner
       for (const nb of mg.neighbors(tile)) {
@@ -357,7 +358,7 @@ export class Rivals {
     if (c && t - c.tick < 50) return c.bound;
     const mg = this.ctx.mg;
     let bound = false, i = 0;
-    for (const tile of p.borderTiles()) {
+    for (const tile of borderOf(p)) {
       if ((i++ & 3) !== 0) continue;
       for (const nb of mg.neighbors(tile)) {
         if (mg.isLand(nb) && !mg.isImpassable(nb) && !mg.hasOwner(nb) && !mg.hasFallout(nb)) { bound = true; break; }
