@@ -1934,3 +1934,7 @@ trimmed to the surviving params (`cmaes.py --dry-run` clean on both).
 material and default-config MIN=3 + MIN=6 africa/Medium lab transcripts are byte-identical to base
 (38219433a) after stripping the EST/ACT log entries and the botMs/gameMs timing fields (99 entries stripped
 from the MIN=6 base log; every other byte equal — the prune changes no decision).
+
+## Salvage A/B (2026-08-31, `lab-out/salv1`, fresh seeds SEED=salv) — the campaign's drift as hypotheses
+
+120 mirrored full games per config vs base (64 wins, 53 %): **combo** (fightAbove 0.81 / fightMaxShare 0.63 / reserveShare 0.41 / capFullShare 0.67 / bombReserve 363k + duelPush@1.0 + boatOpening with boatOwnMassFactor 0.146, boatEatRate 0.0245) **76 wins, pairs 34/22, p=0.14, deaths 1 vs 8**; core5 alone 70 (p=0.50); duelPush@1.0 alone 68 with pairs **4/0**. Cumulative duelPush across boat1+salv1: **7 candidate-only wins, 0 base-only, ~240 paired games (p≈0.008)** — recommended default-on. combo goes to a third-seed confirmation (`lab-out/salv2`) before any defaults flip.
