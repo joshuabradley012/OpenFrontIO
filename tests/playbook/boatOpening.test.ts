@@ -330,6 +330,102 @@ describe("boatOpening", () => {
     expect(await mk(0.2)).toContain("empty shore"); // undervalued tribes: the equal contested wilderness wins
   });
 
+  // ---- v4 fixtures ------------------------------------------------------------------------------------
+  // The arctic-magnet fix (Josh's east-asia World GUI session; lab repro: the far north coast of our own
+  // 225k-tile mainland saturated the 1500-tile landmass fill, read as a NEW landmass and collected the
+  // ×1.5 × ×1.3 bonuses every pass — and once good targets were taken, the extras fed a junk tail of
+  // basin<200 empty shores at sail 140+ and re-boated a coast whose landing a tribe had already eaten).
+  const V4: Partial<PlaybookParams> = { ...V3_OCEAN, boatOceanUntil: 9000, boatOpeningSailCost: 8, boatOpeningMinScore: 4 };
+
+  test("v4: a remote uncontested basin at long sail loses to the nearer contested tribe (no new-mass bonus on a cap-saturated mass)", async () => {
+    // The carve (basin ~1300 at water-path ~124) sits on the mainland — a mass the 1500-tile fill cannot finish.
+    // v3 called that a new landmass and its ×1.5 × ×1.3 made it the top pick; v4 grants the bonuses only to a
+    // mass the fill actually enumerated, and charges the long sail, so the contested island tribe at the strait
+    // wins (161 tiles × 1.5 contested / 20 ≈ 12 over the carve's ~6.5). The tribeWorth test's clamp dance keeps
+    // the plain boat from eating the island first: our troops pinned at 2000 until t651 (the tribe unaffordable
+    // at 0.4 × home, every empty-shore wave under the 500 floor at boatShare 0.2), so the plain rule times out
+    // into boatSent and the first opening pass sees both candidates at once.
+    const h = await playbookSetup({
+      map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 2_000,
+      rivals: [BLOCKER, { name: "IslandTribe", type: PlayerType.Bot, at: [1607, 368], troops: 1_000, tiles: [1602, 356, 1613, 377] }],
+      bot: { ...V4, boatShare: 0.2 },
+    });
+    // blockFar, except the tribeWorth test's free strip (1600..1639 × 391..414, grid shore hits 1610,397 and
+    // 1604,403) stays open: at t652's troop jump the PLAIN rule's t660 pass runs before its timeout, and with no
+    // empty shore at a smaller d than the tribe it would eat the island before the extras ever score it.
+    const b = h.rival("Blocker");
+    conquerRect(h.game, b, [1614, 125, 1801, 377]);
+    conquerRect(h.game, b, [1602, 125, 1801, 355]);
+    conquerRect(h.game, b, [1560, 125, 1601, 324]);
+    conquerRect(h.game, b, [1500, 378, 1599, 389]);
+    conquerRect(h.game, b, [1614, 378, 1801, 390]);
+    conquerRect(h.game, b, [1500, 391, 1599, 464]); // west of the strip (the carve rows start at 465)
+    conquerRect(h.game, b, [1640, 391, 1801, 464]); // east of it
+    conquerRect(h.game, b, [1600, 415, 1639, 464]); // south of its free part
+    conquerRect(h.game, b, [1500, 465, 1538, 580]); // west of the carve
+    conquerRect(h.game, b, [1600, 465, 1801, 580]); // east of the carve
+    conquerRect(h.game, b, [1539, 510, 1599, 580]); // the carve's south rim
+    conquerRect(h.game, b, [1360, 125, 1544, 600]); // west continent + mainland
+    conquerRect(h.game, b, [1360, 581, 1801, 730]); // the south (a free 8000-tile basin at ~1651,601 outranks everything)
+    conquerRect(h.game, b, [1602, 356, 1603, 357]); // a blocker corner on the island: the tribe is CONTESTED
+    const tribe = h.rival("IslandTribe");
+    const done = h.until(() => {
+      if (tribe.isAlive() && tribe.troops() > 1000) tribe.setTroops(1000);
+      if (h.game.ticks() <= 651 && h.me.troops() > 2000) h.me.setTroops(2000);
+      if (h.game.ticks() === 652) h.me.setTroops(20_000);
+      return h.log.some((l) => l.includes("BOAT OPENING") && l.includes("out →"));
+    }, 900);
+    expect(done).toBe(true);
+    const first = h.log.find((l) => l.includes("BOAT OPENING") && l.includes("out →"))!;
+    expect(first).toContain("tribe IslandTribe"); // the near contested tribe, not the remote carve
+    expect(h.log.some(isFar)).toBe(false); // and no long crossing was launched before it
+    expect(h.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1);
+  });
+
+  test("v4: a landing a tribe ate is not re-boated — the blacklist holds while the push fights", async () => {
+    // The v2 push fixture: the boat sails for the island's free shore, the Eater conquers the island while it is
+    // at sea, the push clicks the tribe from the beachhead. v3 then happily boated the SAME island again next
+    // pass (the tribe is a first-class candidate); v4 blacklists everything within boatBasinRadius of the eaten
+    // landing for the rest of the opening.
+    const h = await playbookSetup({
+      map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 50_000,
+      rivals: [BLOCKER, { name: "Eater", type: PlayerType.Bot, at: [1300, 300], troops: 2500, tiles: [1295, 295, 1305, 305] }],
+      bot: { ...V4, botMaxShare: 0.05, boatShare: 1.0 },
+    });
+    blockOcean(h);
+    const eater = h.rival("Eater");
+    const launched = h.until(() => h.me.units(UnitType.TransportShip).length > 0, 120);
+    expect(launched).toBe(true);
+    conquerRect(h.game, eater, [1602, 356, 1616, 380]); // the tribe eats the island while the boat is at sea
+    const pushed = h.until(() => h.log.some((l) => l.includes("BOAT OPENING push → tribe Eater")), 300);
+    expect(pushed).toBe(true);
+    h.step(300); // many opening passes later: the island tribe would be an affordable top candidate…
+    expect(h.log.some((l) => l.includes("BOAT OPENING") && l.includes("out → tribe Eater"))).toBe(false); // …but the failed landing blacklists it
+  });
+
+  test("v4: boatOpeningSailCost and boatOpeningMinScore hold the boat home when only a long junk crossing remains", async () => {
+    // Only the carve is reachable (the island is blocked, so the plain boat finds nothing and times out into
+    // boatSent at t652; the extras run from there). At the default cost/floor the rich carve still clears the
+    // bar and the extra sails; with the cost at 50 the 124-tile crossing forfeits the whole basin, and with the
+    // floor prohibitive nothing clears it — in both cases the extras hold the boat rather than launch the best
+    // of a garbage list (v3 always launched).
+    const mkC = async (over: Partial<PlaybookParams>) => {
+      const h = await playbookSetup({
+        map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 100_000,
+        rivals: [BLOCKER],
+        bot: { ...V4, ...over },
+      });
+      blockFar(h);
+      conquerRect(h.game, h.rival("Blocker"), [1602, 356, 1613, 377]); // the island: only the carve stays free
+      conquerRect(h.game, h.rival("Blocker"), [1360, 581, 1801, 730]); // and the south (a free 8000-tile basin at ~1651,601 otherwise clears any bar)
+      h.until(() => h.log.some((l) => l.includes("BOAT OPENING") && l.includes("out →")), 900);
+      return h.log.filter((l) => l.includes("BOAT OPENING") && l.includes("out →"));
+    };
+    expect((await mkC({})).some(isFar)).toBe(true); // defaults: the rich carve is worth the crossing
+    expect(await mkC({ boatOpeningSailCost: 50 })).toEqual([]); // the sail cost eats it: hold
+    expect(await mkC({ boatOpeningSailCost: 0, boatOpeningMinScore: 1e9 })).toEqual([]); // the floor: hold
+  });
+
   test("an opening that never becomes active is decision-identical to the plain bot (log equality)", async () => {
     const a = await playbookSetup({ map: "world", spawn: SPAWN, tiles: ME, troops: 100_000, bot: { ...QUIET } });
     const b = await playbookSetup({ map: "world", spawn: SPAWN, tiles: ME, troops: 100_000, bot: { ...QUIET, boatOpening: true, boatOpeningUntil: 40 } }); // cutoff before boatAtTick: the flag never changes a decision
