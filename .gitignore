@@ -32,3 +32,4 @@ lab-out/
 
 # extracted milestone bots (scripts/lab/history.sh)
 .history/
+lab-archive/
