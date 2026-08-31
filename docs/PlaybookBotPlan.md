@@ -1938,3 +1938,7 @@ from the MIN=6 base log; every other byte equal — the prune changes no decisio
 ## Salvage A/B (2026-08-31, `lab-out/salv1`, fresh seeds SEED=salv) — the campaign's drift as hypotheses
 
 120 mirrored full games per config vs base (64 wins, 53 %): **combo** (fightAbove 0.81 / fightMaxShare 0.63 / reserveShare 0.41 / capFullShare 0.67 / bombReserve 363k + duelPush@1.0 + boatOpening with boatOwnMassFactor 0.146, boatEatRate 0.0245) **76 wins, pairs 34/22, p=0.14, deaths 1 vs 8**; core5 alone 70 (p=0.50); duelPush@1.0 alone 68 with pairs **4/0**. Cumulative duelPush across boat1+salv1: **7 candidate-only wins, 0 base-only, ~240 paired games (p≈0.008)** — recommended default-on. combo goes to a third-seed confirmation (`lab-out/salv2`) before any defaults flip.
+
+## Combo confirmed on a third seed set (`lab-out/salv2`, 2026-08-31)
+
+base 76/119 (64 %) vs combo 87/119 (73 %), pairs 29/18. **Combined over the two independent fresh-seed sets (478 games): combo 163/239 (68 %) vs base 140/239 (59 %), discordant 63/40, McNemar p=0.030.** Consistent +11/+12 wins on both sets, deaths 1+2 vs 8+1, crowns up on both. Pending Josh's sign-off, combo becomes the defaults: fightAbove 0.81, fightMaxShare 0.628, reserveShare 0.408, capFullShare 0.672, bombReserve 363_497, duelPush on @ duelRatio 1.0, boatOpening on @ boatOwnMassFactor 0.146 / boatEatRate 0.0245.
