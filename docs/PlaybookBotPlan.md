@@ -2160,3 +2160,9 @@ then be widened: `boatOceanUntil` up, escorts covering what sails after it).
 | boatOpening | 73 | 22 / 27 | 0.57 |
 
 None decisive at default constants. duelPush is a rare-but-clean converter; boatEscort leans positive; boatOpening leans negative on full games despite its opening dominance (the escort absorbs the downside: all3 ≈ escort alone). Constants of all three are in specs/wins.json for the full-game CMA.
+
+## Full-game CMA campaign + fresh-seed gate (2026-08-31, `lab-out/cma-wins`, `lab-out/cma-gate`) — NOT graduated
+
+cmaes.py, wins.json (41 dims incl. every fix/boat flag's constants), all 13 candidate flags fixed on, wscore objective, pop 12 × 6 gens with racing, ~2,500 full games on 5× cpx62 IPv6. In-campaign the tuned mean beat base five generations straight on the shared per-generation grids (16-15, 21-15, 20-15, 19-15, 19-15). **Fresh-seed gate (SEED=gate, 120 mirrored full games): tuned 58 wins vs base 61, dwscore −0.12 [CONTINUE at MAXBATCHES], p≈ns — the lead did not transfer.** Same failure shape as the 20-min campaign: the search fits its training worlds.
+
+Lessons, in order: (1) any CMA re-run must rotate seeds per generation (SEED=g<N>) so memorizing worlds is impossible; (2) at 30 games/config the within-generation ranking is mostly noise for 1–3-point effects — per-parameter SPRT A/Bs are the better tool at this noise level; (3) the campaign's five-generation drift directions survive as *hypotheses*: salvage A/B (`lab-out/salv1`) tests core-war constants (fightAbove 0.81, reserveShare 0.41, capFullShare 0.67), duelPush@1.0, and the combo with tuned boat constants, on fresh seeds. CMA retired until (1) and a bigger game budget exist; the racing/SPRT/mirror infra stays (it is what every A/B runs on).
