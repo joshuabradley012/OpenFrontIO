@@ -33,6 +33,8 @@ export interface PlaybookParams {
   boatTribeWorth: number; // boatOpening v3: what a tribe tile is worth in free-land tiles in the opening score — v2's 0.5 systematically undervalued tribes (Josh): their tiles cost the fight but never evaporate, unlike a contested basin
   boatOceanUntil: number; // boatOpening v3: while tick < this, opening extras may sail up to the full BOAT_MAX_PATH (250, not the 80-tile early cap) and a distant new-landmass candidate scores ×boatOceanBonus — long trans-ocean crossings are only safe before warships appear (measured: first enemy warship t1730, first enemy port t1060, one Medium lab game; int)
   boatOceanBonus: number; // boatOpening v3: score multiplier on a new-landmass candidate whose sail exceeds BOAT_MAX_PATH.early while the ocean window is open
+  boatOpeningSailCost: number; // boatOpening v4: worth-tiles charged per sail tile beyond BOAT_MAX_PATH.early (80) — the opportunity cost of a long crossing (troops locked at sea, growth deferred), so "big but far and empty" loses to "smaller, near, growable" (the arctic-magnet fix, Josh's east-asia GUI session)
+  boatOpeningMinScore: number; // boatOpening v4: tiles-per-sail-tick floor an EMPTY-SHORE opening candidate must clear or it is no target at ANY rank (the extras hold the boat) — the junk tail of basin<200 picks once good targets are taken; tribe candidates are exempt (their 2× wave is affordability-gated and takes real enemy tiles — far tribe junk dies to boatOpeningSailCost instead)
   fightAbove: number; // start fighting rivals when troops exceed this share of cap
   fightRatio: number; // attack size as multiple of the target's whole army
   fightNotBeforeTick: number; // no wars with nations/humans before this tick
@@ -152,6 +154,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   boatTribeWorth: 1.0, // a mid-size tribe mass beats an equal-size contested wilderness (v2 hardcoded 0.5)
   boatOceanUntil: 1500, // first enemy warship at t1730 in the measurement game — cross the ocean before that
   boatOceanBonus: 1.3,
+  boatOpeningSailCost: 8, // at sail 150 a candidate forfeits 560 worth-tiles: the 100-tile junk crossings die, a genuinely rich far basin still clears it
+  boatOpeningMinScore: 4, // ~80 discounted tiles for a short hop (sail floor 20), ~600 for a 150-tile crossing
   fightAbove: 0.7,
   fightRatio: 2.0, // Medium 30-game sweep hz3: 1.67× = +1 crown but −13% land, 3 fewer top-3, loses paired 13–17; the gate (attack whenever affordable, from 3:00) stays
   fightNotBeforeTick: 1800,

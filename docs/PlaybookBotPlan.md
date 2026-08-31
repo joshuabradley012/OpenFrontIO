@@ -1921,6 +1921,44 @@ Tests: v3 block in tests/playbook/boatOpening.test.ts (an eaten-out basin at lon
 pick and wins with the discount off; boatTribeWorth 1.0 picks the tribe mass where 0.2 picks the equal
 contested wilderness; the ocean window lifts the sail cap before boatOceanUntil and not after).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+**v4 (branch `bot/boat-opening-v4`)** — the arctic magnet, from Josh's east-asia World GUI session ("one point
+far to the arctic north always gets picked, wasting a lot of boat time"). Lab repro (east-asia + north-russia,
+Medium, flag on): the far north coast of our OWN 225k-tile Eurasian mainland — same mass as the spawn by an
+unbounded flood — saturates the 1500-tile landmass fill, reads as a NEW landmass and collects ×1.5 × ×1.3 ≈
+×1.95 every pass; with contact ≈ 0 up there the v3 ETA discount never touches it while every temperate
+alternative is eaten down, so the arctic coast is re-picked all game (6+ far-north BOAT OPENING lines per game,
+plus repeated pushes for the same eaten landing, plus a junk tail of basin<200 empty shores at sail 140+ once
+good targets are taken — basin=5 sail=142 was launched). Three changes inside the same flag, flag-off
+byte-identical:
+
+1. **No second-continent bonus on a mass the fill cannot finish.** `Military.landmass` now reports `capped`;
+   the ×OPENING_NEW_MASS and ×boatOceanBonus multipliers apply only to a fully-enumerated mass with no tile of
+   ours (a genuine islet/small mass). A cap-saturated fill is treated as "not new" — it is almost always our own
+   mainland's far coast; it stays a target, but wins on real worth or not at all (v2 deliberately chose the
+   opposite reading; the magnet proved it wrong).
+2. **Long crossings pay their way, and junk holds the boat.** A candidate's worth is charged
+   `boatOpeningSailCost` (8) per sail tile beyond BOAT_MAX_PATH.early (80) — troops locked at sea, growth
+   deferred — and an EMPTY-SHORE candidate below `boatOpeningMinScore` (4 tiles per sail tick) is dropped
+   outright like v3's eaten-out basins: the extras hold the boat rather than launch the best of a garbage list.
+   Tribe candidates are exempt from the floor (their 2× wave is affordability-gated and takes real enemy tiles;
+   far tribe junk dies to the sail cost instead — v3 boated basin=1 tribes at sail 237). The launch loop now sees
+   ONLY the scored candidates: v3's two escape hatches — the never-scored distance-sorted tail past the 24-entry
+   head, and the un-scored same-mass fallback shores behind it — each re-leaked the dropped junk the moment the
+   scored head emptied or its top pick was refused; a refused or dropped pick now holds the pass and re-scans
+   20 ticks later.
+3. **A landing a tribe ate is blacklisted.** When openingPush detects a tribe took an opening landing, the tile
+   goes on `openingFailed`; no new opening candidate within boatBasinRadius of it is scored for the rest of the
+   opening — the committed wave is pushed, the coast is not re-fed from home (the repro showed a new boat 62
+   tiles from the eaten landing on the very tick of its push).
+
+The BOAT OPENING log line now carries the target's `x,y` (helps every GUI session). Params: `boatOpeningSailCost`
+(8), `boatOpeningMinScore` (4) — appended to scripts/lab/specs/wins.json for the CMA. Measured on the repro:
+east-asia far-north lines drop from 8 to the 1–2 early large-basin landings, the junk tail is gone.
+Tests: v4 block in tests/playbook/boatOpening.test.ts (a remote cap-saturated basin at long sail loses to the
+nearer contested tribe; a landing a tribe ate is not re-boated while the push fights; the sail cost and the
+floor each hold the boat home when only a long junk crossing remains).
+A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 ## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)
 
 Loss cluster 3 above: 40 of the 41 losses stop growing by minute 33 (wins keep growing to 61) — the bot sits at
