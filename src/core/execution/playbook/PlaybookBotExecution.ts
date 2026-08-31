@@ -225,10 +225,13 @@ export class PlaybookBotExecution implements Execution {
   }
   private boat(tile: TileRef, n: number, why: string): number {
     if (this.sit.hold !== null || (this.sit.mode === "hold" && !why.includes("collapsed"))) return 0;
-    const amount = Math.min(Math.floor(n), Math.floor(this.sit.spendable));
+    let amount = Math.min(Math.floor(n), Math.floor(this.sit.spendable));
     if (amount < 500 || this.player.canBuild(UnitType.TransportShip, tile) === false) return 0;
-    if (this.p.boatDedupe && !why.startsWith("finish") && this.boatBound(tile)) { this.fired.set("boatDedupe", (this.fired.get("boatDedupe") ?? 0) + 1); return 0; } // finishByBoat keeps its own one-per-target rule
+    const swarm = why.startsWith("ESCORT swarm"); // `boatEscort`: a swarm's follow-up boat — bound for a landing its first boat is already sailing to, past the gate already
+    if (this.p.boatDedupe && !why.startsWith("finish") && !swarm && this.boatBound(tile)) { this.fired.set("boatDedupe", (this.fired.get("boatDedupe") ?? 0) + 1); return 0; } // finishByBoat keeps its own one-per-target rule
     if (this.dry) { this.dryBoats++; return amount; } // `boatsAfterCoast`: would have launched
+    // `boatEscort`: a long crossing with an enemy warship on its corridor is held (0), escorted, or split into a swarm
+    if (!swarm) { amount = this.military.escortGate(tile, amount, why); if (amount === 0) return 0; }
     this.mg.addExecution(new TransportShipExecution(this.player, tile, amount));
     this.recentLandings.push({ tile, tick: this.sit.tick });
     this.sit.spendable -= amount; this.sit.troops -= amount; this.sit.boats++;
@@ -271,6 +274,7 @@ export class PlaybookBotExecution implements Execution {
     // every alliance inside its 300-tick renewal window is seen six times, so a gift or renewal that could not go
     // through on one pass (donation cooldown, no room for the gift) is retried before the expiry
     { name: "expiries", every: 50, run: () => this.diplomacy.manageExpiries() },
+    { name: "escorts", every: 10, run: () => this.military.manageEscorts() }, // `boatEscort`: swarm follow-ups, releases (inert with the flag off)
     { name: "early boat", every: 20, run: () => {
       if (this.sit.tick < this.p.boatAtTick) return;
       // `boatOpening`: while tick < boatOpeningUntil keep up to boatOpeningCount transports alive instead of the one

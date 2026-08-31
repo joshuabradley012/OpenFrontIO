@@ -2081,3 +2081,69 @@ off.
 
 A/B (full games — the stall is an endgame failure; a 20-minute game rarely reaches a duel):
 `CONFIGS='{"base":{},"duel":{"duelPush":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.
+
+## Boat escorts (`boatEscort`, 2026-08-30, branch `bot/boat-escort`)
+
+Josh (GUI): "the last thing it needs is moving warships to corridors where it's trying to place a boat so it can get
+across" — and, same flag, "it can try multiple boats to get across contested waters". The opening boats (`boatOpening`)
+and the later sea expansion cross water; enemy warships appear from ~t1730 and sink transports, which is why the
+opening's ocean window closes at `boatOceanUntil` = 1500. Until now the bot bought warships only from 15:00 (one per six
+ports) and never positioned them.
+
+**What the engine's warships actually do** (`WarshipExecution`, `ShellExecution`, `Config`): a warship picks the
+nearest enemy unit within `warshipTargettingRange` = 130 tiles, **transports first**, then warships, then trade ships
+(the last only inside its 100-tile patrol radius). Against a transport it **does not reload** (one shell per transport,
+a new target every tick), the shell homes at 3 tiles/tick and never expires while the warship lives, and a transport has
+no health — one hit sinks it (the troops are lost). Warships are 1000 HP, a shell does ~200–325, one every 20 ticks
+against a warship; a warship retreats to port at 75 % and keeps firing on the way, and stops only once docked. Owners
+that cannot attack us (allies, teammates) never fire. Consequences: **an escort cannot screen a transport** — the
+threat shoots the transport before the warship, whatever sails beside it — it can only **clear the corridor** (three
+hits send the threat home; two escorts do it in 40 ticks); and **a swarm does not saturate** a warship: three boats
+draw three shells in three ticks. What a swarm can do is get the boats the threat has not reached yet ashore — a
+transport within ~40 tiles of the far shore lands before a shell from 130 tiles arrives — so it is a gamble, kept
+because Josh asked for the attempt; the A/B judges it.
+
+So the flag is an **escort-clears, boat-waits** rule, with the swarm as the fallback, all in `Military.escortGate`,
+called by the loop's `boat()` before every launch (every boat rule, dry runs excepted):
+
+- From `escortFromTick` (1200, a little before the first enemy warships) a crossing longer than `escortMinSail` (60
+  sail tiles; the corridor = `WaterPath.path`, the fill's shortest route walked back from the landing — the engine's
+  `WaterPathFinder` takes the same route give or take — or the straight line from our nearest sampled shore beyond the
+  fill's 250-tile reach; every 4th tile) is checked: a **live** enemy warship (not docked, owner may attack us) within
+  `escortThreatRange` (130 = the sink range) of a corridor tile contests it. Short hops sail as before.
+- Contested: the crossing is **held** (`boat()` returns 0; the rule moves on to its next candidate and re-picks next
+  pass), and the **idle warship of ours nearest the threat** on that water (not docked, not on another corridor) is
+  moved with the real `MoveWarshipExecution` to the corridor tile nearest the threat, where the engine's own targeting
+  engages it. Logged `ESCORT <ship id> → corridor (x,y) for boat to (x,y); threat <owner> at d`. No idle warship:
+  with `escortBuy` and fewer than `escortMaxShips` warships of ours, `Economy.build` buys one patrolling that corridor
+  point (it spawns at our nearest port on that water — `PlayerImpl.warshipSpawn`), behind the bomb / SAM funds,
+  `mirvFund` and the silo escrow, ahead of port levels and rail, behind the first three cities; logged
+  `ESCORT buy Warship for corridor (x,y)`. The request lives `escortDeferTicks`.
+- The crossing **sails on a later pass once the corridor reads clear** (the threat dead, docked, or out of range).
+  The escort then watches that transport (by its landing, within `boatDedupeRadius`) and is released — idle for the
+  next corridor, not moved back — when it has landed or died; a corridor never sailed releases after
+  2 × `escortDeferTicks`. Assignments live in Military (`escorts`), the `escorts` rule every 10 ticks does the
+  releases and the swarm launches, `prune()` is the backstop.
+- **Swarm**: a **worthy** target — an opening pick scoring ≥ 2 × `boatOpeningMinScore`, a `CONTEST leader` boat, a
+  boat onto the `duelPush` foe's shore, a `plateauBreak`-forced sea expansion — with **no escort possible** (no idle
+  warship, no purchase pending) or **held `escortDeferTicks`** launches `escortSwarm` (3) boats instead: the same
+  troops split evenly (each ≥ 500, else fewer boats), the first now and the rest one `escorts` pass (10 ticks) apart
+  (they skip `boatDedupe` and the gate). Logged `ESCORT swarm n boats → (x,y)`. Prefer escort, swarm second, defer last.
+- Held with nothing possible: `ESCORT none: crossing deferred (...)`; held for an escort on its way: `ESCORT hold:`.
+
+Fires (`boatEscort`, FireLimiter, 1 per 100 ticks per site): `move`, `buy`, `swarm`, `defer`. Params: `escortMinSail`,
+`escortFromTick`, `escortThreatRange`, `escortMaxShips`, `escortSwarm`, `escortDeferTicks` (ints, appended to
+`scripts/lab/specs/wins.json`; `cmaes --dry-run` validated), `escortBuy` (bool). Off = unchanged (golden unchanged, the
+MIN=3 africa/Medium transcript identical; the `escorts` rule and the gate return at once). Tests
+`tests/playbook/boatEscort.test.ts` (the Red Sea → Suez → Med fixture from boats2, 148 tiles by water, an enemy
+warship in the Med): the idle warship is moved onto the corridor at the point nearest the threat and the crossing is
+held, then sails once the threat is deleted and the escort is released after the landing; off, the boat sails
+unescorted; no warship and no gold → `ESCORT none: crossing deferred` and no launch, with gold a warship is bought at
+the corridor and takes the escort; a short hop (under `escortMinSail`) sails past the warship; a worthy contested
+crossing with no escort possible launches three staggered 3k boats under the flag, one boat without it.
+
+A/B (full games — the losses this addresses are late crossings; note `boatsWaterPath` is off, so the corridor comes
+from the fill the flag runs on its own):
+`CONFIGS='{"base":{},"esc":{"boatEscort":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`, and the
+opening pairing `{"boatOpening":true}` vs `{"boatOpening":true,"boatEscort":true}` (the opening's ocean window could
+then be widened: `boatOceanUntil` up, escorts covering what sails after it).

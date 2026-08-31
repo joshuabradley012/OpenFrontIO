@@ -133,6 +133,14 @@ export interface PlaybookParams {
   duelPush: boolean; // finish a won duel (GUI 2026-08-30: two non-bot players left, us at 38 % of the land with 13.3M troops vs 7.55M, and the bot spent 10+ minutes requesting alliances with its only rival — the finish rule's push needs 45 % of the map and requestAlliances courts the sole rival forever): while the living non-bot, non-teammate players are ≤ duelPlayers (us included) and our troops are ≥ duelRatio × the strongest other's (the foe), Diplomacy never asks, accepts or renews an alliance with the foe (an existing one lapses through the planned-target mechanism, never a betrayal), the mode is `push` whatever our share (hold still wins: a MIRV-capable foe over the denial line fires whatever we do), the war rule takes the foe as an opportunity at duelRatio (no affordability / fightAbove gate, the war-count invariant lets it run beside counters, the posts / thin-empire gates do not apply — it is the only target left) with a duelRatio wave, and bombs / MIRV take the foe as a priority target like the threats. Behind (troops < duelRatio × the foe's) nothing changes — the flag finishes a won game. Default off until the full-game A/B
   duelPlayers: number; // duelPush: a duel while the living non-bot, non-teammate players (us included) number at most this (int)
   duelRatio: number; // duelPush: our troops over the foe's from which the duel counts as won — and the ratio the duel war is sent at
+  boatEscort: boolean; // Josh (GUI): "moving warships to corridors where it's trying to place a boat so it can get across". Engine facts (WarshipExecution/ShellExecution): a warship shells every enemy transport within warshipTargettingRange (130) with no reload against transports and a homing one-shot shell, so a transport whose path passes within 130 of a live enemy warship is sunk, escorted or not — an escort cannot screen it, it can only CLEAR the corridor (1000 HP, ~262 a shell per 20 ticks, the threat retreats at 75 % and stops firing once docked). So from escortFromTick a crossing longer than escortMinSail whose corridor (Military.corridor: the water path, else the straight line) has a live enemy warship within escortThreatRange is HELD, our idle warship nearest the threat is moved (MoveWarshipExecution) to the corridor point nearest it (or one is bought there — escortBuy, under escortMaxShips, behind the funds), and the crossing sails on a later pass once the corridor is clear; a worthy target (an opening pick scoring ≥ 2× boatOpeningMinScore, a contest / duel / plateau-forced boat) with no escort possible — or held escortDeferTicks — swarms escortSwarm staggered boats instead (Josh: "try multiple boats"; note the no-reload rule means a swarm only gets through what the threat has not yet reached). Short hops sail as before. Default off until the full-game A/B
+  escortMinSail: number; // boatEscort: a crossing longer than this (sail tiles) is checked for warships (int)
+  escortFromTick: number; // boatEscort: no escort logic before this tick — a little before the first enemy warships (measured t1730; int)
+  escortThreatRange: number; // boatEscort: an enemy warship within this many tiles of a corridor tile contests it (the engine sinks from 130; int)
+  escortBuy: boolean; // boatEscort: buy a warship for a contested corridor when no idle one exists (Economy.build, behind the funds)
+  escortMaxShips: number; // boatEscort: no escort purchase while we own this many warships (int)
+  escortSwarm: number; // boatEscort: transports a worthy contested crossing is split into (same total troops, each ≥ 500, one rule pass apart; int)
+  escortDeferTicks: number; // boatEscort: ticks a corridor is held before a worthy crossing swarms anyway, and the life of a purchase request (int)
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -252,4 +260,12 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   hystStrikes: 2,
   annexWars: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"annexWars":false} vs {})ntil the 30-game Medium A/B
   lapseToAttack: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"lapseToAttack":false} vs {})ntil the 30-game Medium A/B
+  boatEscort: false, // default off until the full-game A/B
+  escortMinSail: 60,
+  escortFromTick: 1200,
+  escortThreatRange: 130, // = Config.warshipTargettingRange: inside it the transport is sunk, outside it is not
+  escortBuy: true,
+  escortMaxShips: 2,
+  escortSwarm: 3,
+  escortDeferTicks: 600,
 };
