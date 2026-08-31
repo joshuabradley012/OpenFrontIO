@@ -261,6 +261,8 @@ export class PlaybookBotExecution implements Execution {
     { name: "plateau", every: 300, run: () => { const lapse = this.military.plateauRule(); if (lapse !== null) this.diplomacy.planLapse(lapse); } },
     { name: "build", every: 10, run: () => { this.economy.build(this.sit.tick); this.military.maybeBomb(this.sit.tick, this.economy.spentThisPass); } },
     { name: "mirv", every: 100, run: () => this.military.maybeMIRV(this.economy.spentThisPass) }, // after "build" in the same tick: its buys are not yet deducted
+    // `mirvCounterforce`: after "mirv" in the same tick — a launch here is one maybeMIRV's own rules just declined
+    { name: "counterforce", every: 100, run: () => this.military.counterforce(this.sit.tick, this.economy.spentThisPass) },
     // always-on diagnostics: the nations' MIRV rules against us (logged on change) and every enemy MIRV aimed at our land
     { name: "mirv risk", every: 100, run: () => this.risk.check() },
     { name: "mirved", every: 10, run: () => this.risk.scan() },
