@@ -1959,6 +1959,41 @@ Tests: v4 block in tests/playbook/boatOpening.test.ts (a remote cap-saturated ba
 nearer contested tribe; a landing a tribe ate is not re-boated while the push fights; the sail cost and the
 floor each hold the boat home when only a long junk crossing remains).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+**v5 (branch `bot/boat-opening-v5`)** — own-mass shores are (almost) never worth a boat, from Josh's v4 GUI
+session on a Japan-area World spawn ("that russia/asia coastline is difficult for the algo still"): the bot kept
+spending opening boats on the far coast of its OWN landmass — v4 removed the arctic mass's spurious ×1.95 bonus,
+but a big own-coast basin still won on raw worth, and land expansion reaches every own-mass shore free. One
+change inside the same flag, flag-off byte-identical (MIN=3 default transcript diff-identical vs a57c5a650 but
+botMs/gameMs):
+
+1. **Own-mass empty shores score ×`boatOwnMassFactor` (0.15, CMA 0–0.6).** An empty-shore candidate whose
+   landmass (v4's `landmass()` fill) is ours — with a cap-saturated fill counted as own, the conservative
+   reading that also mops up acrossWaterNear's saturation ambiguity from the v2 caveat — is effectively
+   excluded: at the default it needs a raw score of ~27 to clear the `boatOpeningMinScore` 4 floor, so only a
+   genuinely huge basin (the measured east-asia 7657-tile arctic pocket still clears at ~87 raw) ever launches;
+   everything else holds the boat or yields to a separate mass/tribe. Tribe candidates are exempt — a tribe
+   across a bay on our own mass is still a fine boat (its wave takes real enemy tiles land expansion pays for).
+2. **The escape hatch: a basin walled off by rivals keeps full score.** `Military.openingCutOff` — a
+   breadth-first flood from the candidate over land no other player owns (unowned and ours pass), capped at
+   OPENING_REACH_TILES (8000), cached per tile for WATER_CACHE_TICKS — decides land-reachability: meeting a
+   tile of ours means land expansion can walk there (penalty applies); a fill that exhausts without meeting us
+   is a cut-off peninsula behind rivals (boat-worthy, ×1); a fill that hits the cap is undecided and treated as
+   reachable (open wilderness that large is exactly what land expansion eats). This also keeps a genuinely
+   separate mass that a capped `landmass()` fill mislabels as own un-penalized whenever its free land is
+   enclosed and small enough to enumerate.
+
+The BOAT OPENING line now ends `own=yes/no` (the landing's mass is our own) plus `blocked=yes` when the escape
+hatch fired — the GUI shows the reasoning. Param: `boatOwnMassFactor` (0.15) appended to
+scripts/lab/specs/wins.json (validated with `cmaes.py --dry-run`). Measured on the 6-min Medium smokes, flag on:
+east-asia 8 launches / north-russia 11, own-mass EMPTY-SHORE launches 1 each (the t80 genuine 7657- and
+4159-tile basins), every other empty-shore launch own=no; own=yes tribe launches (6 in north-russia) are the
+intended exemption.
+Tests: v5 block in tests/playbook/boatOpening.test.ts (the cove fixture: an own-mass far coast reachable
+through a free lane loses to a separate-mass candidate and, under the floor, to holding the boat — both flip at
+×1 pinned, so the factor is what decides; the rival-walled carve still launches at factor 0 with blocked=yes;
+a tribe on our own mass is exempt at factor 0).
+A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 ## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)
 
 Loss cluster 3 above: 40 of the 41 losses stop growing by minute 33 (wins keep growing to 61) — the bot sits at

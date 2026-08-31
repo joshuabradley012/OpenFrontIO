@@ -74,6 +74,7 @@ const OPENING_BASIN_TILES = 8000; // boatOpening: cap of the free-land basin flo
 const OPENING_MIN_SAIL = 20; // boatOpening: sail-distance floor in the basin/sail score — a 3-tile hop must not win on division alone
 const OPENING_CONTESTED = 1.5; // boatOpening: score boost on a tribe candidate with a rival (nation/human) adjacent — the wilderness near it will be eaten soon anyway, the tribe is ours alone (the tribe-tile coefficient itself is PlaybookParams.boatTribeWorth)
 const OPENING_PUSH_TICKS = 600; // boatOpening: how long a recorded opening landing is watched for a tribe having eaten its basin (sail + the wave's fight)
+const OPENING_REACH_TILES = 8000; // boatOpening v5: cap of openingCutOff's flood over land no other player owns — big enough to fully enumerate a rival-walled pocket (the escape hatch needs the fill to FINISH to call a basin cut off); a capped fill is treated as land-reachable
 /** A bomb maybeBomb's value search picked: where, of what type, at whom, and its value per 100k of gold. */
 export interface BombPick { tile: TileRef; value: number; type: UnitType; enemy: Player; cost: bigint }
 
@@ -1405,6 +1406,35 @@ export class Military {
     capped.push(i < q.length); // the fill gave up with tiles still queued: the mass's edge was never seen
     return { id, ours: mine, capped: capped[id] };
   }
+  /** `boatOpening` v5: is the free basin at `t` walled off from our territory by other players' land? Breadth-
+   *  first from `t` over land tiles no other player owns (unowned and ours pass), capped at OPENING_REACH_TILES;
+   *  meeting a tile of ours means land expansion can walk there — the boatOwnMassFactor penalty applies. A fill
+   *  that exhausts without meeting us is cut off behind rivals (boat-worthy — the escape hatch lifts the
+   *  penalty); a fill that hits the cap is undecided and treated as land-reachable (conservative, like
+   *  landmass()'s `capped` — open wilderness that large is exactly what land expansion eats). Cached per tile
+   *  for WATER_CACHE_TICKS: rivals close in and ownership moves. */
+  private cutOffCache = new Map<TileRef, { tick: number; cutOff: boolean }>();
+  private openingCutOff(t: TileRef): boolean {
+    const got = this.cutOffCache.get(t);
+    if (got !== undefined && this.ctx.mg.ticks() - got.tick < WATER_CACHE_TICKS) return got.cutOff;
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const seen = new Set<TileRef>([t]);
+    const q: TileRef[] = [t];
+    let i = 0, reached = false;
+    while (i < q.length && seen.size < OPENING_REACH_TILES) {
+      const c = q[i++];
+      if (mg.owner(c) === me) { reached = true; break; }
+      for (const n of mg.neighbors(c)) {
+        if (seen.has(n) || !mg.isLand(n)) continue;
+        const o = mg.owner(n);
+        if (o !== me && o.isPlayer()) continue; // another player's land blocks the walk
+        seen.add(n); q.push(n);
+      }
+    }
+    const cutOff = !reached && i >= q.length; // exhausted without meeting us: walled off; capped: undecided → land-reachable
+    this.cutOffCache.set(t, { tick: this.ctx.mg.ticks(), cutOff });
+    return cutOff;
+  }
   /** `boatOpening`: free land behind a landing (Situation.basinContact — the spawn picker's flood, radius
    *  boatBasinRadius, cap OPENING_BASIN_TILES) plus the eaters on its perimeter, cached per candidate tile for
    *  WATER_CACHE_TICKS: basins only shrink as the world fills in, but the contact count grows as rivals close in,
@@ -1477,8 +1507,10 @@ export class Military {
    *  capped fill is probably our own mainland's far coast). v4 also charges boatOpeningSailCost worth per sail tile
    *  beyond BOAT_MAX_PATH.early, drops candidates below boatOpeningMinScore outright (the extras hold the boat),
    *  and refuses candidates within boatBasinRadius of a landing a tribe ate (openingFailed — the pushed wave is
-   *  already committed there). Every boat is capped at boatShare of home, each launch
-   *  logs BOAT OPENING (with basin= and sail=) and fires the flag, and the other boat flags' liveness counters are
+   *  already committed there). v5: an empty-shore candidate on our OWN landmass (ours or a capped fill) scores
+   *  ×boatOwnMassFactor — land expansion reaches our own coast free — unless openingCutOff finds its basin
+   *  walled off from us by other players' land (tribe candidates exempt). Every boat is capped at boatShare of home, each launch
+   *  logs BOAT OPENING (with basin=, sail= and own=/blocked=) and fires the flag, and the other boat flags' liveness counters are
    *  left alone (their plain-rule counterfactual does not exist for a boat the plain rule would not have launched). */
   earlyBoat(opening = false): boolean {
     const me = this.ctx.me;
@@ -1570,7 +1602,16 @@ export class Military {
       // for a `capped` mass (see landmass()), and every candidate is charged boatOpeningSailCost worth-tiles per
       // sail tile beyond BOAT_MAX_PATH.early — a long crossing locks boatShare of home at sea for sail ticks.
       const cost = (c: (typeof cands)[number]) => this.ctx.p.boatOpeningSailCost * Math.max(0, c.sail - BOAT_MAX_PATH.early);
-      const scoredAll = [...byMass.values()].map(({ c, ours, capped }) => ({ c, s: ((worth(c) - cost(c)) / Math.max(c.sail, OPENING_MIN_SAIL)) * (ours || capped ? 1 : OPENING_NEW_MASS * (ocean && c.sail > BOAT_MAX_PATH.early ? this.ctx.p.boatOceanBonus : 1)) }));
+      // v5: an empty shore on our OWN landmass is (almost) never worth an opening boat — land expansion reaches
+      // it free; boats are for genuinely separate masses and tribe masses. `ours || capped` counts as own (a
+      // cap-saturated fill is almost always the mainland — conservative, and it mops up acrossWaterNear's
+      // saturation ambiguity from the v2 caveat), tribe candidates are exempt (a tribe across a bay on our own
+      // mass is still a fine boat), and openingCutOff is the escape hatch: a basin walled off from us by other
+      // players' land cannot be reached by land expansion, so a cut-off peninsula behind a rival keeps ×1.
+      const factor = (c: (typeof cands)[number], own: boolean) =>
+        !own ? OPENING_NEW_MASS * (ocean && c.sail > BOAT_MAX_PATH.early ? this.ctx.p.boatOceanBonus : 1)
+          : c.tribeTiles > 0 || this.openingCutOff(c.tile) ? 1 : this.ctx.p.boatOwnMassFactor;
+      const scoredAll = [...byMass.values()].map(({ c, ours, capped }) => ({ c, s: ((worth(c) - cost(c)) / Math.max(c.sail, OPENING_MIN_SAIL)) * factor(c, ours || capped) }));
       // v3: a basin the eaters will have consumed before the boat lands is not a target at ANY rank — dropped
       // outright, not down-ranked (a later pass re-scans; the contact count refreshes with the basin cache).
       // v4: an EMPTY-SHORE candidate below boatOpeningMinScore shares that fate — the extras hold the boat rather
@@ -1598,7 +1639,12 @@ export class Military {
         // the fire site: this boat launches only because the flag is on — the plain rule already sent its one early boat
         this.lim.fire("boatOpening", "early");
         const b = this.openingBasin(c.tile);
-        this.ctx.log(`t${this.ctx.mg.ticks()} BOAT OPENING ${this.ctx.sit.boats}/${this.ctx.p.boatOpeningCount} out → ${c.what} at ${this.ctx.mg.x(c.tile)},${this.ctx.mg.y(c.tile)}, ${c.d} tiles${wp ? " by water" : ""} basin=${b.tiles} sail=${c.sail} eta=${c.sail} eaten=${Math.round(Math.min(b.tiles, this.ctx.p.boatEatRate * b.contact * c.sail))}`);
+        // v5 reasoning for the GUI: own = the landing's mass is our own (or the fill was capped — treated as
+        // own), blocked = the escape hatch fired (the basin is walled off by rivals). Both reads hit the caches.
+        const m = this.landmass(c.tile);
+        const own = m.ours || m.capped;
+        const blocked = own && c.tribeTiles === 0 && this.openingCutOff(c.tile);
+        this.ctx.log(`t${this.ctx.mg.ticks()} BOAT OPENING ${this.ctx.sit.boats}/${this.ctx.p.boatOpeningCount} out → ${c.what} at ${this.ctx.mg.x(c.tile)},${this.ctx.mg.y(c.tile)}, ${c.d} tiles${wp ? " by water" : ""} basin=${b.tiles} sail=${c.sail} eta=${c.sail} eaten=${Math.round(Math.min(b.tiles, this.ctx.p.boatEatRate * b.contact * c.sail))} own=${own ? "yes" : "no"}${blocked ? " blocked=yes" : ""}`);
       }
       if (nearest && !opening) {
         // liveness: what the old ranking (middle tile, 30-tile floor) would have launched at
