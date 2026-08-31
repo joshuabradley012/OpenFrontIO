@@ -2032,3 +2032,52 @@ A/B (judge on full games — the plateau is a full-game failure mode):
 | warRoiCap | 70 | 0.33 | CONTINUE −0.16 |
 
 Verdict: none decisive at default constants; contestLeader/plateauBreak lean positive, warRoiCap leans harmful (warRoiMax 500 likely too aggressive), webDefense needs a rarer-situation test or deletion. Next: append the five flags' constants to specs/wins.json and let the full-game CMA (flags on) settle them together, per the ab1 lesson.
+
+## Finish a won duel (`duelPush`, 2026-08-30, branch `bot/duel-push`)
+
+Josh's GUI endgame: two living non-bot players left, the bot at 38.3 % of the land with 13.3M troops against the
+rival's 61.7 % / 7.55M — near-double, "basically won" — and it spent 10+ minutes REQUESTING ALLIANCES with its only
+rival instead of finishing. Verified in code: (a) the finish rule's push needs `denialShare ≥ min(0.45, denial − 0.03)`
+(readSlow), so a won duel at 38 % never leaves `grow`; (b) `Diplomacy.requestAlliances` walks the unfriendly
+neighbours strongest-first with no notion of "the last one", so the sole rival is asked every `allianceEvery` ticks
+for as long as it refuses (and accepted the moment it agrees, which locks the war behind an alliance).
+
+`Situation.duel` (`SituationQueries.duel`, on the 100-tick rank scan; the troops test is read every tick): the **foe** of
+a **won duel** — the strongest by troops of the other living non-bot players off our team while they number ≤
+`duelPlayers − 1` (default 2 players: exactly one) and our troops are ≥ `duelRatio` (1.2) × its. Null with the flag
+off, with more players left, or while we are behind — behind, nothing changes (the flag finishes a won game, it does
+not martyr a lost one). Entry/exit logged `DUEL vs <name> troops us …k / them …k — pushing` / `DUEL over` (≤ 1 per
+300 ticks). While set:
+
+- **Diplomacy** never asks the foe for an alliance, never accepts one from it, and never renews one with it — an
+  existing alliance lapses through the planned-target path (`manageExpiries`: no extension, no gift; the war rule's
+  +4 once it has ended), **never a betrayal** (the traitor debuff halves our defence for the very finish). Below
+  `duelRatio` the foe's peace offer is accepted as before: a losing duel may want peace. Logged
+  `DUEL: no alliance request to / with / renewal with <name>` (≤ 1 per site per 1800 ticks).
+- **Mode** is `push` whatever our share (readSlow): contested expansion rates, the endgame war ratio (1.2×) and 70 %
+  sends, the finish MIRV at the richest MIRV-capable rival. **Hold keeps precedence**: `hold` (under the denial line
+  with a MIRV-capable rival, finishRule) is left alone — the hold's own war (`threatHere`) already goes at that rival,
+  and pushing land there is exactly what gets us MIRVed. So a MIRV-capable foe near the denial line is still handled
+  by the hold: the duel changes `grow` only.
+- **War rule** (`warPick`/`warScorer`): the foe on our border is an opportunity — no affordability / `fightAbove`
+  gate, the war-count invariant lets it open beside counters, the sticky-target filter admits it — scored
+  `22 + ratio` at ratio ≥ `duelRatio` (the posts / thin-empire gates do not apply: it is the only target left; the
+  `nationMirvAware` denial / steamroll guards keep their say) with a `min(fightRatio, duelRatio)` wave. The
+  opportunity branch returns before the bonuses, so `contestLeader`'s +4 (the foe is usually the leader) is not
+  stacked — one rank, no double bonus. Note the send is still 70 % of home at most: at 1.2 ≤ troops/foe < 1.71 the
+  duel is on (diplomacy and mode change) but the wave does not fit yet — the war opens when cap growth or the foe's
+  losses carry the ratio over (Josh's 1.76 was just past it). `warRoiCap` treats the foe as an opportunity too.
+- **Bombs / MIRV**: the foe joins `bombEnemies` like a threat (before the contest leader — one entry) and is a
+  priority MIRV target after the finish / counter / denial branches (with `nationMirvAware` on, never at a foe that
+  can counter).
+
+Fires (`duelPush`, FireLimiter): `mode` (grow → push), `gate` (a war pass the plain gates would have refused),
+`score`, `request` / `accept` / `renew` (an alliance the plain path was about to make), `bomb`, `mirv`. Params:
+`duelPlayers` (int), `duelRatio` (appended to `scripts/lab/specs/wins.json`, 1.0–2.0). Tests:
+`tests/playbook/duelPush.test.ts` (two-player fixture, armies pinned: the war at duelRatio below fightAbove; the
+diplomacy half alone in the 1.2–1.71 band; behind → no change; three players → no duel; an existing alliance lapses
+and is never broken, off it renews). Golden unchanged; the MIN=3 africa/Medium transcript is identical with the flag
+off.
+
+A/B (full games — the stall is an endgame failure; a 20-minute game rarely reaches a duel):
+`CONFIGS='{"base":{},"duel":{"duelPush":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.

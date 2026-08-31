@@ -56,9 +56,23 @@ export class Diplomacy {
       if (r.type() === PlayerType.Bot) continue;
       if (r === this.military.currentTarget || r === this.plannedTarget_) continue;
       if (this.isPrey(r) || this.annexRefuse(r)) continue;
+      if (this.duelRefuse(r, "accept")) continue; // `duelPush`: a won duel takes no peace (behind, the request is accepted as before)
       req.accept();
     }
   }
+  /** `duelPush`: `o` is the foe of a won duel (Situation.duel — null with the flag off, with more players left, or
+   *  while we are behind), so no alliance is asked of, accepted from or renewed with it. Fires per site: each call is
+   *  a request / acceptance / renewal the plain path was about to make. acceptAlliances runs before readSituation,
+   *  so it reads the previous tick's picture (the duel state moves on a 100-tick scan anyway). */
+  private duelRefuse(o: Player, site: string): boolean {
+    const sit = this.ctx.sit as typeof this.ctx.sit | undefined;
+    if (sit === undefined || sit.duel !== o) return false;
+    this.lim.fire("duelPush", site);
+    const now = this.ctx.mg.ticks();
+    if (now - (this.duelLogged.get(site) ?? -1e9) >= 1800) { this.duelLogged.set(site, now); this.ctx.log(`t${now} DUEL: no alliance ${site === "accept" ? "with" : site === "renew" ? "renewal with" : "request to"} ${o.name()} (${Math.round(o.troops() / 1000)}k vs our ${Math.round(this.ctx.me.troops() / 1000)}k)`); }
+    return true;
+  }
+  private duelLogged = new Map<string, number>();
   /** No alliance with a player we could annex. `annexWars` widens what counts as annexable (Situation.annexable);
    *  the flag fires when the refusal is one the old rule would not have made. */
   private annexRefuse(o: Player): boolean {
@@ -118,6 +132,7 @@ export class Diplomacy {
         if (this.ctx.mg.ticks() - (this.againstRulesLogged.get(o) ?? -1e9) >= 1800) { this.againstRulesLogged.set(o, this.ctx.mg.ticks()); this.ctx.log(`t${this.ctx.mg.ticks()} no alliance request to ${o.name()}: its rules would refuse (relation ${Relation[o.relation(me)]}, ${o.alliances().length} alliances)`); }
         continue;
       }
+      if (this.duelRefuse(o, "request")) continue; // `duelPush`: the sole rival of a won duel is never courted
       if (o === webPick && this.isPrey(o)) this.lim.fire("webDefense", "request"); // the plain path would have kept it as prey
       this.ctx.mg.addExecution(new AllianceRequestExecution(me, o.id()));
     }
@@ -142,6 +157,10 @@ export class Diplomacy {
       const { rivals, friends } = this.q.neighbours();
       let prey = (friends.includes(other) && other.troops() < me.troops() * 0.4 && me.troops() > this.q.cap() * this.ctx.p.fightAbove && rivals.length <= 1) || this.q.annexable(other) || (this.ctx.p.endgameV2 && this.ctx.mg.ticks() >= 9000 && other.troops() < me.troops() * 0.5 && other.numTilesOwned() < me.numTilesOwned());
       if (prey && this.ctx.p.annexWars && this.q.annexableChanged(other)) this.lim.fire("annexWars", "lapse");
+      // `duelPush`: the alliance with the foe of a won duel lapses (the planned-target path below: no renewal, no gift,
+      // the war rule's +4 once it has ended) — never broken: the traitor debuff would halve our defence for the finish
+      let duel = false;
+      if (!prey && this.duelRefuse(other, "renew")) { prey = true; duel = true; }
       // `lapseToAttack`: the ally is the best war the army could have — the scorer takes it as if it were unfriendly and
       // it beats every unfriendly candidate — so it lapses whatever the number of rivals; not while a stronger
       // unfriendly neighbour (> 0.6× our troops) borders us, unless the ally is annexable (a war it cannot answer)
@@ -175,6 +194,7 @@ export class Diplomacy {
         if (this.plannedTarget_ !== other) this.plannedLapsedAt = -1;
         this.plannedTarget_ = other;
         if (lapseScore !== null) { this.ctx.fire("lapseToAttack"); this.ctx.log(`t${this.ctx.mg.ticks()} let alliance lapse to attack ${other.name()} (score ${lapseScore.toFixed(1)}, ${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`); }
+        else if (duel) this.ctx.log(`t${this.ctx.mg.ticks()} let alliance with ${other.name()} lapse: the duel is won (${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`);
         else this.ctx.log(`t${this.ctx.mg.ticks()} let alliance with ${other.name()} lapse (${Math.round(other.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k)`);
         continue;
       }

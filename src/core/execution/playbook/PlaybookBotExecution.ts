@@ -138,8 +138,9 @@ export class PlaybookBotExecution implements Execution {
       collapsed: nb.rivals.filter((r) => this.military.collapsed(r)), // cheap (a map lookup per rival); its 100-tick snapshot keeps the original tick alignment
       expiring: [],
       hold: null,
-      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null, contest: null,
+      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null, contest: null, duel: null,
     };
+    this.sit.duel = this.q.duel(t); // `duelPush`: before readSlow — the finish mode reads it
     if (this.slow === null || t % 10 === 0) this.slow = this.readSlow(t, troops);
     this.sit.threats = this.slow.threats; this.sit.expiring = this.slow.expiring; this.sit.hold = this.slow.hold; this.sit.mode = this.slow.mode;
     this.q.enrichRivals(this.sit); // B2: per-rival view
@@ -180,7 +181,12 @@ export class PlaybookBotExecution implements Execution {
     let mode: "grow" | "hold" | "push" = "grow";
     if (this.p.finishRule && denialShare >= denial - 0.03) mode = threats.length > 0 ? "hold" : "push";
     else if (this.p.finishRule && denialShare >= Math.min(0.45, denial - 0.03) && threats.length === 0) mode = "push";
-    if (mode !== this.lastMode) { if (this.log.length < 2000) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${mode}: share ${(share * 100).toFixed(0)} %, ${threats.length} MIRV-capable rivals${threats.length ? " (" + threats.map((x) => x.name()).join(", ") + ")" : ""}`); this.lastMode = mode; }
+    // `duelPush`: a won duel is the finish whatever our share — push (contested expansion, the endgame war ratios, the
+    // MIRV at the richest capable rival). Hold keeps precedence: under the denial line with a MIRV-capable foe the
+    // hold's own war (threatHere) already goes at it, and pushing land there is what gets us MIRVed.
+    let duel = false;
+    if (this.sit.duel !== null && mode === "grow") { mode = "push"; duel = true; this.lim.fire("duelPush", "mode"); }
+    if (mode !== this.lastMode) { if (this.log.length < 2000) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${mode}: share ${(share * 100).toFixed(0)} %, ${threats.length} MIRV-capable rivals${threats.length ? " (" + threats.map((x) => x.name()).join(", ") + ")" : ""}${duel ? `, duel vs ${this.sit.duel!.name()}` : ""}`); this.lastMode = mode; }
     // A Hard nation renews only if we look as strong as it at expiry: 45 s before an alliance with a stronger
     // neighbour lapses, the army stays home so the check sees all of it.
     // C1 (`nationAware`): hold only for a nation whose own attack rules would let it hit us at expiry

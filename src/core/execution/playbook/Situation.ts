@@ -57,6 +57,10 @@ export interface Situation {
   web: { members: Player[]; send: number } | null;
   /** `contestLeader`: the runaway leader to contest right now (null: flag off, or no runaway — see SituationQueries.contest). */
   contest: Player | null;
+  /** `duelPush`: the foe of a WON duel — the strongest of the ≤ duelPlayers − 1 other living non-bot, non-teammate
+   *  players while our troops are ≥ duelRatio × its (null: flag off, more players left, or we are behind — see
+   *  SituationQueries.duel). Read by the finish mode, the war rule, bombs / MIRV and Diplomacy. */
+  duel: Player | null;
 }
 
 export class SituationQueries {
@@ -123,6 +127,36 @@ export class SituationQueries {
     }
     this.contestCache = { tick, contest };
     return contest;
+  }
+  // ---------------------------------------------------------------- duelPush
+  private duelCache = { tick: -1e9, foe: null as Player | null, others: 0 };
+  private duelOn: Player | null = null;
+  private duelLogged = -1e9;
+  /** `duelPush`: the foe of a won duel, or null. The player scan (living non-bot players off our team, the strongest by
+   *  troops among them) runs on the 100-tick rank cadence; the troops test (ours ≥ duelRatio × the foe's) is read every
+   *  call, so the state flips the tick the ratio crosses. The foe may be an ally: the flag's job is then to let that
+   *  alliance lapse (Diplomacy). Entry and exit are logged `DUEL …`, at most one line per 300 ticks. */
+  duel(tick: number): Player | null {
+    if (!this.ctx.p.duelPush) return null;
+    const me = this.ctx.me;
+    if (tick - this.duelCache.tick >= 100) {
+      let foe: Player | null = null, others = 0;
+      for (const o of this.ctx.mg.players()) {
+        if (o === me || !o.isAlive() || o.type() === PlayerType.Bot || me.isOnSameTeam(o)) continue;
+        others++;
+        if (foe === null || o.troops() > foe.troops()) foe = o;
+      }
+      this.duelCache = { tick, foe, others };
+    }
+    const c = this.duelCache;
+    const on = c.foe !== null && c.foe.isAlive() && c.others + 1 <= this.ctx.p.duelPlayers && me.troops() >= c.foe.troops() * this.ctx.p.duelRatio ? c.foe : null;
+    if (on !== this.duelOn && tick - this.duelLogged >= 300) {
+      this.duelLogged = tick;
+      if (on !== null) this.ctx.log(`t${tick} DUEL vs ${on.name()} troops us ${Math.round(me.troops() / 1000)}k / them ${Math.round(on.troops() / 1000)}k${me.isFriendly(on) ? " (allied — it lapses)" : ""} — pushing`);
+      else this.ctx.log(`t${tick} DUEL over${this.duelOn !== null && this.duelOn.isAlive() ? `: ${this.duelOn.name()} ${Math.round(this.duelOn.troops() / 1000)}k vs our ${Math.round(me.troops() / 1000)}k` : ""}`);
+      this.duelOn = on;
+    } else if (on === this.duelOn) this.duelOn = on;
+    return on;
   }
   /** opening while free land is reachable; endgame from clockTicks − 3000 (25:00) or when top-3 and an unfriendly silo exists; war when a
    *  war is affordable (Military.fight's test) or troops ≥ fightAbove·cap (fight() proceeds from there); else consolidate. */
