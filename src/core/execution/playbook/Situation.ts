@@ -1,7 +1,7 @@
 // Situation: the per-tick picture every rule reads (built by PlaybookBotExecution.readSituation) and the
 // stateless-ish queries about the map and our neighbours that several modules share.
 
-import { Attack, Player, PlayerType, TerraNullius, UnitType } from "../../game/Game";
+import { Attack, Game, Player, PlayerType, TerraNullius, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { BotContext } from "./Context";
 import { PlaybookParams } from "./Params";
@@ -16,6 +16,23 @@ export function onTheClock(p: PlaybookParams, tick: number, before = 3000): bool
   return p.clockTicks > 0 && tick >= p.clockTicks - before;
 }
 export interface Neighbours { bots: Player[]; rivals: Player[]; friends: Player[]; wilderness: boolean }
+
+/** Unowned land tiles reachable from `t` over unowned land within `radius` (manhattan), capped at `cap`.
+ *  Static (no ctx): shared by the spawn picker (PlaybookBotExecution.basin, before the bot exists) and the
+ *  `boatOpening` landing scorer (Military.openingBasin). */
+export function basin(game: Game, t: TileRef, radius: number, cap: number): number {
+  const seen = new Set<TileRef>([t]);
+  const q: TileRef[] = [t];
+  let i = 0;
+  while (i < q.length && seen.size < cap) {
+    const c = q[i++];
+    for (const n of game.neighbors(c)) {
+      if (seen.has(n) || !game.isLand(n) || game.hasOwner(n) || game.manhattanDist(n, t) > radius) continue;
+      seen.add(n); q.push(n);
+    }
+  }
+  return seen.size;
+}
 
 /** One evaluated picture of the game per tick; every rule reads this instead of re-deriving state. */
 export interface Situation {

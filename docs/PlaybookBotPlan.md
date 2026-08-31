@@ -1859,8 +1859,34 @@ landmass (`onSmallLandmass` — the island spawn's plain rules already boat cont
 the normal rules resume unchanged. Each extra launch logs `BOAT OPENING n/count out → …` (the fire site: a boat
 the plain rules would not have launched this tick) and fires `boatOpening` via the FireLimiter.
 Params: `boatOpening` (default off), `boatOpeningCount` (int 2), `boatOpeningUntil` (int 3000).
+
+**v2 (branch `bot/boat-opening-v2`)** — two flaws Josh saw in the GUI, fixed inside the same flag (flag-off
+byte-identical): the opening picker (1) ignored how much free land sat behind a landing (it boated to the nearest
+scrap over a big wilderness mass slightly farther) and (2) landed on the far side of a landmass that was just
+across a tiny gap (the boatsNearest 10-tile floor skipped the near shore). Now the head of `earlyBoat`'s candidate
+list (opening mode only) is deduped to one candidate per landmass — a bounded flood labels each candidate's mass
+(1500 tiles, the old onOurLandmass fill, which now also reports "ours") and only the min-sail shore of each mass
+survives — then scored `basin / max(sail, 20)`: basin = unowned land reachable from the landing
+(`Situation.basin`, the spawn picker's flood, radius `boatBasinRadius` (int 100), cap 8000, cached per candidate
+tile for the whole opening), sail = the water-path length with `boatsWaterPath` on, else the straight-line
+distance. The second-continent preference became a ×1.5 score multiplier (`OPENING_NEW_MASS`), not a veto, and in
+opening mode the empty-shore floor drops to 2 tiles so a tiny-gap crossing to a big basin can be the top pick
+(the across-water launch check still refuses anything land-reachable). Every existing gate stays (reserve,
+boatShare cap, across-water, hold/finish, boatDedupe); the BOAT OPENING log line now ends `basin=… sail=…`.
+
+Josh's World-spawn addendum (same flag): (a) the near-shore dedupe keys on the landing tile's landmass — one
+candidate per (mass, shore-or-tribe) at min sail; (b) **tribe masses are first-class opening targets**: a tribe
+candidate scores `OPENING_TRIBE_WORTH (0.5) × tiles + basin`, ×`OPENING_CONTESTED (1.5)` when a rival borders the
+tribe (its wilderness is getting eaten either way), with the existing 2× beach sizing and boatShare skip; (c) a
+landing whose free land a tribe ate before the wave finished is **pushed, not stranded** — the transport's wave
+targets the launch-time owner (terra nullius) and fizzles on a now-tribe shore, so each opening landing is watched
+600 ticks (`Military.openingPush`) and the tribe owning/bordering the beachhead is clicked like harvestBots would
+(botRatio + 500 in total, botClickCap of home now, one wave per tribe — but no botMaxShare/concurrency gate: the
+boat is already committed over there), logged `BOAT OPENING push → tribe …` and fired via the limiter.
 Tests: tests/playbook/boatOpening.test.ts (Bab-el-Mandeb fixture: two boats out by t200, one on the other
-landmass; plain sends one; extras stop at the cutoff; an inert opening is log-identical to plain).
+landmass; plain sends one; extras stop at the cutoff; an inert opening is log-identical to plain; v2 — a big
+wilderness mass beats a nearer small basin, the near shore of a tiny-strait island beats its far coast, a big
+tribe mass beats a small contested free basin, and a tribe that eats the landing gets clicked from the beachhead).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 Watch it in the GUI: `localStorage.playbookParams = '{"boatOpening":true}'` then load `?bot=1` (PlaybookBotGUI.md).
 ## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)

@@ -25,9 +25,10 @@ export interface PlaybookParams {
   boatAtTick: number;
   boatShare: number;
   islandMaxTiles: number;
-  boatOpening: boolean; // Josh's aggressive multi-boat opening: while tick < boatOpeningUntil the early-boat rule keeps up to boatOpeningCount transports alive at once (the plain rule sends one) — extras go through earlyBoat's own picker with an open shore on a landmass we own no tile of preferred (the second-continent beachhead) and every boat capped at boatShare of home; inert on a small landmass (the island spawn already boats); default off until the 30-game Medium A/B
+  boatOpening: boolean; // Josh's aggressive multi-boat opening: while tick < boatOpeningUntil the early-boat rule keeps up to boatOpeningCount transports alive at once (the plain rule sends one) — extras score shores by free land behind the landing per tile sailed (basin/sail, one candidate per landmass at its nearest shore, ×1.5 on a landmass we own no tile of) and every boat is capped at boatShare of home; inert on a small landmass (the island spawn already boats); default off until the 30-game Medium A/B
   boatOpeningCount: number; // boatOpening: transports kept alive at once while the opening runs (int)
   boatOpeningUntil: number; // boatOpening: the tick the opening ends at — the plain rules resume unchanged (int)
+  boatBasinRadius: number; // boatOpening: manhattan radius of the free-land flood behind a candidate landing — the basin in the opening's basin/sail shore score (int)
   fightAbove: number; // start fighting rivals when troops exceed this share of cap
   fightRatio: number; // attack size as multiple of the target's whole army
   fightNotBeforeTick: number; // no wars with nations/humans before this tick
@@ -142,6 +143,7 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   boatOpening: false, // default off until the 30-game Medium A/B
   boatOpeningCount: 2,
   boatOpeningUntil: 3000,
+  boatBasinRadius: 100,
   fightAbove: 0.7,
   fightRatio: 2.0, // Medium 30-game sweep hz3: 1.67× = +1 crown but −13% land, 3 fewer top-3, loses paired 13–17; the gate (attack whenever affordable, from 3:00) stays
   fightNotBeforeTick: 1800,
