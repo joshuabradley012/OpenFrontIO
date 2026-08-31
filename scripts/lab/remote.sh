@@ -202,21 +202,89 @@ run_pool() {
 
 BATCHES=${BATCHES:-"med0 med1 med2 med3 med4"}
 cfgs=$(node -e 'console.log(Object.keys(JSON.parse(process.argv[1])).join(" "))' "$CONFIGS")
-if [ "${SPRT:-0}" = 1 ]; then
-  # Sequential A/B: chunks of STAGE1 batches from the pool until the GSPRT decides (see summarize.py --sprt).
-  # The first config is the baseline; a chunk is one run_pool, so a decided test after 3 batches costs 18 games.
-  set -- $BATCHES ${EXTRA:-med5 med6 med7 med8 med9}; max=${MAXBATCHES:-10}; step=${STAGE1:-3}; played=0
+# run_sprt: sequential A/B with OVERLAPPED stages. One sweep.sh per box lives for the whole test and pulls
+# from one queue that this side tops up: the next chunk's games are appended the moment the current chunk's
+# queue drains (every game claimed, the ramp-down tail still running), so the pool never idles. A chunk's
+# verdict is taken when its own games are all in; a decision stops the sweep (the already-running games of
+# the next chunk are killed — their transcripts are only written at the end, so nothing partial lands).
+# Before this each chunk drained the pool before the next began, and a stage's wall was its single longest
+# game (8–12 min vs a 5–6 min ideal at 120 slots — ~40 % of the wall was tail; boat1/fix1, 2026-08-30).
+run_sprt() {
+  set -- $BATCHES ${EXTRA:-med5 med6 med7 med8 med9}; local max=${MAXBATCHES:-10} step=${STAGE1:-3}
+  local -a chunks=() files=(); local n chunk slug played=0
   while [ $# -gt 0 ] && [ "$played" -lt "$max" ]; do
     n=$step; [ $((played + n)) -gt "$max" ] && n=$((max - played))
     chunk=$(echo "$@" | cut -d' ' -f1-$n); shift $n 2>/dev/null || set --
-    echo "sprt: chunk '$chunk' ($played batches played so far)"
-    run_pool "$chunk"
-    played=$((played + n))
-    if python3 scripts/lab/summarize.py --sprt ${DELTA:+--delta $DELTA} --verdict 0 "$DEST" $cfgs; then
-      echo "sprt: decided after $played batches"; break
-    fi
-    [ $# -eq 0 ] || [ "$played" -ge "$max" ] && echo "sprt: still CONTINUE after $played batches (MAXBATCHES=$max)"
+    chunks+=("$chunk"); played=$((played + n))
   done
+  echo "running overlapped sprt on ${#ips[@]} box(es): ${#chunks[@]} chunks (${chunks[*]// /,}) ..."
+  mkdir -p "$DEST"
+  python3 scripts/lab/durations.py "${HISTORY:-lab-out}" > "$DEST/durations.tsv" 2>/dev/null || : > "$DEST/durations.tsv"
+  for chunk in "${chunks[@]}"; do
+    slug=$(echo "$chunk" | tr ' ' '-')
+    env CONFIGS="$CONFIGS" BATCHES="$chunk" ${SPAWNS:+SPAWNS="$SPAWNS"} ${MIRROR:+MIRROR=$MIRROR} \
+      DURATIONS="$DEST/durations.tsv" LIST=1 SPRT=0 STAGED=0 bash scripts/lab/sweep.sh > "$DEST/queue.$slug.txt"
+    if awk -F'|' 'NF<4 {exit 1}' "$DEST/queue.$slug.txt"; then :; else echo "ERROR: malformed line in $DEST/queue.$slug.txt"; exit 1; fi
+    files+=("$DEST/queue.$slug.txt")
+  done
+  for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait
+  # enqueue <file>: append a chunk's games to the live queue under the workers' lock
+  enqueue() {
+    rsync -az -e "$RSYNC_SSH $(rso "$QUEUE_HOST")" "$1" root@"$(rh "$QUEUE_HOST")":/root/lab-out/queue.next.txt
+    $SSH@"$QUEUE_HOST" 'cd /root/lab-out && touch queue.open && flock queue.lock sh -c "cat queue.next.txt >> queue.txt" && rm -f queue.next.txt'
+  }
+  queue_len() { $SSH@"$QUEUE_HOST" 'wc -l < /root/lab-out/queue.txt 2>/dev/null || echo 0' 2>/dev/null | tr -d ' ' || echo 0; }
+  $SSH@"$QUEUE_HOST" 'mkdir -p /root/lab-out && touch /root/lab-out/queue.open && : > /root/lab-out/queue.txt'
+  enqueue "${files[0]}"; echo "  chunk 1/${#chunks[@]} (${chunks[0]}): $(wc -l < "${files[0]}" | tr -d ' ') games queued"
+  for ip in "${ips[@]}"; do
+    q=local; [ "$ip" = "$QUEUE_HOST" ] || q=$QUEUE_HOST
+    $TIMEOUT $SSH@"$ip" "cd /root/openfront && (setsid nohup env CONFIGS='$CONFIGS' MINUTES=$MINUTES QUEUE=$q QUEUE_READY=1 AGGREGATE=0 BATCHES='${chunks[0]}' ${SPAWNS:+SPAWNS='$SPAWNS'} ${JOBS:+JOBS=$JOBS} ${SHIFT:+SHIFT=$SHIFT} ${MIRROR:+MIRROR=$MIRROR} ${MIRRORSHIFT:+MIRRORSHIFT=$MIRRORSHIFT} ${MIRRORSEED:+MIRRORSEED=$MIRRORSEED} ${SEED:+SEED=$SEED} ${TRIBES:+TRIBES=$TRIBES} ${EXPAND:+EXPAND=$EXPAND} ${EVERY:+EVERY=$EVERY} ${BOT_DIR:+BOT_DIR='$BOT_DIR'} OUT=/root/lab-out bash scripts/lab/sweep.sh > /root/lab-out/sweep.log 2>&1 < /dev/null &); sleep 1; head -1 /root/lab-out/sweep.log" \
+      || echo "WARNING: launch on $ip did not confirm; check /root/lab-out/sweep.log there"
+  done
+  # progress: the boxes' sweep.log lines, merged; a chunk is complete when every game of its queue file has one
+  progress() { for ip in "${ips[@]}"; do $SSH@"$ip" 'cat /root/lab-out/sweep.log 2>/dev/null; true' 2>/dev/null; done > "$DEST/progress.log"; }
+  chunk_left() { comm -23 <(awk -F'|' '{print $1" "$2" "$3}' "$1" | sort) <(grep -E '^(done|FAILED|SKIPPED) ' "$DEST/progress.log" | awk '{print $2" "$3" "$4}' | sort) | wc -l | tr -d ' '; }
+  pull() { for ip in "${ips[@]}"; do rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log --exclude 'queue*' root@"$(rh "$ip")":/root/lab-out/ "$DEST"/ ; done; bash scripts/lab/aggregate.sh "$DEST" >/dev/null 2>&1 || true; }
+  stop_all() {
+    $SSH@"$QUEUE_HOST" 'cd /root/lab-out && rm -f queue.open && flock queue.lock sh -c ": > queue.txt"' || true
+    for ip in "${ips[@]}"; do $SSH@"$ip" 'pkill -f "[s]cripts/lab/sweep.sh"; pkill -f "[t]ests/lab/playbook.lab.ts"; true' & done; wait
+  }
+  running_any() { local ip; for ip in "${ips[@]}"; do [ "$($SSH@"$ip" 'pgrep -f "[s]cripts/lab/sweep.sh" >/dev/null && echo yes || echo no' 2>/dev/null)" = yes ] && return 0; done; return 1; }
+  local cur=0 next=1 fails=0 lastc="" decided=0 c left
+  sleep 5
+  while :; do
+    if ! progress; then fails=$((fails + 1)); [ "$fails" -ge 10 ] && { echo "ERROR: boxes not answering; boxes kept: ${names[*]} (${ips[*]})"; exit 1; }; sleep 30; continue; fi
+    fails=0
+    c="$(grep -c '^done' "$DEST/progress.log" || true) done, $(grep -c '^FAILED' "$DEST/progress.log" || true) failed"
+    [ "$c" != "$lastc" ] && { echo "  $(date +%H:%M) $c"; lastc=$c; }
+    # top up: the current queue has drained (every game claimed) and a chunk is waiting
+    if [ "$next" -lt "${#chunks[@]}" ] && [ "$(queue_len)" = 0 ]; then
+      enqueue "${files[$next]}"; echo "  $(date +%H:%M) chunk $((next + 1))/${#chunks[@]} (${chunks[$next]}) queued behind the tail"; next=$((next + 1))
+    fi
+    left=$(chunk_left "${files[$cur]}")
+    if [ "$left" = 0 ]; then
+      pull
+      echo "  $(date +%H:%M) chunk $((cur + 1))/${#chunks[@]} complete ($(( (cur + 1) * step > max ? max : (cur + 1) * step )) batches played)"
+      if python3 scripts/lab/summarize.py --sprt ${DELTA:+--delta $DELTA} --verdict 0 "$DEST" $cfgs; then
+        echo "sprt: decided after chunk $((cur + 1))"; decided=1; stop_all; break
+      fi
+      cur=$((cur + 1))
+      if [ "$cur" -ge "${#chunks[@]}" ]; then echo "sprt: still CONTINUE after $max batches (MAXBATCHES=$max)"; break; fi
+      # the last chunk is in the queue: let the workers drain and exit
+      [ "$next" -ge "${#chunks[@]}" ] && $SSH@"$QUEUE_HOST" 'rm -f /root/lab-out/queue.open' || true
+      continue
+    fi
+    # nothing running anywhere (crash?) — stop polling
+    if ! running_any; then echo "  $(date +%H:%M) no sweep.sh running on any box"; break; fi
+    sleep 10
+  done
+  [ "$decided" = 1 ] || { $SSH@"$QUEUE_HOST" 'rm -f /root/lab-out/queue.open' || true; }
+  pull
+  echo "  $(date +%H:%M) $(grep -c '^done' "$DEST/progress.log" || true) done — finished"
+}
+
+if [ "${SPRT:-0}" = 1 ]; then
+  run_sprt
 elif [ "${STAGED:-0}" = 1 ]; then
   # Staged A/B: run the first STAGE1 batches, and only run the rest when some config is still "unclear"
   # (|wins - losses| < VERDICT vs the first config). Clear winners and losers cost ~40 % fewer games.

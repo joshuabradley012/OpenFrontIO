@@ -915,6 +915,8 @@ export interface Game extends GameMap {
   sharedWaterComponents(player: Player): Set<number> | null;
   /** Incremented each time the water navigation graph is rebuilt (e.g. after nuke terrain change). */
   waterGraphVersion(): number;
+  /** Counter bumped on every ownership / fallout / water change anywhere on the map: every player's border set is unchanged while it holds. */
+  territoryVersion(): number;
 
   /** Queue a land tile for conversion to water (batched every few ticks). Tile must be unowned. */
   queueWaterConversion(tile: TileRef): void;

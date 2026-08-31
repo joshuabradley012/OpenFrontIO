@@ -76,11 +76,29 @@ async function runGame(label: string, params: PlaybookParams, minutes: number, d
   rows.push(`  replay: ${replayRecipe(label)} node --import tsx tests/lab/playbook.lab.ts`);
   const ticks = minutes * 600; // MIN=full → 170 (WinCheckExecution's hard limit): the game runs until someone wins
   let allMs = 0;
+  // STALL=<minutes> (default 20, 0 = off): stop a frozen game. Without overtime (the solo/private default) a 2-player
+  // alliance or stand-off runs to the 170-minute cap with nothing moving — 5 % of full-length games, 10 % of the
+  // CPU and every sweep's tail. A game counts as stalled from 30:00 when the same non-bot players are alive and
+  // none of their tile counts moved by more than 1 % over the window. FINAL is taken at the stop (winner=none as at 170).
+  const stallMin = process.env.STALL === undefined ? 20 : Number(process.env.STALL);
+  const tileHistory: Map<number, number>[] = []; // one snapshot per 30 s row: smallID -> tiles
   for (let t = 0; t < ticks; t++) {
     const s0 = performance.now(); game.executeNextTick(); allMs += performance.now() - s0;
     if (!me.isAlive()) { rows.push(`  DEAD at ${(t / 10).toFixed(0)}s`); break; }
     const w = game.getWinner();
     if (w !== null) { rows.push(`  WINNER ${typeof w === "string" ? w : w.name()} at ${(t / 10).toFixed(0)}s (${w === me ? "us" : "not us"})`); break; }
+    if ((t + 1) % 300 === 0 && stallMin > 0) {
+      const snap = new Map<number, number>();
+      for (const p of game.players()) if (p.type() !== PlayerType.Bot && p.isAlive()) snap.set(p.smallID(), p.numTilesOwned());
+      tileHistory.push(snap);
+      const back = tileHistory.length - 1 - stallMin * 2;
+      if (t + 1 >= 18000 && back >= 0) {
+        const then = tileHistory[back];
+        let frozen = then.size === snap.size;
+        if (frozen) for (const [id, n] of then) { const now = snap.get(id); if (now === undefined || Math.abs(now - n) > 0.01 * n) { frozen = false; break; } }
+        if (frozen) { rows.push(`  STALLED at ${((t + 1) / 10).toFixed(0)}s (${stallMin} min without a territory change among ${snap.size} players)`); break; }
+      }
+    }
     if ((t + 1) % 300 === 0) {
       const ranked = game.players().filter((p) => p.type() !== PlayerType.Bot).sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
       const rank = ranked.findIndex((p) => p === me) + 1; const share = (me.numTilesOwned() / Math.max(1, ranked[0]?.numTilesOwned() ?? 1)).toFixed(2);

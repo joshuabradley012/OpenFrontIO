@@ -29,6 +29,9 @@ import { MirvRisk } from "./MirvRisk";
 import { DEFAULT_PLAYBOOK, PlaybookParams } from "./Params";
 import { basin, Situation, SituationQueries } from "./Situation";
 
+// Transcript log cap. PLAYBOOK_LOG_CAP raises it for a lab replay (node only: the worker has no process); the cap
+// never changes a decision, only how much of the game the transcript's log line shows.
+const LOG_CAP = typeof process !== "undefined" && process.env?.PLAYBOOK_LOG_CAP ? Number(process.env.PLAYBOOK_LOG_CAP) : 2000;
 export { DEFAULT_PLAYBOOK } from "./Params";
 export type { PlaybookParams } from "./Params";
 export type { BotContext } from "./Context";
@@ -81,7 +84,7 @@ export class PlaybookBotExecution implements Execution {
       get random() { return bot.random; },
       send: (targetID, n, why, min, capFloor) => bot.send(targetID, n, why, min, capFloor),
       boat: (tile, n, why) => bot.boat(tile, n, why),
-      log: (line) => { if (bot.log.length < 2000) bot.log.push(line); },
+      log: (line) => { if (bot.log.length < LOG_CAP) bot.log.push(line); },
       fire: (flag) => { if (!bot.dry) bot.fired.set(flag, (bot.fired.get(flag) ?? 0) + 1); },
       get dry() { return bot.dry; },
     };
@@ -186,7 +189,7 @@ export class PlaybookBotExecution implements Execution {
     // hold's own war (threatHere) already goes at it, and pushing land there is what gets us MIRVed.
     let duel = false;
     if (this.sit.duel !== null && mode === "grow") { mode = "push"; duel = true; this.lim.fire("duelPush", "mode"); }
-    if (mode !== this.lastMode) { if (this.log.length < 2000) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${mode}: share ${(share * 100).toFixed(0)} %, ${threats.length} MIRV-capable rivals${threats.length ? " (" + threats.map((x) => x.name()).join(", ") + ")" : ""}${duel ? `, duel vs ${this.sit.duel!.name()}` : ""}`); this.lastMode = mode; }
+    if (mode !== this.lastMode) { if (this.log.length < LOG_CAP) this.log.push(`t${t} FINISH mode ${this.lastMode} → ${mode}: share ${(share * 100).toFixed(0)} %, ${threats.length} MIRV-capable rivals${threats.length ? " (" + threats.map((x) => x.name()).join(", ") + ")" : ""}${duel ? `, duel vs ${this.sit.duel!.name()}` : ""}`); this.lastMode = mode; }
     // A Hard nation renews only if we look as strong as it at expiry: 45 s before an alliance with a stronger
     // neighbour lapses, the army stays home so the check sees all of it.
     // C1 (`nationAware`): hold only for a nation whose own attack rules would let it hit us at expiry
@@ -204,12 +207,12 @@ export class PlaybookBotExecution implements Execution {
   private send(targetID: string | null, n: number, why: string, min = 500, capFloor = 0): number {
     // capFloor: never leave home under this share of CAP — Hard nations betray an ally under 20 % of cap on sight
     if (this.sit.mode === "hold" && why !== "counter" && why !== "war") return 0; // holding under the line: no more land until the MIRV-capable rivals are gone
-    if (this.sit.hold !== null && why !== "counter") { if (this.log.length < 2000 && this.sit.tick % 300 === 0) this.log.push(`t${this.sit.tick} holding troops home: alliance with ${this.sit.hold.name()} about to lapse`); return 0; }
+    if (this.sit.hold !== null && why !== "counter") { if (this.log.length < LOG_CAP && this.sit.tick % 300 === 0) this.log.push(`t${this.sit.tick} holding troops home: alliance with ${this.sit.hold.name()} about to lapse`); return 0; }
     const room = Math.floor(Math.min(this.sit.spendable, this.sit.troops - this.sit.cap * capFloor));
     const amount = Math.min(Math.floor(n), room);
     // a war goes whole or not at all: a 2× wave trimmed to 0.3× by the reserve is the worst attack in the game
-    if (why === "war" && amount < n * 0.9) { if (this.log.length < 2000) this.log.push(`t${this.sit.tick} war held: wants ${Math.round(n / 1000)}k, only ${Math.round(room / 1000)}k spare`); return 0; }
-    if (amount < min) { if (room < min && this.log.length < 2000 && this.sit.tick % 300 === 0) this.log.push(`t${this.sit.tick} held: ${why} wants ${Math.round(n / 1000)}k, ${Math.round(room / 1000)}k above reserve`); return 0; }
+    if (why === "war" && amount < n * 0.9) { if (this.log.length < LOG_CAP) this.log.push(`t${this.sit.tick} war held: wants ${Math.round(n / 1000)}k, only ${Math.round(room / 1000)}k spare`); return 0; }
+    if (amount < min) { if (room < min && this.log.length < LOG_CAP && this.sit.tick % 300 === 0) this.log.push(`t${this.sit.tick} held: ${why} wants ${Math.round(n / 1000)}k, ${Math.round(room / 1000)}k above reserve`); return 0; }
     this.mg.addExecution(new AttackExecution(amount, this.player, targetID));
     this.sit.spendable -= amount; this.sit.troops -= amount;
     return amount;
@@ -235,7 +238,7 @@ export class PlaybookBotExecution implements Execution {
     this.mg.addExecution(new TransportShipExecution(this.player, tile, amount));
     this.recentLandings.push({ tile, tick: this.sit.tick });
     this.sit.spendable -= amount; this.sit.troops -= amount; this.sit.boats++;
-    if (this.log.length < 2000) this.log.push(`t${this.sit.tick} boat ${Math.round(amount / 1000)}k: ${why}`);
+    if (this.log.length < LOG_CAP) this.log.push(`t${this.sit.tick} boat ${Math.round(amount / 1000)}k: ${why}`);
     return amount;
   }
   /** Things that happened since last tick. Reactions run before the regular rules. */
@@ -251,7 +254,7 @@ export class PlaybookBotExecution implements Execution {
     const inc = new Set(this.sit.incoming.map((a) => a.attacker().id()));
     for (const a of this.sit.incoming) {
       if (this.prevIncoming.has(a.attacker().id())) continue;
-      if (this.log.length < 2000) this.log.push(`t${this.sit.tick} INCOMING ${a.attacker().name()} ${Math.round(a.troops() / 1000)}k`);
+      if (this.log.length < LOG_CAP) this.log.push(`t${this.sit.tick} INCOMING ${a.attacker().name()} ${Math.round(a.troops() / 1000)}k`);
     }
     this.prevIncoming = inc;
   }

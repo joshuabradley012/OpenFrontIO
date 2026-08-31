@@ -121,13 +121,17 @@ fi
 # claim: pop the first line of the queue under a lock; empty output = queue drained. The flock form is
 # what remote workers run over ssh, so the queue box's own workers use the same lock; the mkdir spinlock
 # is the macOS fallback (no flock there — local sweeps only, never mixed with ssh claimants).
-CLAIM_CMD="flock $QUEUE_LOCK sh -c 'j=\$(head -n1 $QUEUE_FILE 2>/dev/null); [ -n \"\$j\" ] && sed -i 1d $QUEUE_FILE; printf %s \"\$j\"'"
+# An empty queue normally ends the worker; while $OUT/queue.open exists (remote.sh's overlapped SPRT stages: the
+# next stage's games are appended when this one's queue drains) an empty claim answers __WAIT__ and the worker
+# polls again in 5 s. remote.sh removes the marker when no more games will come.
+QUEUE_OPEN=$OUT/queue.open
+CLAIM_CMD="flock $QUEUE_LOCK sh -c 'j=\$(head -n1 $QUEUE_FILE 2>/dev/null); if [ -n \"\$j\" ]; then sed -i 1d $QUEUE_FILE; elif [ -e $QUEUE_OPEN ]; then j=__WAIT__; fi; printf %s \"\$j\"'"
 claim_local() {
   if command -v flock >/dev/null; then bash -c "$CLAIM_CMD"; return; fi
   local j
   until mkdir "$QUEUE_LOCK.d" 2>/dev/null; do sleep 0.05; done
   j=$(head -n1 "$QUEUE_FILE" 2>/dev/null)
-  if [ -n "$j" ]; then tail -n +2 "$QUEUE_FILE" > "$QUEUE_FILE.t" && mv "$QUEUE_FILE.t" "$QUEUE_FILE"; fi
+  if [ -n "$j" ]; then tail -n +2 "$QUEUE_FILE" > "$QUEUE_FILE.t" && mv "$QUEUE_FILE.t" "$QUEUE_FILE"; elif [ -e "$QUEUE_OPEN" ]; then j=__WAIT__; fi
   rmdir "$QUEUE_LOCK.d"
   printf %s "$j"
 }
@@ -174,7 +178,10 @@ run_job() {
 worker() {
   local job
   sleep "$(( RANDOM % 5 ))"   # spread the first claims (one sshd, JOBS x boxes workers)
-  while job=$(claim) && [ -n "$job" ]; do run_job "$job"; done
+  while job=$(claim) && [ -n "$job" ]; do
+    if [ "$job" = __WAIT__ ]; then sleep 5; continue; fi
+    run_job "$job"
+  done
 }
 for _ in $(seq 1 "$JOBS"); do worker & done
 wait

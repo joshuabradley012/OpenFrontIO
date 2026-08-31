@@ -54,6 +54,7 @@ shared Hetzner vCPU (a hyperthread); games where the bot dies finish sooner.
 | --- | --- |
 | `PARAMS` | JSON merged over `DEFAULT_PLAYBOOK`, e.g. `{"botsAfterWild":false}` |
 | `MIN` | game length in minutes (default 20) |
+| `STALL` | minutes without a territory change (any non-bot player's tiles ±1 %, same players alive) after which a game from 30:00 is stopped as `STALLED at …` — FINAL is taken there, `winner=none` as it would be at 170:00 (default 20; 0 = off). Without overtime (the solo/private default) 5 % of full-length games are a frozen 2-player alliance or stand-off that would otherwise run to the 170-minute cap: 10 % of the CPU and every sweep's tail. |
 | `DIFF` | `medium`; anything else is Hard |
 | `SPAWN` | `north-russia north-america east-asia africa south-america australia` |
 | `SPAWNRANK` | k-th best spawn in the region; each pick excludes a 120-tile circle around earlier ones |
@@ -199,7 +200,16 @@ for any rank N, `gN`/`ghN` for the global picker ladder), `SPAWNS` (subset),
 `SHARD` (`0/1`), `RUNNER` (`node`; `vitest` = the old path, ~2 s slower a
 game), `AGGREGATE` (1), `MIRROR` / `MIRRORSHIFT` / `MIRRORSEED` / `SEED` and
 `SPRT` / `STAGE1` / `EXTRA` / `MAXBATCHES` / `DELTA` (see "Sequential
-testing" — the SPRT loop re-enters `sweep.sh` once per chunk).
+testing" — `sweep.sh`'s own SPRT loop re-enters itself once per chunk; `remote.sh SPRT=1` instead keeps one `sweep.sh` per box alive and tops up its queue — see `queue.open` below).
+
+`queue.open`: while this marker exists in `OUT` an empty claim answers `__WAIT__`
+and the worker polls again in 5 s instead of exiting. `remote.sh SPRT=1` uses it
+to overlap stages: the next chunk's games are appended the moment the current
+queue drains (every game claimed, the ramp-down tail still running), the chunk's
+verdict is taken when its own games are all in, and a decision kills the sweep
+(the next chunk's running games write nothing partial). Before this each stage
+drained the pool first, and its wall was its single longest game — 8–12 min vs a
+5–6 min ideal at 120 slots, ~40 % tail (boat1/fix1, 2026-08-30).
 
 Gotcha already fixed, worth knowing: plain `xargs` strips double quotes from
 its input, which turned `{"botsAfterWild":false}` into `{botsAfterWild:false}`

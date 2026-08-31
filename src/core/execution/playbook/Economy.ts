@@ -598,13 +598,26 @@ export class Economy {
     for (let i = 0; i < shore.length; i += step) { if (me.canBuild(UnitType.Port, shore[i]) !== false) return shore[i]; }
     return null;
   }
+  private shoreCache: { version: number; tiles: TileRef[] } | null = null;
+  /** Our border's shore tiles in border-set order, memoised on the map's territory version. Exact: the list depends only on
+   *  terrain and on every border set, none of which moves while the version holds. The walk ran every build pass (10 ticks)
+   *  over the whole border and was ~10 % of a 170-minute headless game — nearly all of it in the stalled endgame, where
+   *  the version holds for minutes at a time. */
+  private shoreBorder(): TileRef[] {
+    const version = this.ctx.mg.territoryVersion();
+    if (this.shoreCache === null || this.shoreCache.version !== version) {
+      const tiles: TileRef[] = [];
+      this.ctx.me.borderTiles().forEach((t) => { if (this.ctx.mg.isShore(t)) tiles.push(t); }); // one pass, no copy of the whole border
+      this.shoreCache = { version, tiles };
+    }
+    return this.shoreCache.tiles;
+  }
   portTile(): TileRef | null {
     const me = this.ctx.me;
     const shared = this.ctx.mg.sharedWaterComponents(me);
     const foreignPorts = this.ctx.mg.players().filter((p) => p !== me && p.type() !== PlayerType.Bot).flatMap((p) => p.units(UnitType.Port));
     if (foreignPorts.length === 0) return null;
-    const shore: TileRef[] = [];
-    me.borderTiles().forEach((t) => { if (this.ctx.mg.isShore(t)) shore.push(t); }); // one pass, no copy of the whole border
+    const shore = this.shoreBorder();
     if (shore.length === 0) return null;
     const step = Math.max(1, Math.floor(shore.length / 30));
     let best: TileRef | null = null, bestScore = 0;
