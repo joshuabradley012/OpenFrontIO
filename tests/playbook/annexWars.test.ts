@@ -12,12 +12,12 @@ import { AllianceRequestExecution } from "../../src/core/execution/alliance/Alli
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { SituationQueries } from "../../src/core/execution/playbook/Situation";
 import { Player, PlayerType } from "../../src/core/game/Game";
-import { PlaybookHarness, playbookSetup, Rect } from "../util/PlaybookSetup";
+import { PlaybookHarness, playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 const ME: Rect = [0, 60, 79, 159];
 const TARGET: Rect = [0, 80, 29, 139]; // 30 × 60 on the west edge, inside ME's rectangle (conquered after it)
 const centre = ([x0, y0, x1, y1]: Rect): [number, number] => [Math.floor((x0 + x1) / 2), Math.floor((y0 + y1) / 2)];
-const HOME: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, boatAtTick: 1e9 };
+const HOME: Partial<PlaybookParams> = { ...PRE_COMBO, expandFree: 0, expandContested: 0, boatAtTick: 1e9 };
 const queries = (h: PlaybookHarness) => (h.bot as unknown as { q: SituationQueries }).q;
 
 async function edgeTarget(annexWars: boolean, troops: number, targetTroops: number, bot: Partial<PlaybookParams> = {}) {

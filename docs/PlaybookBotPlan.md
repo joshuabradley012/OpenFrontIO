@@ -1942,3 +1942,5 @@ from the MIN=6 base log; every other byte equal — the prune changes no decisio
 ## Combo confirmed on a third seed set (`lab-out/salv2`, 2026-08-31)
 
 base 76/119 (64 %) vs combo 87/119 (73 %), pairs 29/18. **Combined over the two independent fresh-seed sets (478 games): combo 163/239 (68 %) vs base 140/239 (59 %), discordant 63/40, McNemar p=0.030.** Consistent +11/+12 wins on both sets, deaths 1+2 vs 8+1, crowns up on both. Pending Josh's sign-off, combo becomes the defaults: fightAbove 0.81, fightMaxShare 0.628, reserveShare 0.408, capFullShare 0.672, bombReserve 363_497, duelPush on @ duelRatio 1.0, boatOpening on @ boatOwnMassFactor 0.146 / boatEatRate 0.0245.
+
+Signed off — landed as DEFAULT_PLAYBOOK (branch `bot/combo-defaults`, 2026-08-31). Fixtures sized against the old defaults pin them via `PRE_COMBO` in tests/util/PlaybookSetup.ts; the golden hash was regenerated (defaults changed, not behaviour-at-equal-params: an MIN=3 africa/Medium run with the old values pinned through PARAMS is transcript-identical to base). A/B any future change against these values.

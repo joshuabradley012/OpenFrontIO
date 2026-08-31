@@ -16,9 +16,9 @@ import { Military } from "../../src/core/execution/playbook/Military";
 import { DEFAULT_PLAYBOOK, PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { onTheClock } from "../../src/core/execution/playbook/Situation";
 import { Difficulty, Player, PlayerType, UnitType } from "../../src/core/game/Game";
-import { playbookSetup, PlaybookHarness, Rect } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO, PlaybookHarness, Rect } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, boatAtTick: 1e9, fightNotBeforeTick: 1e9, boatsNearest: false, boatsWaterPath: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, nationAware: false, allianceEvery: 300 };
+const QUIET: Partial<PlaybookParams> = { ...PRE_COMBO, expandFree: 0, expandContested: 0, boatAtTick: 1e9, fightNotBeforeTick: 1e9, boatsNearest: false, boatsWaterPath: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, nationAware: false, allianceEvery: 300 };
 const centre = ([x0, y0, x1, y1]: Rect): [number, number] => [Math.floor((x0 + x1) / 2), Math.floor((y0 + y1) / 2)];
 const military = (h: PlaybookHarness) => (h.bot as unknown as { military: Military }).military;
 const diplomacy = (h: PlaybookHarness) => (h.bot as unknown as { diplomacy: Diplomacy }).diplomacy;

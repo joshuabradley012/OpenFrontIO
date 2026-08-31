@@ -12,9 +12,9 @@
 import { describe, expect, test } from "vitest";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Player, PlayerType, UnitType } from "../../src/core/game/Game";
-import { playbookSetup, PlaybookHarness, Rect, RivalSpec } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO, PlaybookHarness, Rect, RivalSpec } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { capFullShare: 2, fightAbove: 10, expandFree: 0, expandContested: 0, boatAtTick: 1e9, fightNotBeforeTick: 1e9, boatsNearest: false, boatsWaterPath: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, nationMirvAware: false, takeFallout: false };
+const QUIET: Partial<PlaybookParams> = { ...PRE_COMBO, capFullShare: 2, fightAbove: 10, expandFree: 0, expandContested: 0, boatAtTick: 1e9, fightNotBeforeTick: 1e9, boatsNearest: false, boatsWaterPath: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, nationMirvAware: false, takeFallout: false };
 // big_plains: launchers keep a 60-tile spacing, so the 3-launcher wall needs more room than the 100 × 58 rect
 const ME: Rect = [0, 0, 199, 99];
 const R: RivalSpec = { name: "R", type: PlayerType.Nation, at: [100, 150], tiles: [0, 100, 199, 199], troops: 50_000 };

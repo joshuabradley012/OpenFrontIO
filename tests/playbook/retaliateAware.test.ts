@@ -8,12 +8,12 @@ import { TargetPlayerExecution } from "../../src/core/execution/TargetPlayerExec
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Situation } from "../../src/core/execution/playbook/Situation";
 import { PlayerType } from "../../src/core/game/Game";
-import { PlaybookHarness, playbookSetup, Rect } from "../util/PlaybookSetup";
+import { PlaybookHarness, playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 const ME: Rect = [30, 25, 70, 57];
 const RV: Rect = [30, 58, 70, 75];
 const H: Rect = [30, 76, 70, 95]; // borders R, not us
-const WAR: Partial<PlaybookParams> = { fightNotBeforeTick: 0, fightMinCities: 0, expandFree: 0, expandContested: 0 };
+const WAR: Partial<PlaybookParams> = { ...PRE_COMBO, fightNotBeforeTick: 0, fightMinCities: 0, expandFree: 0, expandContested: 0 };
 const sitOf = (h: PlaybookHarness) => (h.bot as unknown as { sit: Situation }).sit;
 
 /** Our army at 75 % of cap (past fightAbove, under the at-cap 1.2× rule): maxSend ≈ 113k. R at 70k (it bleeds a little

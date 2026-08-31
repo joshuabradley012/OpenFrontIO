@@ -8,9 +8,9 @@ import { describe, expect, test } from "vitest";
 import { MirvRisk } from "../../src/core/execution/playbook/MirvRisk";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Player, PlayerType, UnitType } from "../../src/core/game/Game";
-import { playbookSetup, PlaybookHarness, Rect, RivalSpec } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO, PlaybookHarness, Rect, RivalSpec } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { steamrollLevels: false, expandFree: 0, expandContested: 0, capFullShare: 2, fightNotBeforeTick: 1e9, boatAtTick: 1e9, boatsNearest: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, boatsWaterPath: false, takeFallout: false }; // the 2026-08-30 defaults are on; the fixtures set each flag explicitly
+const QUIET: Partial<PlaybookParams> = { ...PRE_COMBO, steamrollLevels: false, expandFree: 0, expandContested: 0, capFullShare: 2, fightNotBeforeTick: 1e9, boatAtTick: 1e9, boatsNearest: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, boatsWaterPath: false, takeFallout: false }; // the 2026-08-30 defaults are on; the fixtures set each flag explicitly
 
 function risk(h: PlaybookHarness): MirvRisk {
   return (h.bot as unknown as { risk: MirvRisk }).risk;

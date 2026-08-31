@@ -7,11 +7,11 @@ import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExe
 import { NATION_RULES } from "../../src/core/execution/playbook/Rivals";
 import { Situation } from "../../src/core/execution/playbook/Situation";
 import { PlayerType } from "../../src/core/game/Game";
-import { playbookSetup, Rect } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 const ME: Rect = [30, 25, 70, 57];
 const RV: Rect = [30, 58, 70, 90]; // as large as ours: its cap is well above 100k, so 30k is under its reserve ratio
-const WAR: Partial<PlaybookParams> = { fightNotBeforeTick: 0, fightMinCities: 0, expandFree: 0, expandContested: 0 };
+const WAR: Partial<PlaybookParams> = { ...PRE_COMBO, fightNotBeforeTick: 0, fightMinCities: 0, expandFree: 0, expandContested: 0 };
 const sitOf = (h: { bot: unknown }) => (h.bot as { sit: Situation }).sit;
 
 describe("drainedNations: the war", () => {

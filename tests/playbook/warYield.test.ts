@@ -14,9 +14,9 @@ import { describe, expect, test } from "vitest";
 import { Military } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Player, PlayerType, UnitType } from "../../src/core/game/Game";
-import { playbookSetup, PlaybookHarness, Rect, RivalSpec } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO, PlaybookHarness, Rect, RivalSpec } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, fightNotBeforeTick: 0, fightMinCities: 0, boatAtTick: 1e9, boatsNearest: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false }; // the 2026-08-30 defaults are on; the fixtures set each flag explicitly
+const QUIET: Partial<PlaybookParams> = { ...PRE_COMBO, expandFree: 0, expandContested: 0, fightNotBeforeTick: 0, fightMinCities: 0, boatAtTick: 1e9, boatsNearest: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false }; // the 2026-08-30 defaults are on; the fixtures set each flag explicitly
 const ME: Rect = [10, 5, 190, 57]; // 9593 tiles: a 590k troop cap
 const NECK: Rect = [99, 58, 101, 199]; // 426 tiles down the middle ...
 const NECK2: Rect = [102, 197, 199, 199]; // ... then 294 along the bottom edge: 720 in all

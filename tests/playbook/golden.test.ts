@@ -15,7 +15,7 @@ import { playbookSetup } from "../util/PlaybookSetup";
 // estimator layer — the material is otherwise identical to the old hash's (verified line by line), so the
 // bot's decisions are unchanged.
 const GOLDEN =
-  "124f707d7b747f91c182ba61e553cc891b391bf0d424a8e438370fa6ae9de22f";
+  "9f12829d66cdcdcae0ce7f7d04bc34c436f9a03f395e62d32f610e2223e6cdc3";
 const SNAPSHOT_TICKS = [100, 300, 600, 900, 1200, 1500, 1800, 2100, 2400];
 
 describe("golden", () => {

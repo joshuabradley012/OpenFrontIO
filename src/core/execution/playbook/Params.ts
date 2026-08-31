@@ -22,6 +22,11 @@
 //   the estimator layer: Estimate.ts, estOpts, the EST/ACT calibration log, estLossScaleNation/Human/Bot,
 //   estSpeedScale, scripts/lab/calibrate.py — its last consumers were utility and hystRetreats (simWars already gone).
 //   The WAR RESULT per-war accounting stays (warYield reads it; loss_analysis.py parses it).
+// Default-on flags: boatDedupe, takeFallout, steamrollLevels, boatsNearest, finishByBoat, multiWar, annexWars,
+// lapseToAttack, trustWars, nationAware — and, since the combo A/B (2026-08-31, 68% vs 59% over 478 fresh-seed
+// full games, p=0.030, PlaybookBotPlan.md 'Combo confirmed'), duelPush (@ duelRatio 1.0) and boatOpening
+// (@ boatOwnMassFactor 0.146, boatEatRate 0.0245); the same A/B moved fightAbove 0.7→0.81, fightMaxShare
+// 0.6→0.628, reserveShare 0.3→0.408, capFullShare 0.6→0.672, bombReserve 250_000→363_497.
 
 export interface PlaybookParams {
   expandContested: number; // share of home troops per click into empty land while a rival borders us
@@ -38,7 +43,7 @@ export interface PlaybookParams {
   boatAtTick: number;
   boatShare: number;
   islandMaxTiles: number;
-  boatOpening: boolean; // Josh's aggressive multi-boat opening: while tick < boatOpeningUntil the early-boat rule keeps up to boatOpeningCount transports alive at once (the plain rule sends one) — extras score shores by free land behind the landing per tile sailed (basin/sail, one candidate per landmass at its nearest shore, ×1.5 on a landmass we own no tile of) and every boat is capped at boatShare of home; inert on a small landmass (the island spawn already boats); default off until the 30-game Medium A/B
+  boatOpening: boolean; // Josh's aggressive multi-boat opening: while tick < boatOpeningUntil the early-boat rule keeps up to boatOpeningCount transports alive at once (the plain rule sends one) — extras score shores by free land behind the landing per tile sailed (basin/sail, one candidate per landmass at its nearest shore, ×1.5 on a landmass we own no tile of) and every boat is capped at boatShare of home; inert on a small landmass (the island spawn already boats); default ON since the combo A/B (2026-08-31, PlaybookBotPlan.md 'Combo confirmed')
   boatOpeningCount: number; // boatOpening: transports kept alive at once while the opening runs (int)
   boatOpeningUntil: number; // boatOpening: the tick the opening ends at — the plain rules resume unchanged (int)
   boatBasinRadius: number; // boatOpening: manhattan radius of the free-land flood behind a candidate landing — the basin in the opening's basin/sail shore score (int)
@@ -105,7 +110,7 @@ export interface PlaybookParams {
   plateauWindow: number; // plateauBreak: ticks of flat growth before the escalation, and between escalations (int, a multiple of the 300-tick sample)
   plateauGrowth: number; // plateauBreak: tile growth over the window below which we count as plateaued
   multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
-  duelPush: boolean; // finish a won duel (GUI 2026-08-30: two non-bot players left, us at 38 % of the land with 13.3M troops vs 7.55M, and the bot spent 10+ minutes requesting alliances with its only rival — the finish rule's push needs 45 % of the map and requestAlliances courts the sole rival forever): while the living non-bot, non-teammate players are ≤ duelPlayers (us included) and our troops are ≥ duelRatio × the strongest other's (the foe), Diplomacy never asks, accepts or renews an alliance with the foe (an existing one lapses through the planned-target mechanism, never a betrayal), the mode is `push` whatever our share (hold still wins: a MIRV-capable foe over the denial line fires whatever we do), the war rule takes the foe as an opportunity at duelRatio (no affordability / fightAbove gate, the war-count invariant lets it run beside counters, the posts / thin-empire gates do not apply — it is the only target left) with a duelRatio wave, and bombs / MIRV take the foe as a priority target like the threats. Behind (troops < duelRatio × the foe's) nothing changes — the flag finishes a won game. Default off until the full-game A/B
+  duelPush: boolean; // finish a won duel (GUI 2026-08-30: two non-bot players left, us at 38 % of the land with 13.3M troops vs 7.55M, and the bot spent 10+ minutes requesting alliances with its only rival — the finish rule's push needs 45 % of the map and requestAlliances courts the sole rival forever): while the living non-bot, non-teammate players are ≤ duelPlayers (us included) and our troops are ≥ duelRatio × the strongest other's (the foe), Diplomacy never asks, accepts or renews an alliance with the foe (an existing one lapses through the planned-target mechanism, never a betrayal), the mode is `push` whatever our share (hold still wins: a MIRV-capable foe over the denial line fires whatever we do), the war rule takes the foe as an opportunity at duelRatio (no affordability / fightAbove gate, the war-count invariant lets it run beside counters, the posts / thin-empire gates do not apply — it is the only target left) with a duelRatio wave, and bombs / MIRV take the foe as a priority target like the threats. Behind (troops < duelRatio × the foe's) nothing changes — the flag finishes a won game. Default ON since the combo A/B (2026-08-31, PlaybookBotPlan.md 'Combo confirmed')
   duelPlayers: number; // duelPush: a duel while the living non-bot, non-teammate players (us included) number at most this (int)
   duelRatio: number; // duelPush: our troops over the foe's from which the duel counts as won — and the ratio the duel war is sent at
   boatEscort: boolean; // Josh (GUI): "moving warships to corridors where it's trying to place a boat so it can get across". Engine facts (WarshipExecution/ShellExecution): a warship shells every enemy transport within warshipTargettingRange (130) with no reload against transports and a homing one-shot shell, so a transport whose path passes within 130 of a live enemy warship is sunk, escorted or not — an escort cannot screen it, it can only CLEAR the corridor (1000 HP, ~262 a shell per 20 ticks, the threat retreats at 75 % and stops firing once docked). So from escortFromTick a crossing longer than escortMinSail whose corridor (Military.corridor: the water path, else the straight line) has a live enemy warship within escortThreatRange is HELD, our idle warship nearest the threat is moved (MoveWarshipExecution) to the corridor point nearest it (or one is bought there — escortBuy, under escortMaxShips, behind the funds), and the crossing sails on a later pass once the corridor is clear; a worthy target (an opening pick scoring ≥ 2× boatOpeningMinScore, a contest / duel / plateau-forced boat) with no escort possible — or held escortDeferTicks — swarms escortSwarm staggered boats instead (Josh: "try multiple boats"; note the no-reload rule means a swarm only gets through what the threat has not yet reached). Short hops sail as before. Default off until the full-game A/B
@@ -133,23 +138,23 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   boatAtTick: 50,
   boatShare: 0.2,
   islandMaxTiles: 20000,
-  boatOpening: false, // default off until the 30-game Medium A/B
+  boatOpening: true, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   boatOpeningCount: 2,
   boatOpeningUntil: 3000,
   boatBasinRadius: 100,
-  boatEatRate: 0.02, // one Medium lab game, t100–3000: tribes mean 0.0244 / median 0.0168, nations mean 0.0228 / median 0.0125 tiles per tick per border tile
+  boatEatRate: 0.0245, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   boatTribeWorth: 1.0, // a mid-size tribe mass beats an equal-size contested wilderness (v2 hardcoded 0.5)
   boatOceanUntil: 1500, // first enemy warship at t1730 in the measurement game — cross the ocean before that
   boatOceanBonus: 1.3,
   boatOpeningSailCost: 8, // at sail 150 a candidate forfeits 560 worth-tiles: the 100-tile junk crossings die, a genuinely rich far basin still clears it
   boatOpeningMinScore: 4, // ~80 discounted tiles for a short hop (sail floor 20), ~600 for a 150-tile crossing
-  boatOwnMassFactor: 0.15, // steep: an own-mass shore needs a raw score of ~27 (vs the floor of 4) — effectively excluded unless nothing else exists
-  fightAbove: 0.7,
+  boatOwnMassFactor: 0.146, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
+  fightAbove: 0.81, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   fightRatio: 2.0, // Medium 30-game sweep hz3: 1.67× = +1 crown but −13% land, 3 fewer top-3, loses paired 13–17; the gate (attack whenever affordable, from 3:00) stays
   fightNotBeforeTick: 1800,
   fightMinCities: 2,
-  fightMaxShare: 0.6,
-  capFullShare: 0.6,
+  fightMaxShare: 0.628, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
+  capFullShare: 0.672, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   citiesBeforePort: 1,
   portMinPartnerDist: 300,
   allianceEvery: 300,
@@ -159,8 +164,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   railSpacing: 16,
   siloAtTick: 6000,
   bombEvery: 300,
-  bombReserve: 250_000,
-  reserveShare: 0.3,
+  bombReserve: 363_497, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
+  reserveShare: 0.408, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   tribeConcurrency: 1,
   spawnInland: 0, // 30-game lab: 8 tiles inland = 18/30 alive vs 27/30 on the shore (an inland circle can be surrounded; the coast cannot)
   finishRule: true,
@@ -187,9 +192,9 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   contestLeader: false, // default off until the 30-game Medium A/B
   contestRank: 3,
   contestLeadRatio: 1.5,
-  duelPush: false, // default off until the full-game A/B
+  duelPush: true, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   duelPlayers: 2,
-  duelRatio: 1.2, // the endgame war ratio (atCap / on the clock) the plain rule already accepts
+  duelRatio: 1.0, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   boatsWaterPath: false, // OFF again 2026-08-30: rm1 (96 mirrored full games, wins objective, docs/PlaybookBotPlan.md) — removal won 63/96 vs base 48 (p=0.032); the water-path ranking hurts full games
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B

@@ -10,10 +10,10 @@ import { BOAT_MAX_PATH } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Game, Player, PlayerType, UnitType } from "../../src/core/game/Game";
 import { TileRef } from "../../src/core/game/GameMap";
-import { conquerRect, PlaybookHarness, playbookSetup, Rect, RivalSpec } from "../util/PlaybookSetup";
+import { conquerRect, PlaybookHarness, playbookSetup, PRE_COMBO, Rect, RivalSpec } from "../util/PlaybookSetup";
 
 // pin the defaults the fixture depends on (other tests do the same with their PRE_CMA/boats pins)
-const QUIET: Partial<PlaybookParams> = {
+const QUIET: Partial<PlaybookParams> = { ...PRE_COMBO,
   expandFree: 0, expandContested: 0, fightNotBeforeTick: 1e9, multiWar: false, annexWars: false, lapseToAttack: false,
   takeFallout: false, finishByBoat: false, boatsWaterPath: false, boatsNearest: true, boatDedupe: true,
   boatDedupeRadius: 40, boatAtTick: 50, boatShare: 0.2, islandMaxTiles: 20000, boatOpeningCount: 2, boatOpeningUntil: 3000,

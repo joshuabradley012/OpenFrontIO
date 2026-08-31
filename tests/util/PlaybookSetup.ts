@@ -106,6 +106,22 @@ export interface PlaybookHarness {
   nextRuleTick(every: number): number;
 }
 
+/** The defaults BEFORE the 2026-08-31 combo A/B flipped them (PlaybookBotPlan.md 'Combo confirmed'):
+ *  fixtures sized against the old core-war constants — or asserting duelPush/boatOpening off-behaviour —
+ *  spread this first and override what they test explicitly, as with the PRE_CMA/boats pins. */
+export const PRE_COMBO: Partial<PlaybookParams> = {
+  fightAbove: 0.7,
+  fightMaxShare: 0.6,
+  reserveShare: 0.3,
+  capFullShare: 0.6,
+  bombReserve: 250_000,
+  duelPush: false,
+  duelRatio: 1.2,
+  boatOpening: false,
+  boatOwnMassFactor: 0.15,
+  boatEatRate: 0.02,
+};
+
 export const PLAYBOOK_GAME_ID = "playbook_test";
 
 export async function playbookSetup(

@@ -4,7 +4,7 @@
 // which otherwise only falls, jumps by the follow-up amount on the tick the merge initialises.
 import { describe, expect, test } from "vitest";
 import { PlayerType } from "../../src/core/game/Game";
-import { playbookSetup } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO } from "../util/PlaybookSetup";
 
 // big_plains: the wave has to outlive the 100-tick follow-up gap, which on the 100×100 map it does not — a
 // 30k wave against a 3k-tile tribe is spent in ~50 ticks. A 240k wave against 20k tiles lasts ~140.
@@ -14,7 +14,7 @@ async function tribeGame(tribeTroops: number) {
     spawn: [100, 50],
     tiles: [0, 0, 199, 99],
     troops: 800_000,
-    bot: { expandFree: 0, expandContested: 0 }, // expand runs before tribes and would shift the spendable figure
+    bot: { ...PRE_COMBO, expandFree: 0, expandContested: 0 }, // expand runs before tribes and would shift the spendable figure
     rivals: [
       {
         name: "T",

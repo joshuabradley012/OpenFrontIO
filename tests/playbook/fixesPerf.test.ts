@@ -8,7 +8,7 @@ import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExe
 import { Game, Player, PlayerType, UnitType } from "../../src/core/game/Game";
 import { TileRef } from "../../src/core/game/GameMap";
 import { PseudoRandom } from "../../src/core/PseudoRandom";
-import { conquerRect, PlaybookHarness, playbookSetup, Rect } from "../util/PlaybookSetup";
+import { conquerRect, PlaybookHarness, playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 /** The flood fill watchSplit used before: 4-connected pieces from every border tile, interior included. */
 function floodPieces(mg: Game, me: Player): { tiles: number; border: Set<TileRef> }[] {
@@ -139,7 +139,7 @@ describe("reachable(): a vanished wave is not always an unreachable target", () 
 });
 
 // ---------------------------------------------------------------- alliances on big_plains
-const HOME: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false };
+const HOME: Partial<PlaybookParams> = { ...PRE_COMBO, expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false };
 const centre = ([x0, y0, x1, y1]: Rect): [number, number] => [Math.floor((x0 + x1) / 2), Math.floor((y0 + y1) / 2)];
 
 async function allied(me: { tiles: Rect; troops: number }, rival: { tiles: Rect; troops: number; type?: PlayerType }) {

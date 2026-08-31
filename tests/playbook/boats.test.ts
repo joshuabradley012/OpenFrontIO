@@ -9,9 +9,9 @@ import { describe, expect, test } from "vitest";
 import { Military } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Player, PlayerType, UnitType } from "../../src/core/game/Game";
-import { conquerRect, distToPlayer, playbookSetup, Rect } from "../util/PlaybookSetup";
+import { conquerRect, distToPlayer, playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, fightNotBeforeTick: 1e9, multiWar: false, annexWars: false, lapseToAttack: false, boatsNearest: false, boatsWaterPath: false, takeFallout: false }; // the other 2026-08-30 flags are on by default; the fixtures assume them off
+const QUIET: Partial<PlaybookParams> = { ...PRE_COMBO, expandFree: 0, expandContested: 0, fightNotBeforeTick: 1e9, multiWar: false, annexWars: false, lapseToAttack: false, boatsNearest: false, boatsWaterPath: false, takeFallout: false }; // the other 2026-08-30 flags are on by default; the fixtures assume them off
 const ME: Rect = [1120, 396, 1150, 445]; // Africa's Red Sea bank, coast at y 396–407
 const ME_WAR: Rect = [1120, 400, 1160, 445]; // the same bank, out to the war target's border
 const T_AFRICA: Rect = [1161, 425, 1170, 445]; // the war target's piece beside us

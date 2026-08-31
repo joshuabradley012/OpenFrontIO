@@ -6,13 +6,13 @@
 import { describe, expect, test } from "vitest";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { PlayerType, Relation } from "../../src/core/game/Game";
-import { playbookSetup, Rect } from "../util/PlaybookSetup";
+import { playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 const ME: Rect = [30, 25, 70, 57];
 const LEFT: Rect = [29, 58, 49, 90];
 const RIGHT: Rect = [50, 58, 70, 90];
 const RV: Rect = [30, 58, 70, 90];
-const WAR: Partial<PlaybookParams> = { fightNotBeforeTick: 0, fightMinCities: 0, expandFree: 0, expandContested: 0 };
+const WAR: Partial<PlaybookParams> = { ...PRE_COMBO, fightNotBeforeTick: 0, fightMinCities: 0, expandFree: 0, expandContested: 0 };
 
 describe("relationAware: alliance requests", () => {
   async function request(relationAware: boolean, relation: number) {

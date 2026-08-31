@@ -15,11 +15,11 @@ import { AllianceRequestExecution } from "../../src/core/execution/alliance/Alli
 import { Military } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Difficulty, PlayerType, UnitType } from "../../src/core/game/Game";
-import { PlaybookHarness, playbookSetup, Rect } from "../util/PlaybookSetup";
+import { PlaybookHarness, playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 // Pins: no expansion or boats of the bot's own (the plateau must come from the fixture, not a starved bot), wars
 // allowed from tick 0, and the pre-existing defaults the numbers were sized against (as other tests pin).
-const HOME: Partial<PlaybookParams> = {
+const HOME: Partial<PlaybookParams> = { ...PRE_COMBO,
   expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false, fightNotBeforeTick: 0, fightMinCities: 0,
   lapseToAttack: false, finishByBoat: false, multiWar: false, annexWars: false, plateauWindow: 600,
 };

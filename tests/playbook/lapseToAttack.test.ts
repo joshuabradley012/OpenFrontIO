@@ -14,7 +14,7 @@ import { AllianceRequestExecution } from "../../src/core/execution/alliance/Alli
 import { Military } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { PlayerType } from "../../src/core/game/Game";
-import { PlaybookHarness, playbookSetup, Rect } from "../util/PlaybookSetup";
+import { PlaybookHarness, playbookSetup, PRE_COMBO, Rect } from "../util/PlaybookSetup";
 
 const ME: Rect = [40, 40, 159, 159];
 const ALLY: Rect = [160, 95, 169, 104];
@@ -23,7 +23,7 @@ const SOUTH: Rect = [0, 160, 199, 169];
 const NORTH_BIG: Rect = [0, 0, 199, 39]; // 8000 tiles, cap 540k: the stronger-neighbour case
 const SOUTH_BIG: Rect = [0, 160, 199, 199];
 const centre = ([x0, y0, x1, y1]: Rect): [number, number] => [Math.floor((x0 + x1) / 2), Math.floor((y0 + y1) / 2)];
-const HOME: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false, fightNotBeforeTick: 0, fightMinCities: 0 };
+const HOME: Partial<PlaybookParams> = { ...PRE_COMBO, expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false, fightNotBeforeTick: 0, fightMinCities: 0 };
 const military = (h: PlaybookHarness) => (h.bot as unknown as { military: Military }).military;
 
 async function alliedWeakAlly(lapseToAttack: boolean, rivalTroops: number, bot: Partial<PlaybookParams> = {}, big = false) {
