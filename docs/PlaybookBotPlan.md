@@ -626,54 +626,11 @@ stops on `game.getWinner()`, FINAL carries `winner=us|other|none`.
 
 ## Border threat map (`threatMap`, review opportunity #5, 2026-08-29)
 
-`src/core/execution/playbook/ThreatMap.ts`, built inside the 50-tick border
-pass in `Rivals.sample()` (one extra bucket per (16 × 16 cell, rival) while the
-flag is on; nothing is allocated when it is off). Per segment: `theirs` =
-rival troops × (their tiles touching the segment / their border) × (1 −
-(d / 150)^4) with d the distance from the rival's bounding-box centre;
-`ours` = our troops × (segment tiles / our border) × (1 + 1 per covering
-post, capped at 2); influence / tension / vulnerability as in the review.
-Per rival: `maxThreat`, Σ `vulnerability`, `busyElsewhere` (share of its
-border facing a third party it is fighting), `postTileFor` (centre of its
-hottest segment). `undefended` = Σ max(0, theirs − ours) over unfriendly
-segments. A `THREAT` log line every 600 ticks lists the top 3 segments.
-
-Consumers (each fires `threatMap` when its decision differs from off):
-
-1. **Reserve** — `reserve × clamp(1 + threatReserveGain × undefended /
-   troops, 1, 2)` (gain 2) in `readSituation()` after the rival view. The
-   spatial successor of `bsrReserve` (which scaled by the max bsr and lost).
-   The brief's `clamp(0.5 + 0.5 × undefended / troops, 0.5, 2)` was tried
-   first: on a calm border it is a 15 % reserve, and the sea-expansion rule
-   (gated on `want ≤ spendable / 2`) shipped the army to collapsed players
-   on other continents every 100 ticks — africa 6-min smoke rank 29 / 8.8k
-   tiles vs rank 2 / 44k off. The reserve now never drops below the flat
-   share and doubles once the unanswered pressure reaches half our army.
-2. **fight() scorer** — `+ 3 × busyElsewhere(r) − 2 × vulnerability(r) /
-   troops`: prefer a rival committed on its other borders (the Civ IV
-   dogpile), avoid a war on a border where we are already contested.
-3. **Threat posts** — `Economy.defensePostTile()` starts from
-   `postTileFor(rival)` instead of the contact midpoint; the 8–14-tile step
-   inland is unchanged.
-4. **Pre-position** — `Military.counterAttack()` marks the unfriendly rival
-   with a segment where theirs > 1.5 × ours by at least max(2k, 3 % of our
-   troops), not attacking yet and not yet
-   faced by a post, as `prePosition`; Economy's threat-post rule takes it
-   before the troop-count threats. No troops move (logged `PRE-POSITION`).
-5. **expand()** — skipped: a TerraNullius attack has no direction (the
-   engine picks the tiles), so there is nothing for the map to steer.
-
-Tests: `tests/playbook/threatMap.test.ts` (hottest segment on the massed
-rival's border, busyElsewhere from a third party's wave, empty map with the
-flag off, reserve calm < massed < swamped, post tile on the hottest segment,
-pre-position without troops). Golden unchanged with the flag off.
-
-A/B: `CONFIGS='{"base":{},"threat":{"threatMap":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
-Cost: the `busyElsewhere` pass walks each unfriendly neighbour's border every
-50 ticks; see the smoke `botMs` in the package report.
-**Next lab session:** graduate the PROVISIONAL flags with the sequential
-test (below), then `cmaes.py --pop 10 --gens 12 --race --games-growth`;
-then Hard.
+**Removed 2026-08-31 (branch `bot/prune`; the code lives in git history, last at 38219433a).**
+A per-border-segment influence map (ThreatMap.ts) drove the reserve, the war scorer, threat-post placement
+and a pre-positioned post. ab1: 46W/51L/2, dScore −0.073 [−0.170, +0.018] — noise; the CMA-tuned constants
+(threatReserveGain/threatBusyWeight/threatVulnWeight/threatPreRatio) only helped inside the m4 bundle, which
+lost the full-game gate (full1). Deleted with the flag, its params, ThreatMap.ts and tests.
 
 ## Sequential evaluation loop (2026-08-29, branch bot/lab-sprt)
 
@@ -713,58 +670,22 @@ only a third of the games, expect them to need the mirrored 120 and read
 `n_live`; `realRetreats` fires everywhere and should decide by 36–60.
 ## #4 — Calibrating the estimator, `simWars` and `hystRetreats` (2026-08-29, branch bot/estimator)
 
-`Estimate.ts` is back (a replay of AttackExecution's per-tile loop, within
-15 % of the engine on a single attack), now with calibration inputs:
-`lossScale` (× attacker loss per tile), `speedScale` (× tiles per tick) and
-`extraDefenderTroops` (the target's allies' possible pile-in). The 7W-23L
-loss of the original `simWars` was the model's blind spots (merges, allies,
-mid-war posts, the target's other wars), not the replay — so the constants
-are fitted from the games the lab already plays.
+**Removed 2026-08-31 (branch `bot/prune`; the code lives in git history, last at 38219433a).**
+`hystRetreats` (estimator-judged retreat hysteresis; hystMargin/hystSlope/hystStrikes, retreatBelowRatio):
+ab1 −0.100 leaning harmful, ab2 on the calibrated scales dScore −0.06 — SPRT REJECT; never helped in the
+gate era either. `simWars` had already lost twice (C3 7W-23L; ab2 −0.43, deleted at dfacb785f). With both
+gone the estimator layer had no consumer left, so it went too: Estimate.ts, Military.estOpts, the always-on
+EST/ACT calibration log, estLossScaleNation/Human/Bot + estSpeedScale, scripts/lab/calibrate.py, and the
+estimate/calibration tests. The per-war WAR RESULT accounting stays (warYield reads it; loss_analysis.py
+parses it). Removing the EST/ACT lines changes no decision: the golden material and MIN=3/MIN=6 africa lab
+transcripts are byte-identical to base after stripping those lines (see "Pruning" below).
 
-**Calibration log (always on, no flag, log lines only).** Every war wave and
-every tribe's first click writes `EST <target> wave=n troops= tilesEst=
-lossEst= ticksEst= wins= class=nation|human|bot others=`; when the attack has
-left `outgoingAttacks()` (won, died, or retreated) the bot writes
-`ACT <target> wave=n tiles= ours= loss= ticks= sent= left= class= end=`.
-`tiles` is the target's tile loss over the wave (confounded by its other
-attackers, hence `others=`), `ours` our net tile change, `loss` = sent − the
-last troop count seen on the attack (`end=fast`: over before the first
-10-tick look, loss unknown and logged as 0; calibrate.py skips those). Tribe
-follow-up clicks add to `sent` of the open record. A game's decisions are unchanged (golden material identical
-minus the EST/ACT lines; the hash was regenerated for them).
-
-**How to calibrate**
-
-1. Sweep with the base config (any results dir with `log:` lines works —
-   the transcripts of every A/B from now on carry the pairs):
-   `CONFIGS='{"base":{}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
-2. `python3 scripts/lab/calibrate.py lab-out/<dir>` prints, per defender
-   class, the log-ratio least-squares `lossScale` / `speedScale`, their
-   medians and residual spread, and a JSON blob with the Params values
-   (`--selftest` checks the fit on a synthetic fixture).
-3. Paste `estLossScaleNation` / `estLossScaleHuman` / `estLossScaleBot` /
-   `estSpeedScale` into `DEFAULT_PLAYBOOK` (they default to 1.0 = the raw
-   replay) or into the candidate's CONFIGS entry.
-4. A/B the two consumers on the calibrated numbers:
-   `CONFIGS='{"base":{},"sim":{"simWars":true},"hyst":{"hystRetreats":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
-
-**`simWars` — removed (bot/drop-simwars, from a36b357b5).** Lost twice: uncalibrated 7W-23L (C3); on the calibrated
-scales in ab2 dScore −0.43 at 18 mirrored pairs (−0.52 with hystRetreats). The estimator, est*Scale, calibrate.py and the EST/ACT log stay.
-
-**`hystRetreats` (default off):** every 100 ticks a running war is judged
-'continue' (estimate over 600 ticks: survivors × 0.75 + tiles × 60) against
-'retreat now' (troops × 0.75); continue must win by
-`0.1 + 0.2 × clamp(maxBsr − 1, 0, 2)` over our other borders' largest
-border-security ratio, and lose two checks in a row before the wave is
-recalled. A wave under `retreatBelowRatio` × the target's troops whose
-estimate cannot win is lost outright and comes home at the first check.
-`retreatBelowRatio` (0.4, in the CMA-ES set) was read nowhere before this.
-Fires when the verdict differs from the literal 20 % / 70 % thresholds.
-Works with `realRetreats` (the same `retreat()`).
-
-Tests: `estimate.test.ts` (restored + scales), `hystRetreats.test.ts`,
-`calibration.test.ts` (`simWars.test.ts` went with the flag).
 ## Opportunity #2 — the nation AI as a perfect-information opponent (2026-08-29)
+
+> **Pruned 2026-08-31 (`bot/prune`, last at 38219433a):** `markTargets` (ab1 41W/58L, dScore −0.081, 4 deaths vs 0)
+> and `wildernessAware` (11W/7L/81T — never changes a decision) are deleted with their code and tests.
+> `retaliateAware`, `drainedNations` and `relationAware` survive as flags (their constants stay in the CMA
+> specs). The test references below are historical.
 
 Branch `bot/nation-exploit`. The opponent pool is a deterministic script whose
 source is in the repo (`AiAttackBehavior.ts`, `NationAllianceBehavior.ts`,
@@ -838,87 +759,16 @@ A/B, one flag at a time:
 
 ### #7 — Fast-forward build search (`buildSearch`) and a value function from records
 
-**What the flag does.** `Economy.build()` with `buildSearch` on keeps its hard
-overrides (a post where a non-bot attack lands / facing a threat, the first SAM
-under an enemy silo, `mirvFund`, the silo escrow) and then asks
-`src/core/execution/playbook/BuildSearch.ts` — a pure BOSS-style planner
-(Churchill & Buro, AIIDE 2011) — what to buy. State = tick, gold, observed
-income, troops, cap, city/port units and levels, factories, posts, silos, SAMs,
-ships on the map, partner, threat. Actions = city, city level, port, port level,
-factory (a rail step), post, silo, SAM, plus two macros (city×3 in the opening;
-the first port levelled to 3). Every action is *fast-forwarded* to the tick it
-is affordable (no idle actions); costs come from the real `Config.unitInfo`
-(with `extraUnits` for the later steps of a plan), build times from
-`constructionDuration`, effects from Spend.ts's models (port income with sea
-saturation, partner share and the own-levels curve; rail income per stop; cap
-filled by the engine's regen curve in closed form; silo / SAM / post as
-threat-gated gold-equivalents). Search: iterative-deepening DFS with
-branch-and-bound, children ordered by their idle value, 2000-node budget
-(measured 0.7 ms per search on an M-series laptop, `buildSearch.test.ts` prints
-it), horizon 6000 ticks in opening/consolidate, 4000 in war, what is left of the
-25:00 clock in the endgame (capped at 6000). Objective at the horizon: gold +
-troops × `CAP_GOLD_PER_TROOP` + defensive worth; gold counts 1:1, so a port pays
-only through what it buys inside the tree (compounding is in the search, not
-the leaf) and cap only as far as regen fills it. The first step of the best plan
-is executed through the existing tile pickers; when it is not affordable yet the
-bot saves ("save" = nothing bought). Re-plan every 100 ticks, on a gold jump
-(≥ 1.5× the planning gold + 100k) and after every purchase; a kind whose picker
-finds no tile is off the menu for 30 s (10 s for a level). `PLAN …` lines every
-300 ticks. The flag fires when the planner's purchase family differs from a
-coarse mirror of the chain's (`Economy.chainKind`), at most once per 100 ticks.
+**Removed 2026-08-31 (branch `bot/prune`; the code lives in git history, last at 38219433a).**
+A BOSS-style fast-forward search (BuildSearch.ts) replaced Economy.build's ordered chain behind the
+`buildSearch` flag. ab1: 49W/50L/0, dScore −0.002 [−0.095, +0.095] — pure noise for real planner CPU
+(+11 % median tiles but fewer crowns); the CMA-tuned buildCapGoldPerTroop/buildHorizon only helped inside
+the m4 bundle, which lost the full-game gate. Deleted with the flag, both params, BuildSearch.ts and tests.
 
-**Where it differs from the chain** (seen in tests and the smoke): the first port
-before city 2 when both are affordable (the chain finishes three city levels
-first); a port level before a 1M city level when troops cannot use the cap yet;
-saving for a 1M item instead of a cheaper one the chain would take. It does not
-buy posts/silos/SAMs on its own while cap or ports are available — at
-`CAP_GOLD_PER_TROOP = 20` those dominate — so the chain's threat posts and
-first SAM stay as overrides.
-
-**Tests.** `tests/playbook/buildSearch.test.ts`: planner on plain numbers (a
-drained empire saves for the port level; a full army on a full sea buys the city
-now; port before city 2; node budget and timing; horizon shrink; posts only under
-a threat) and a game on the world test map (a hand-placed first city, 400k gold:
-off buys City then Port, on buys Port first, `fired.buildSearch > 0`). Golden
-hash unchanged with the flag off.
-
-**Smoke** (africa, Medium, 6 min, one game each): off 44.4k tiles, 7 city
-levels, 2 ports, 279k gold, rank 2/50, botMs 404; on 34.0k tiles, 4 city levels,
-3 ports, 741k gold (saving for a 1M level), rank 3/53, botMs 473,
-`fired=buildSearch:6`. One game — the A/B decides:
-
-```
-CONFIGS='{"base":{},"x":{"buildSearch":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh
-```
-
-**Value function** (`scripts/lab/valuefit.py`, stdlib). The lab has no
-`RECORD=1` output (no `rec_*.json` writer in `tests/lab/playbook.lab.ts`), so
-it reads the transcript rows (`  600s … tiles= troops= cap= gold= cities= ports=
-dp= allies= rank=r/N`). One row per game at 5/8/10/12/15 min, features
-log tiles / log troops / troops÷cap / log gold / cities / ports / dp / allies /
-rank score / share / log cap, target = summarize.py's final score. Ridge
-(closed form, standardised features, λ = 1), in-sample R², 5-fold out-of-sample
-Spearman of predicted-vs-final next to the two raw baselines (rank@t vs final
-rank — the early-stop analysis's 0.58 at 12:00 — and score@t vs final score).
-`--out value.json` writes the models (`apply_model` shows how to use one);
-`--selftest` runs on a synthetic fixture. On the 395 twenty-minute Medium games
-in the scratchpad (`--diff Medium --min-length 1200`):
-
-| t | n | R² | ρ pred (cv) | ρ rank@t | ρ score@t |
-|---|---|---|---|---|---|
-| 5 | 395 | 0.40 | **0.56** | 0.51 | 0.52 |
-| 8 | 395 | 0.52 | **0.65** | 0.54 | 0.55 |
-| 10 | 395 | 0.50 | **0.58** | 0.55 | 0.56 |
-| 12 | 395 | 0.50 | 0.55 | **0.57** | 0.57 |
-| 15 | 395 | 0.60 | **0.68** | 0.65 | 0.65 |
-
-The predictor beats raw rank at 5/8/10/15 min and ties it at 12 (0.55 vs 0.57);
-gold, ports and posts carry weight the rank cannot see at 8–10 min. Early
-stopping stays off (item 6 above); the fit is a proxy metric and a leaf
-evaluator, not a graduation criterion. Mixed-length dirs must be filtered
-(`--min-length`): a 10-minute game's FINAL is its 10-minute row and inflates
-every early ρ.
 ## Fixes + perf package (2026-08-29, branch `bot/fixes-perf`)
+
+> **Pruned 2026-08-31 (`bot/prune`, last at 38219433a):** `steamrollCap` (ab1 2W/1L/95T) and `holdHumans` (never
+> fires in the lab) are deleted with their code and tests; `strictOneWar` (the only ab1 positive) stays.
 
 Review opportunity #8 ("cheap CPU wins") and the bug table.
 
@@ -959,52 +809,12 @@ Tests: `tests/playbook/{fixesPerf,steamrollCap,holdHumans,strictOneWar}.test.ts`
 
 ### #3 — One currency for troops (`utility`)
 
-**What the flag does.** With `utility` on, one `troops` rule (every 10 ticks,
-`Military.troopsRule`) replaces counter / expand / tribes / wars in the rule
-table. Counters go first (rank 0, `counterAttack` unchanged), then the
-follow-up clicks of running tribe waves (commitments), then every option the
-chain could send this pass becomes an `Option {kind, target, troops, rank,
-weight, why}` (`Utility.ts`): the expand click (`expandOption`), each tribe's
-first click (`tribeOptions`), and each war candidate the scorer accepted
-(`warPick().alts` — the old `fight()` split into `warPick`, the decision, and
-`actWar`, the send; every bonus lambda — trust, threat map, relation, shadow,
-drained, plannedTarget, sticky target — still lives in `warPick`'s scorer).
-The currency is **tiles per troop lost**: free land at 20 a tile (`mag/5`),
-tribes and wars from `estimateAttack` over the phase horizon (2:30 in the
-opening, 5:00 later, the rest of the clock in the endgame; cached 50 ticks),
-never under a tenth of the wave. Considerations (Mark's compensated product):
-border threat for every kind (`ThreatMap.undefended` / troops, else the worst
-bsr), click size for tribes, and for wars troops/cap as a logistic around
-`fightAbove` (a midpoint, no longer a gate), the estimate's margin, trust,
-an alliance about to lapse elsewhere, the scorer's own score, and a ×1.5
-commitment for the running target. Ranks (Dill): 0 counter, 1 opportunity
-(collapsed / gap owner / MIRV threat / drained), 2 normal. Execution: rank,
-then weight, every option takes what `send()` allows — the reserve, the
-whole-or-nothing war, one war per pass, the tribe concurrency cap, hold mode
-and the sticky target all stay. `UTIL` lines (top 3) every 300 ticks. Fires
-when the first thing sent differs from what the chain would have sent first
-(the chain: expand if it can, else the cheapest affordable tribe, else the war).
-
-**What the numbers say** (`utility.test.ts` fixtures, the estimator against
-the real attack maths): a 1.67× tribe click takes its tiles at ~21 troops each
-and a 2× war wave at ~40, against free land's 20 — so while any free land
-remains the expand click keeps the top weight, tribes come next and wars last,
-i.e. the chain's order. That is the `botsAfterWild` A/B's finding restated in
-one currency. Where the flag changes decisions: an opportunity war (rank 1)
-goes before the expand click that used to starve it; wars at cap or with a
-good margin outweigh free land on a contested border; the tie-break inside a
-rank follows the estimate, not the table. Boats are not options yet (the
-brief's "when cheap"): `earlyBoat` / `huntBotsByBoat` / `seaExpansion` keep
-their own rules.
-
-**Tests.** `tests/playbook/utility.test.ts`: the curves and compensation on
-plain numbers; the ranking; a fixture with free land, a tribe and a war
-candidate (all three scored, executed in weight order, no fire when the order
-matches the chain); a counter still first; a whole-or-nothing war on a
-drained target no longer starved by a 60 % expand click (fires). Golden hash
-unchanged with the flag off.
-
-**A/B:** `CONFIGS='{"base":{},"x":{"utility":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+**Removed 2026-08-31 (branch `bot/prune`; the code lives in git history, last at 38219433a).**
+One `troops` rule (Utility.ts scoring + Military.troopsRule) replaced counter/expand/tribes/wars behind the
+`utility` flag. ab1: 53W/44L/2, dScore −0.006 [−0.089, +0.084] — the best of the twelve review flags and
+still noise (SPRT CONTINUE after 10 batches, 1,287 games); it also carried the estimator's CPU on every
+pass. Deleted with the flag, utilCapMid/utilCapSteep/utilCommit/utilFreeLandCost/utilScoreFull, Utility.ts
+and tests.
 
 ### #6 — A war plan with a preparation phase (`campaigns`) — removed
 
@@ -1532,60 +1342,12 @@ wall-clock under parallel runs.
 
 ## War ROI cap (`warRoiCap`, 2026-08-30, branch `bot/war-roi`)
 
-Loss cluster 1's bleed ("Why we lose full games", proposal 4): losing rm1 games
-grind wars at 1,400–37,000 troops per tile — `p_base_med0_east-asia.txt` alone
-has `WAR RESULT Australia: +578 tiles, -21469674 troops, 37145 troops/tile` and
-three California wars at 1,190–1,688/tile, re-declared by the sticky target the
-pass each one resolves. One default-off flag on top of the always-on WAR RESULT
-accounting.
-
-**Mechanism.** `Military.noteRoi` folds every resolved non-bot wave's realized
-numbers (WAR RESULT's tiles and troops-not-home) into a per-target ROI: an EMA
-over the last `warRoiWindow` (2) resolved waves (a 0-tile wave enters at
-`max(YIELD_COST_CAP, 4 × warRoiMax)` rather than Infinity), recorded always,
-read only by the flag. `Military.roi(t)` folds the running wave's
-realized-so-far cost (the same `sampleYield` accounting `warYield` reads) in as
-one more sample; the sample is `enough` at `warRoiMinTiles` (50) tiles, or on
-troops alone at `warRoiMinTiles × warRoiMax` lost (a wave that lost 25k for no
-tile has proven the price). Past `warRoiMax` (500 troops/tile) on enough
-sample: (a) `manageRetreats` brings the running wave home through the existing
-retreat path (`RetreatExecution`; hystRetreats untouched for other wars) with
-`WAR ROI <name> X/tile — abandoned (Nk coming home), blacklisted 3000 ticks`
-and fires; counters are exempt (they cancel incoming waves regardless of ROI);
-(b) the target is blacklisted `warRoiCooldown` (3000) ticks — also (fired, one
-per resolve) the moment a wave resolves over the line, since the sticky target
-otherwise re-declares the same dear war within a pass; (c) the scorer treats the blacklist as a veto
-below opportunity rank (collapsed / gap owner / hold-mode threat / drained /
-annexable branches return before it) — a candidate the plain scorer accepts is
-refused with `WAR ROI <name> X/tile — vetoed` and fires — and the sticky
-filter releases a vetoed current target rather than holding every other
-candidate hostage for the cooldown. Off = byte-identical decisions (recording
-only); golden unchanged.
-
-**Tests** (`tests/playbook/warRoiCap.test.ts`): a 3-wide neck at its troop cap
-with every tile under one of two posts realizes ~650–1000 troops/tile — on,
-the wave is abandoned at ~t110 through the retreat path, the veto holds for the
-cooldown (no re-declaration, `vetoed` logged) and the flag fires; off, no WAR
-ROI line and the plain bot grinds the same war; a vetoed sticky target releases
-the filter and the war goes to the other neighbour (off re-selects the vetoed
-one); a collapsed target bypasses the veto; a counter at a vetoed attacker
-still goes and is never ROI-recalled.
-
-**Smoke** (`MIN=6 SPAWN=africa DIFF=medium`, one seed — not evidence): rank 1,
-share 1.00, 56,955 tiles, 44 players, botMs ~350, `fired=warRoiCap:2`. Two
-abandons, both textbook:
-`WAR ROI Niger 668/tile — abandoned` at t1840 after a 1,154/tile wave (the two
-prior Niger waves went 71 and 294); Niger COLLAPSED at t1800 and the bypass
-re-attacked at t1860, killing it in 3 s at 32/tile. `WAR ROI Chad 1947/tile`
-at t3230 (139 tiles for 271k troops); Chad had COLLAPSED and the bypass
-finished it at 59–188/tile. The cap cuts the dear grind and still lets the
-collapse be taken.
-
-**A/B** (full games — the objective is `winner=us`, and the bleed is a
-late-game shape): `CONFIGS='{"base":{},"roi":{"warRoiCap":true},"roi1k":{"warRoiCap":true,"warRoiMax":1000}}' MINUTES=full WORKERS=3 scripts/lab/remote.sh`
-— removal form once on: `CONFIGS='{"base":{},"noroi":{"warRoiCap":false}}'`.
-The four constants (`warRoiMax`, `warRoiMinTiles`, `warRoiWindow`,
-`warRoiCooldown`) are PlaybookParams for the CMA to tune with the flag on.
+**Removed 2026-08-31 (branch `bot/prune`; the code lives in git history, last at 38219433a).**
+A per-target realized troops-lost-per-tile EMA that retreated and blacklisted dear wars. fix1 (120 mirrored
+full games): 70 wins vs base 78, McNemar p=0.33, SPRT CONTINUE −0.16 — leaning harmful (warRoiMax 500
+likely too aggressive, but the mechanism never earned its complexity). Deleted with
+warRoiMax/warRoiMinTiles/warRoiWindow/warRoiCooldown, the ROI bookkeeping in Military and its tests.
+warYield (the same signal as a scorer bonus + running-cost retreat) stays a flag.
 
 ## CMA-ES race over the neutral flags' constants (2026-08-30, `lab-out/cma-neutral`, `lab-out/cma-confirm`)
 
@@ -1792,34 +1554,12 @@ Ranked proposals (each a default-off flag + full-game A/B): 1) `samOnRisk` — o
 
 ## Web defence (`webDefense`, 2026-08-30, branch `bot/web-defense`)
 
-Loss cluster 4 (the alliance-web rush; the shape is `lab-out/rm1/p_base_med8b_north-russia.txt`): Sudan+Bhutan+Namibia
-mutually allied on our border, every war vetoed by the trustWars pile-in rule (`no war on Sudan: its ally Bhutan could
-send 605k`), then the ex-ally Namibia lapses and betrays with 711k vs our 208k — dead at 9:15.
+**Removed 2026-08-31 (branch `bot/prune`; the code lives in git history, last at 38219433a).**
+Detection of a mutual-ally border web before 10:00 (ask the likeliest member, post against every member,
+reserve reads the web's combined sendable). fix1: 78 wins vs base 78 with **1 live pair in 120 games** —
+the situation it defends against effectively never occurs since the boatsWaterPath revert; SPRT REJECT.
+Deleted with webRatio/webUntil, Situation.web and its tests.
 
-`webDefense` (default off): before `webUntil` (6000 = 10:00), a **border web** is ≥ 2 of our non-ally neighbours who
-are allied WITH EACH OTHER (connected components of the alliance graph over `sit.rivals`) whose combined nation-rule
-sendable troops (`RivalView.nationWouldSend`, what trustWars already computes) exceed `webRatio` (2.0) × our troops.
-Detection lives in `SituationQueries.web` (10-tick cadence, `sit.web`), logged `WEB <names> could send …k at our …k`
-(rate-limited 600 ticks). Response, in priority order through the existing rules' budgets:
-
-1. **Diplomacy.requestAlliances** asks the web member most likely to accept FIRST every pass (relationAware's
-   `wouldAcceptAlliance` when that flag is on, else the strongest sender) instead of the generic strongest-first
-   order — and that member is not kept as prey: an alliance into the web is the defence, and the plain path kept
-   the weak member as food while its allies could pile in (fires when the prey skip is overridden).
-2. **Economy's threat-post rule** treats every web member as a threat: posts on those borders before the other
-   spending, on the existing budget (gold, the 6-post cap, the `postFailed` cooldown, one post facing each rival);
-   fires when the chosen threat is a web member the plain rule would not have picked.
-3. **The reserve** reads the web's combined sendable where the threatMap/reserve logic reads a max: the same
-   `clamp(1 + threatReserveGain × pressure / troops, 1, 2)` shape as the threatMap mult, and the larger of the two
-   wins (bounded ×2 as today); fires when the web input raised the mult.
-
-Params (CMA-tunable): `webRatio` (2.0), `webUntil` (int, 6000). Tests: `tests/playbook/webDefense.test.ts` — a
-two-ally web fixture shows the post + alliance-request priority + doubled reserve under the flag and none of it
-without; no trigger when the neighbours are not allied with each other, none after `webUntil`.
-
-**A/B** (full games — the cluster kills, it does not cost 20-minute land):
-`CONFIGS='{"base":{},"web":{"webDefense":true}}' SPRT=1 MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`,
-judged on `summarize.py`'s `wscore` / paired WIN line.
 ## Contest the leader (`contestLeader`, 2026-08-30, branch `bot/contest-leader`)
 
 Loss cluster 2 above (13/41 rm1 losses ended rank 2–3 while the winner ran away — p_base_med2b_australia.txt spends
@@ -2166,3 +1906,31 @@ None decisive at default constants. duelPush is a rare-but-clean converter; boat
 cmaes.py, wins.json (41 dims incl. every fix/boat flag's constants), all 13 candidate flags fixed on, wscore objective, pop 12 × 6 gens with racing, ~2,500 full games on 5× cpx62 IPv6. In-campaign the tuned mean beat base five generations straight on the shared per-generation grids (16-15, 21-15, 20-15, 19-15, 19-15). **Fresh-seed gate (SEED=gate, 120 mirrored full games): tuned 74 wins vs base 78 of 120 (deaths 7 vs 1), dwscore −0.12, CONTINUE at MAXBATCHES, McNemar p=0.67 — the lead did not transfer.** Same failure shape as the 20-min campaign: the search fits its training worlds.
 
 Lessons, in order: (1) any CMA re-run must rotate seeds per generation (SEED=g<N>) so memorizing worlds is impossible; (2) at 30 games/config the within-generation ranking is mostly noise for 1–3-point effects — per-parameter SPRT A/Bs are the better tool at this noise level; (3) the campaign's five-generation drift directions survive as *hypotheses*: salvage A/B (`lab-out/salv1`) tests core-war constants (fightAbove 0.81, reserveShare 0.41, capFullShare 0.67), duelPush@1.0, and the combo with tuned boat constants, on fresh seeds. CMA retired until (1) and a bigger game budget exist; the racing/SPRT/mirror infra stays (it is what every A/B runs on).
+## Pruning (2026-08-31, branch `bot/prune`)
+
+Josh: "prune and simplify as much as we can." Deleted every flag that measured dead or harmful across the
+full-game A/Bs (ab1/ab2/fix1/boat1 and the CMA campaigns), with its params, code paths, tests and specs —
+about 2,900 lines. Last commit with all of it: 38219433a.
+
+| deleted | evidence |
+|---|---|
+| `utility` (+ Utility.ts, utilCap*/utilCommit/utilFreeLandCost/utilScoreFull) | ab1 53W/44L, noise; heavy |
+| `threatMap` (+ ThreatMap.ts, threatReserveGain/Busy/Vuln/PreRatio) | ab1 −0.073; fix-era noise |
+| `buildSearch` (+ BuildSearch.ts, buildCapGoldPerTroop/buildHorizon) | ab1 49W/50L; planner CPU |
+| `hystRetreats` (+ hystMargin/hystSlope/hystStrikes, retreatBelowRatio) | ab2 REJECT −0.06 |
+| `webDefense` (+ webRatio/webUntil, Situation.web) | fix1: 1 live pair in 120 — never fires |
+| `markTargets` | ab1 41W/58L, 4 deaths vs 0 |
+| `wildernessAware`, `steamrollCap`, `holdHumans` | never fire in the lab |
+| `warRoiCap` (+ warRoiMax/MinTiles/Window/Cooldown, ROI bookkeeping) | fix1 70W vs 78, leaning harmful |
+| estimator layer: Estimate.ts, estOpts, EST/ACT log, estLossScale*/estSpeedScale, calibrate.py | last consumers were utility/hystRetreats |
+
+Kept: trustWars, nationAware, retaliateAware, drainedNations, relationAware, strictOneWar, contestLeader,
+plateauBreak, samOnRisk, boatOpening (v5), duelPush, boatEscort, warYield, nationMirvAware, boatsAfterCoast,
+bombBudget, boatsWaterPath (default off), and the default-on set (boatsNearest, finishByBoat, annexWars,
+lapseToAttack, multiWar, takeFallout, steamrollLevels, boatDedupe). specs/wins.json and neutral-flags.json
+trimmed to the surviving params (`cmaes.py --dry-run` clean on both).
+
+**Decision parity.** The EST/ACT lines were always-on, so the golden hash was regenerated; the golden
+material and default-config MIN=3 + MIN=6 africa/Medium lab transcripts are byte-identical to base
+(38219433a) after stripping the EST/ACT log entries and the botMs/gameMs timing fields (99 entries stripped
+from the MIN=6 base log; every other byte equal — the prune changes no decision).

@@ -117,21 +117,14 @@ export class PlaybookBotExecution implements Execution {
    *  hold with its nation-rule border walk) are computed on the 10-tick cadence every consumer runs on — send(),
    *  boat() and the rules all fire on multiples of 10 — and reused in between. Decision-identical (golden test). */
   private slow: { tick: number; threats: Player[]; expiring: Player[]; hold: Player | null; mode: "grow" | "hold" | "push" } | null = null;
-  private lastHoldFire = -1e9;
   private readSituation(): void {
     const me = this.player;
     const troops = me.troops(), cap = this.q.cap();
     const nb = this.q.neighbours();
     const incoming = me.incomingAttacks().filter((a) => a.attacker().type() !== PlayerType.Bot);
     const outgoing = me.outgoingAttacks();
-    let reserve = troops * this.p.reserveShare;
+    const reserve = troops * this.p.reserveShare;
     const t = this.mg.ticks();
-    // `wildernessAware`: while every unfriendly neighbour is a nation with free land on its border, none of them can
-    // attack us this tick (their script spends the surplus on the wilderness first) — half the reserve is enough
-    if (this.p.wildernessAware && nb.rivals.length > 0 && nb.rivals.every((r) => r.type() === PlayerType.Nation && this.q.rivals.wildernessBound(r))) {
-      reserve *= 0.5;
-      if (t % 100 === 0) this.ctx.fire("wildernessAware");
-    }
     this.sit = {
       tick: t, troops, cap, capShare: cap > 0 ? troops / cap : 0, reserve, spendable: Math.max(0, troops - reserve),
       gold: me.gold(), ...nb,
@@ -141,31 +134,12 @@ export class PlaybookBotExecution implements Execution {
       collapsed: nb.rivals.filter((r) => this.military.collapsed(r)), // cheap (a map lookup per rival); its 100-tick snapshot keeps the original tick alignment
       expiring: [],
       hold: null,
-      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null, contest: null, duel: null,
+      share: me.numTilesOwned() / Math.max(1, this.mg.numLandTiles()), threats: [], mode: "grow", phase: "opening", rival: new Map(), contest: null, duel: null,
     };
     this.sit.duel = this.q.duel(t); // `duelPush`: before readSlow — the finish mode reads it
     if (this.slow === null || t % 10 === 0) this.slow = this.readSlow(t, troops);
     this.sit.threats = this.slow.threats; this.sit.expiring = this.slow.expiring; this.sit.hold = this.slow.hold; this.sit.mode = this.slow.mode;
     this.q.enrichRivals(this.sit); // B2: per-rival view
-    if (this.p.webDefense) this.sit.web = this.q.web(this.sit); // `webDefense`: the mutual-ally border web, read by the reserve, the threat-post rule and requestAlliances
-    let mult = 1;
-    if (this.p.threatMap) {
-      // review #5: the reserve follows the pressure nobody at home answers (Σ max(0, theirs − ours) over unfriendly
-      // segments), from the flat share up to twice it — bsrReserve scaled one reserve by the max bsr and lost its A/B.
-      // Never below the flat share: the brief's 0.5 floor made every calm minute a 15 % reserve and the sea-expansion
-      // rule shipped the army to collapsed players on other continents (africa 6-min smoke: 8.8k tiles vs 44k)
-      const tm = this.q.rivals.threat;
-      mult = Math.min(2, Math.max(1, 1 + (this.p.threatReserveGain * tm.undefended) / Math.max(1, troops)));
-      if (mult !== 1 && t % 100 === 0) this.ctx.fire("threatMap");
-      if (t % 600 === 0 && tm.segments.length > 0) this.ctx.log(`t${t} ${tm.summary()} reserve ×${mult.toFixed(2)}`);
-    }
-    if (this.sit.web !== null) {
-      // `webDefense`: the web's combined sendable is the pressure input where the reserve reads a max — the same
-      // clamp(1 + gain × pressure / troops, 1, 2) shape as the threatMap reserve, and the larger of the two wins
-      const wm = Math.min(2, Math.max(1, 1 + (this.p.threatReserveGain * this.sit.web.send) / Math.max(1, troops)));
-      if (wm > mult) { mult = wm; this.lim.fire("webDefense", "reserve"); }
-    }
-    if (mult !== 1) { this.sit.reserve = this.sit.reserve * mult; this.sit.spendable = Math.max(0, troops - this.sit.reserve); }
     this.q.enrichPhase(this.sit); // B2: phase (reads spendable)
   }
   private readSlow(t: number, troops: number): NonNullable<typeof this.slow> {
@@ -195,13 +169,7 @@ export class PlaybookBotExecution implements Execution {
     // C1 (`nationAware`): hold only for a nation whose own attack rules would let it hit us at expiry
     const nationHold = expiring.find((o) => o.type() === PlayerType.Nation && (this.p.nationAware ? this.q.rivals.couldAttackAtExpiry(o, troops).can : o.troops() > troops * 0.85)) ?? null;
     if (this.p.nationAware && t % 100 === 0) { const heur = expiring.find((o) => o.type() === PlayerType.Nation && o.troops() > troops * 0.85) ?? null; if (heur !== nationHold) this.ctx.fire("nationAware"); }
-    // `holdHumans`: a human ally stronger than us gets the same 45 s hold — a human can attack the moment it lapses too
-    let hold = nationHold;
-    if (this.p.holdHumans && hold === null) {
-      hold = expiring.find((o) => o.type() === PlayerType.Human && o.troops() > troops * 0.85) ?? null;
-      if (hold !== null && t - this.lastHoldFire >= 100) { this.lastHoldFire = t; this.ctx.fire("holdHumans"); }
-    }
-    return { tick: t, threats, expiring, hold, mode };
+    return { tick: t, threats, expiring, hold: nationHold, mode };
   }
   /** The one place troops leave home. Never below the reserve; returns what was actually sent (0 = nothing). */
   private send(targetID: string | null, n: number, why: string, min = 500, capFloor = 0): number {
@@ -258,21 +226,13 @@ export class PlaybookBotExecution implements Execution {
     }
     this.prevIncoming = inc;
   }
-  // #3 (`utility`): one `troops` rule (Military.troopsRule) replaces counter / expand / tribes / wars
   private rules: { name: string; every: number; run: () => void }[] = [
     { name: "split", every: 200, run: () => this.military.watchSplit() },
-    ...(this.p.utility
-      ? [
-          { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
-          { name: "troops", every: 10, run: () => this.military.troopsRule() },
-        ]
-      : [
-          { name: "counter", every: 10, run: () => this.military.counterAttack() },
-          { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
-          { name: "expand", every: this.p.expandEvery, run: () => this.military.expand() },
-          { name: "tribes", every: 10, run: () => this.military.harvestBots() },
-          { name: "wars", every: 10, run: () => this.military.fight() },
-        ]),
+    { name: "counter", every: 10, run: () => this.military.counterAttack() },
+    { name: "retreats", every: 10, run: () => this.military.manageRetreats() },
+    { name: "expand", every: this.p.expandEvery, run: () => this.military.expand() },
+    { name: "tribes", every: 10, run: () => this.military.harvestBots() },
+    { name: "wars", every: 10, run: () => this.military.fight() },
     { name: "alliances", every: this.p.allianceEvery, run: () => { this.diplomacy.requestAlliances(); this.diplomacy.manageEmbargoes(); } },
     // every alliance inside its 300-tick renewal window is seen six times, so a gift or renewal that could not go
     // through on one pass (donation cooldown, no room for the gift) is retried before the expiry

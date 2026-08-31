@@ -33,7 +33,7 @@ function read(ctx: BotContext, q: SituationQueries): Situation {
   const sit: Situation = {
     tick: t, troops, cap, capShare: cap > 0 ? troops / cap : 0, reserve, spendable: Math.max(0, troops - reserve),
     gold: me.gold(), ...nb, incoming, incomingBots: 0, outgoing: me.outgoingAttacks(), tribeAttacks: 0, boats: 0,
-    collapsed: [], expiring: [], hold: null, share: 0, threats: [], mode: "grow", phase: "opening", rival: new Map(), web: null, contest: null, duel: null,
+    collapsed: [], expiring: [], hold: null, share: 0, threats: [], mode: "grow", phase: "opening", rival: new Map(), contest: null, duel: null,
   };
   ctx.sit = sit;
   q.enrich(sit);

@@ -27,7 +27,7 @@ import { PlaybookHarness, playbookSetup, Rect } from "../util/PlaybookSetup";
 const HOME: Partial<PlaybookParams> = {
   expandFree: 0, expandContested: 0, boatAtTick: 1e9, nationAware: false, fightNotBeforeTick: 0, fightMinCities: 0,
   lapseToAttack: false, finishByBoat: false, multiWar: false, annexWars: false, contestLeader: false, plateauBreak: false,
-  fightRatio: 2, fightAbove: 0.7, fightMaxShare: 0.6, reserveShare: 0.3, threatMap: false, webDefense: false, allianceEvery: 300,
+  fightRatio: 2, fightAbove: 0.7, fightMaxShare: 0.6, reserveShare: 0.3, allianceEvery: 300,
 };
 const ME: Rect = [0, 0, 199, 59]; // 12 000 tiles
 const FOE: Rect = [0, 60, 199, 199]; // 28 000 tiles, adjacent to our south

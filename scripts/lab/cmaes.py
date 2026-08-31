@@ -538,7 +538,7 @@ def main():
     ap.add_argument("--param", action="append", help="name=lo:hi[:init][:int] (repeatable; replaces the built-in spec)")
     ap.add_argument("--init", help="JSON (file or string) of starting values, e.g. the current DEFAULT_PLAYBOOK subset")
     ap.add_argument("--fixed", help="JSON (file or string) merged under every member's config and the 'mean' reference "
-                    "(flags on, calibrated scales, ...) so the tuned params are judged with those settings live; "
+                    "(flags on, ...) so the tuned params are judged with those settings live; "
                     "'base' (--with-base) stays {} as the drift reference. Keys may not overlap the spec")
     ap.add_argument("--runner", choices=["remote", "local"], default="remote")
     ap.add_argument("--minutes", type=lambda s: s if s == "full" else int(s), default=20, help="game length in minutes, or full (play until a winner; summarize.py then scores wscore)")

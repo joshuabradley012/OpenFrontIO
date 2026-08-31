@@ -6,21 +6,19 @@
 //   5. A lapsed ally stays the planned target for PLANNED_TARGET_TTL ticks with no war on it, not for life.
 //   6. manageEmbargoes leaves the engine's embargo on a player still attacking us.
 //   7. The renewal gift clears DonateTroopExecution's random minimum on every difficulty (giftDivisor).
-//   8. Estimate.posted ignores a defence post under construction, as attackLogic does.
+//   8. (removed with the estimator layer, bot/prune 2026-08-31)
 //   9. bombSearch refuses a bomb whose blast would touch a third party (the engine's −100 relation rule).
-//  10. The timed rules read PlaybookParams.clockTicks; 0 = open-ended (onTheClock, horizonForPhase).
+//  10. The timed rules read PlaybookParams.clockTicks; 0 = open-ended (onTheClock).
 import { describe, expect, test } from "vitest";
 import { AllianceRequestExecution } from "../../src/core/execution/alliance/AllianceRequestExecution";
-import { horizonForPhase } from "../../src/core/execution/playbook/BuildSearch";
 import { Diplomacy, giftDivisor } from "../../src/core/execution/playbook/Diplomacy";
-import { estimateAttack } from "../../src/core/execution/playbook/Estimate";
 import { Military } from "../../src/core/execution/playbook/Military";
 import { DEFAULT_PLAYBOOK, PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { onTheClock } from "../../src/core/execution/playbook/Situation";
 import { Difficulty, Player, PlayerType, UnitType } from "../../src/core/game/Game";
 import { playbookSetup, PlaybookHarness, Rect } from "../util/PlaybookSetup";
 
-const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, boatAtTick: 1e9, fightNotBeforeTick: 1e9, boatsNearest: false, boatsWaterPath: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, utility: false, nationAware: false, allianceEvery: 300 };
+const QUIET: Partial<PlaybookParams> = { expandFree: 0, expandContested: 0, boatAtTick: 1e9, fightNotBeforeTick: 1e9, boatsNearest: false, boatsWaterPath: false, multiWar: false, annexWars: false, lapseToAttack: false, finishByBoat: false, nationAware: false, allianceEvery: 300 };
 const centre = ([x0, y0, x1, y1]: Rect): [number, number] => [Math.floor((x0 + x1) / 2), Math.floor((y0 + y1) / 2)];
 const military = (h: PlaybookHarness) => (h.bot as unknown as { military: Military }).military;
 const diplomacy = (h: PlaybookHarness) => (h.bot as unknown as { diplomacy: Diplomacy }).diplomacy;
@@ -134,21 +132,6 @@ describe("review fixes 2026-08-30", () => {
     expect(giftDivisor(Difficulty.Impossible)).toBe(5); // the flat / 7 fell under Impossible's [max/7, max/5) roll
   });
 
-  test("8. the estimator ignores a defence post under construction, as attackLogic does", async () => {
-    const ME: Rect = [0, 0, 199, 99], R: Rect = [0, 100, 199, 199];
-    const h = await playbookSetup({ map: "big_plains", spawn: centre(ME), tiles: ME, troops: 200_000, bot: QUIET, rivals: [{ name: "R", type: PlayerType.Human, at: centre(R), tiles: R, troops: 100_000 }] });
-    const r = h.rival("R");
-    const est = () => estimateAttack(h.game, h.me, r, 150_000, { horizonTicks: 600 });
-    const none = est();
-    const post = r.buildUnit(UnitType.DefensePost, h.game.ref(100, 110), {});
-    post.setUnderConstruction(true);
-    const building = est();
-    post.setUnderConstruction(false);
-    const active = est();
-    expect(building).toEqual(none);
-    expect(active.tilesTaken).toBeLessThan(none.tilesTaken);
-  });
-
   test("9. no bomb whose blast would touch a third party (the engine docks it −100 relation)", async () => {
     // bombBudget's fixture: our silo in the north, the war target R in the middle with an atom pair at (100,155) /
     // (108,163); N, unallied and not at war with us, holds the east side 21 tiles from the pair — inside the atom's
@@ -180,9 +163,5 @@ describe("review fixes 2026-08-30", () => {
     expect(onTheClock(p, 14_999)).toBe(false);
     expect(onTheClock(p, 15_000)).toBe(true);
     expect(onTheClock({ ...p, clockTicks: 0 }, 100_000)).toBe(false);
-    expect(horizonForPhase("endgame", 14_500)).toBe(1000);
-    expect(horizonForPhase("endgame", 14_500, 6000, 18000)).toBe(1000);
-    expect(horizonForPhase("endgame", 100_000, 6000, 0)).toBe(4000); // no clock: planned like a war
-    expect(horizonForPhase("endgame", 4000, 6000, 0)).toBe(4000);
   });
 });
