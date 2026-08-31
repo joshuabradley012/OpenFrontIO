@@ -1948,3 +1948,41 @@ Signed off — landed as DEFAULT_PLAYBOOK (branch `bot/combo-defaults`, 2026-08-
 ## Combo loss analysis (2026-08-31, 239 fresh-seed games from salv1+salv2)
 
 Losses 71: endgame race at top-3 25 (in 17 we never fought the winner), MIRVed-down 24 (bot fired 0 MIRVs in 239 games vs the killers' 3–8; wins carry 87–92 SAMs vs losses' 13), plateau 19, died 3 (base: 9). Combo's delayed first war (median t1670→1985) feeds the runaway-race cluster — the trade that cut deaths. boatOpening shows no at-sea loss signature. duelRatio 1.0 authorised ~3 estimator-negative all-ins (own-goals). Flag→cluster: contestLeader/boatEscort → race (now #1), samOnRisk → MIRVed-down (defence only), plateauBreak → plateau; drainedNations/retaliateAware/relationAware/strictOneWar → none. New flags proposed: mirvCounterforce (strike the named armed/saving rival's silos first), duelWaveGate (all-in wave needs 1.2× though diplomacy flips at 1.0). Caveat: MIRVED log lines undercount vs FINAL mirvsTaken — use FINAL.
+
+## MIRV counterforce (`mirvCounterforce`, 2026-08-31, branch `bot/mirv-counterforce`)
+
+Combo loss analysis (above): 24 of 71 losses were MIRVed down after leading while the bot fired ZERO MIRVs in 239
+full games — and the always-on MirvRisk diagnostics named the saver minutes in advance (salv1
+`p_combo_med0_north-russia.txt`: `MIRV RISK steamroll: … 1 saving (Greenland)` at t6900, first MIRV eaten t8340,
+no counterforce ever taken). While a MirvRisk rule is TRUE against us (steamroll / denial) and MirvRisk names
+armed or saving rivals, `Military.counterforce` (its own rule, every 100 ticks, right after `mirv` in the table)
+acts on the SOURCE:
+
+- **(a) our MIRV first** at the most-armed rival (canFire outranks saving; a built MIRV, then the richer) when we
+  hold a silo and the 25M price — only when `maybeMIRV`'s own rules held this pass (it runs earlier the same tick
+  and shares its 600-tick cooldown, so a launch here is one the plain rules never made). With `nationMirvAware`
+  on, never at a rival that can counter (every canFire rival can, so the guard leaves the saving ones).
+- **(b) else a hydrogen bomb on the rival's SILO**: the plain value search's 8000-tile owner gate is relaxed (the
+  silo is the target, not the land); SAM umbrellas, the once-per-tile `bombed` book, the 105-tile friend
+  clearance and the engine's collateral rule (`blastCollateral`) are still respected.
+- **Budget**: the bomb reserve stays (`bombReserve`, 2M when `rich` as in maybeBomb), the MIRV price is checked
+  net of this pass's buys, `cfCooldown` (600) ticks between counterforce launches, never a second launch on a
+  tick a bomb already went. `samOnRisk`'s defensive wall is a separate flag, untouched.
+
+Logs `COUNTERFORCE <name>: <mirv|H at silo x,y> (<rule> risk, n can fire, m saving)`; fires `mirvCounterforce`
+via the FireLimiter (the hydrogen fire is skipped when the plain bomb search would have picked the same tile).
+Params: `mirvCounterforce` (bool, default off), `cfCooldown` (int). Off = unchanged (golden unchanged, the MIN=3
+africa/Medium transcript identical up to botMs/gameMs). Tests `tests/playbook/mirvCounterforce.test.ts`
+(samOnRisk's steamroll fixture spread over big_plains, the rival's silo beyond the 105-tile clearance; the bot's
+silo gets a `MissileSiloExecution` — `buildUnit` alone never reloads it): gold for a hydrogen but not the MIRV →
+the saving rival's silo is hydrogen-bombed (off: nothing); MIRV affordable → the MIRV goes first; with
+`nationMirvAware` and a rival that can counter, the MIRV is held and the silo bombed; two silos → the second
+launch waits the full `cfCooldown`; no risk (or flag off) → quiet. Liveness: a MIN=20 north-russia Medium smoke
+fired both branches (saver named t6300, `COUNTERFORCE Uruguay: mirv` t7100, `H at silo` t11200, mirvsTaken=0,
+finished rank 1, fired=mirvCounterforce:2); the 6-min africa smoke never reaches silos — the risk cannot arise
+that early, the tests carry liveness there.
+
+A/B (full games — the objective is `winner=us`):
+`CONFIGS='{"base":{},"cf":{"mirvCounterforce":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`, and
+the pairing with the wall `{"samOnRisk":true}` vs `{"samOnRisk":true,"mirvCounterforce":true}` (defence + strike
+against the same MIRVed-down cluster).

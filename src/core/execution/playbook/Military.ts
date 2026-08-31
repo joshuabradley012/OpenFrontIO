@@ -534,6 +534,75 @@ export class Military {
     return best;
   }
 
+  // ---------------------------------------------------------------- mirvCounterforce: strike the named source
+  private lastCfTick = -1e9;
+  /** `mirvCounterforce` (combo loss analysis: 24 of 71 losses were MIRVed down after leading, while the bot fired
+   *  ZERO MIRVs in 239 full games — the MirvRisk diagnostics named the saver minutes in advance): while a MirvRisk
+   *  rule is TRUE against us (steamroll / denial) and MirvRisk names armed or saving rivals, act on the SOURCE
+   *  instead of only walling up (`samOnRisk`, a separate flag, untouched): (a) our MIRV at the most-armed rival
+   *  (canFire outranks saving; a built MIRV, then the richer) when we hold a silo and the price and maybeMIRV's own
+   *  rules held this pass — it runs earlier this tick and shares lastMirvTick, so a launch here is one the plain
+   *  rules never made; with `nationMirvAware` never at a rival that can counter (every canFire rival can, so that
+   *  guard leaves the saving ones); (b) else a hydrogen bomb on the rival's SILO — the plain rule's 8000-tile owner
+   *  gate is relaxed (the silo is the target, not the land), SAM umbrellas, the 105-tile friend clearance and the
+   *  engine's collateral rule still respected. Budget: the bomb reserve stays (2M when `rich`, as maybeBomb), the
+   *  MIRV price is checked net of this pass's buys, cfCooldown ticks between counterforce launches, and never a
+   *  second launch on a tick a bomb already went. Logged `COUNTERFORCE <name>: <mirv|H at silo x,y>`. */
+  counterforce(ticks: number, spent = 0n): void {
+    const p = this.ctx.p, me = this.ctx.me, mg = this.ctx.mg;
+    if (!p.mirvCounterforce) return;
+    if (ticks - this.lastCfTick < p.cfCooldown) return;
+    if (me.units(UnitType.MissileSilo).length === 0) return;
+    const v = this.risk.view();
+    if (!v.steamroll.over && !v.denial.over) return; // only while a rule is live against us
+    const rank = (ps: Player[]) => ps.filter((r) => r.isAlive() && !me.isFriendly(r)).sort((a, b) => b.units(UnitType.MIRV).length - a.units(UnitType.MIRV).length || Number(b.gold() - a.gold()));
+    const armed = [...rank(v.canFire), ...rank(v.saving)]; // canFire outranks saving: it can fire this tick, not soon
+    if (armed.length === 0) return;
+    const suffix = `${v.steamroll.over ? "steamroll" : "denial"} risk, ${v.canFire.length} can fire, ${v.saving.length} saving`;
+    // (a) our MIRV first at the most-armed rival the `nationMirvAware` guard allows
+    const mirvCost = mg.config().unitInfo(UnitType.MIRV).cost(mg, me);
+    if (ticks - this.lastMirvTick >= 600 && !mg.config().isUnitDisabled(UnitType.MIRV) && (me.units(UnitType.MIRV).length > 0 || me.gold() - spent >= mirvCost)) {
+      const target = armed.find((r) => !(p.nationMirvAware && this.risk.canCounter(r)));
+      if (target !== undefined) {
+        const center = calculateTerritoryCenter(mg, target);
+        const tile = center === null ? null : this.mirvTile(target, center);
+        if (tile !== null && me.canBuild(UnitType.MIRV, tile) !== false) {
+          mg.addExecution(new MirvExecution(me, tile));
+          this.lastMirvTick = ticks; this.lastCfTick = ticks; this.bombs++;
+          this.lim.fire("mirvCounterforce", "mirv"); // maybeMIRV ran this tick and held: the launch is the flag's
+          this.ctx.log(`t${ticks} COUNTERFORCE ${target.name()}: mirv (${suffix})`);
+          return;
+        }
+      }
+    }
+    // (b) a hydrogen bomb on the most-armed rival's silo
+    if (this.lastBombTick === ticks) return; // maybeBomb launched this very tick: no double spend
+    const hCost = mg.config().unitInfo(UnitType.HydrogenBomb).cost(mg, me);
+    const atomCost = mg.config().unitInfo(UnitType.AtomBomb).cost(mg, me);
+    const gold = me.gold();
+    const rich = p.endgameV2 && ticks >= 9000 && gold >= 8_000_000n && (gold < mirvCost || me.units(UnitType.MIRV).length > 0); // maybeBomb's own reserve rule
+    const reserve = BigInt(rich ? 2_000_000 : p.bombReserve);
+    if (gold - spent < hCost + reserve) return; // never below the bomb reserve
+    // liveness: what the plain bomb rule would pick right now (before our launch marks the tile bombed) — usually
+    // nothing at this silo: the saver is rarely in its enemies set, and its value search chases clusters, not silos
+    const plain = this.bombSearch(this.bombEnemies(gold, false).enemies, rich, (type) => gold - spent >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve);
+    for (const r of armed) {
+      const sams = r.units(UnitType.SAMLauncher);
+      for (const s of r.units(UnitType.MissileSilo)) {
+        const tile = s.tile();
+        if ((this.bombed.get(tile) ?? 0) >= 1) continue;
+        if (sams.some((sm) => mg.euclideanDistSquared(sm.tile(), tile) <= (mg.config().samRange(sm.level()) + 5) ** 2)) continue;
+        if (!this.clearOfFriends(tile, 105) || this.blastCollateral(tile, UnitType.HydrogenBomb, r)) continue;
+        this.launch({ tile, value: 0, type: UnitType.HydrogenBomb, enemy: r, cost: hCost }, ticks);
+        if (this.lastBombTick !== ticks) continue; // out of every ready silo's range: try the next candidate
+        this.lastCfTick = ticks;
+        if (plain === null || plain.tile !== tile) this.lim.fire("mirvCounterforce", "bomb");
+        this.ctx.log(`t${ticks} COUNTERFORCE ${r.name()}: H at silo ${mg.x(tile)},${mg.y(tile)} (${suffix})`);
+        return;
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- territory integrity
   private splitOwner: Player | null = null;
   private splitTile: TileRef | null = null;
