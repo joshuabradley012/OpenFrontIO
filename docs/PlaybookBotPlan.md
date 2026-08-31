@@ -1948,3 +1948,45 @@ Signed off — landed as DEFAULT_PLAYBOOK (branch `bot/combo-defaults`, 2026-08-
 ## Combo loss analysis (2026-08-31, 239 fresh-seed games from salv1+salv2)
 
 Losses 71: endgame race at top-3 25 (in 17 we never fought the winner), MIRVed-down 24 (bot fired 0 MIRVs in 239 games vs the killers' 3–8; wins carry 87–92 SAMs vs losses' 13), plateau 19, died 3 (base: 9). Combo's delayed first war (median t1670→1985) feeds the runaway-race cluster — the trade that cut deaths. boatOpening shows no at-sea loss signature. duelRatio 1.0 authorised ~3 estimator-negative all-ins (own-goals). Flag→cluster: contestLeader/boatEscort → race (now #1), samOnRisk → MIRVed-down (defence only), plateauBreak → plateau; drainedNations/retaliateAware/relationAware/strictOneWar → none. New flags proposed: mirvCounterforce (strike the named armed/saving rival's silos first), duelWaveGate (all-in wave needs 1.2× though diplomacy flips at 1.0). Caveat: MIRVED log lines undercount vs FINAL mirvsTaken — use FINAL.
+
+## Duel wave gate (`duelWaveGate`, 2026-08-31, branch `bot/duel-wave-gate`)
+
+The combo loss analysis above: `duelRatio` 1.0 is right for DIPLOMACY (stop courting the last rival the moment we
+are level) but it also authorises the duel WAR wave near parity, and that wave is an all-in —
+`lab-out/salv2/p_combo_med8_north-russia.txt` shows `t23960 ATTACK Egypt 394074t/82671k ← 82597k (1.00×)`: 82.6M,
+every troop above the reserve, at an 82.7M foe; `DUEL over` the next tick (home 57.0M < the foe), cap 170M→33M, a
+game we led on the board lost. ~3 of 71 combo losses have this shape.
+
+With the flag on, `warPick`'s duel-opportunity branch additionally requires our troops ≥ `duelWaveRatio` (1.2) ×
+the foe's. In the band between `duelRatio` and `duelWaveRatio` the pick proceeds **as if no duel opportunity
+existed** — the normal affordability / `fightAbove` / sticky-target gates and the plain scorer keep the pressure
+without the all-in — while everything else keeps the `duelRatio` threshold untouched: `Situation.duel`, the push
+mode, Diplomacy's no-alliance/no-renewal, and the bombs / MIRV priority on the foe. Logged
+`DUEL wave held: <ratio>× in the <duelRatio>–<duelWaveRatio>× band` (≤ 1 per 600 ticks); fires (`duelWaveGate`,
+site `hold`) only when the gate blocked a wave the plain duel branch would actually have SENT (its score gate:
+`maxSend ≥ duelRatio ×` the foe's army).
+
+No wave cap was added: **ctx.send already guarantees the reserve** — `room = min(spendable, troops − 0.3 × cap)`
+with `spendable = troops − reserveShare × troops`, and a war wave trimmed under 0.9 of its ask is refused
+whole-or-nothing. The transcript's 82.6M wave was exactly spendable at reserveShare 0.408: the reserve held; the
+all-in is everything ABOVE the reserve, which is what the gate addresses.
+
+Base fact found while sizing the fixture (mirrors the duelPush section's 1.71 note, restated for duelRatio 1.0):
+warScorer's duel branch accepts only at `maxSend` (0.7 × troops in the push) ≥ `duelRatio` × the foe's army, so the
+plain duel wave never goes under troops ≈ **1.43×** the foe (send's whole-or-nothing raises the practical floor to
+~1.5–1.7× depending on reserveShare and the 0.3 capFloor). **At the default `duelWaveRatio` 1.2 the gate therefore
+never blocks a wave the plain duel would have sent** — in the 1.0–1.2 band it only strips the opportunity status
+(gate / sticky-target bypass), and `fired` stays 0 there by design. For the gate to bite on real waves the CMA (or
+the A/B) must set `duelWaveRatio` past ~1.43 — the salv2 Egypt all-in itself went at 1.69×, so ~1.8–2.0 is the
+range worth sweeping.
+
+Params: `duelWaveGate` (default off — it modifies default-on `duelPush`, so the A/B needs it flaggable),
+`duelWaveRatio` (1.2). Tests: `tests/playbook/duelWaveGate.test.ts` (duelPush pinned on at duelRatio 1.0; at 1.86×
+with the gate at 2.0 the wave is held + fires while the plain fixture sends the 1.00× all-in; at 2.17× it goes on
+both; the 1.0–1.2 band at the default holds the opportunity, diplomacy still refuses the foe, nothing fires — and
+the flag-off twin documents that the plain wave never went there either; below duelRatio no duel either way).
+Golden unchanged; MIN=3 africa/Medium transcript identical with the flag off (botMs/gameMs wall-clock fields only);
+6-min africa/Medium smoke with the flag on is clean (no duel reached — inert until a duel, as expected).
+
+A/B (full games — a duel is an endgame; sweep the ratio, since 1.2 is a near-no-op):
+`CONFIGS='{"base":{},"gate":{"duelWaveGate":true,"duelWaveRatio":1.8}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.

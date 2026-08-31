@@ -448,6 +448,7 @@ export class Military {
   private lastCrownHeld = -1e9;
   private lastGuardLog = new Map<string, number>();
   private lastWarTick = -1e9;
+  private duelHeldLogged = -1e9; // `duelWaveGate`: the held-wave log, once a minute
   private strictFired = -1e9;
   private bombOutOfRange_ = 0;
   /** Playbook phase 6: a MIRV goes to (1) whoever has one in the air at us, (2) anyone over half the map,
@@ -772,7 +773,25 @@ export class Military {
     if (this.ctx.p.annexWars) for (const r of nb.rivals) if (this.q.annexable(r)) annex.add(r);
     // `duelPush`: the foe of a won duel on our border is an opportunity — the only target left, taken at duelRatio with
     // no affordability / fightAbove gate and beside any counter; the hold's own filter (threats only) still applies
-    const duelFoe = this.ctx.sit.duel !== null && nb.rivals.includes(this.ctx.sit.duel) ? this.ctx.sit.duel : null;
+    let duelFoe = this.ctx.sit.duel !== null && nb.rivals.includes(this.ctx.sit.duel) ? this.ctx.sit.duel : null;
+    // `duelWaveGate`: between duelRatio and duelWaveRatio the duel is won for DIPLOMACY (no alliances / renewals, the
+    // push mode, bombs / MIRV priority — all elsewhere, all unchanged) but not for the WAR wave — the near-parity
+    // all-in is the own-goal (salv2 p_combo_med8: an 82.6M wave, every troop above the reserve, on an 82.7M foe; cap
+    // 170M→33M, a led game lost). Under duelWaveRatio × the foe's troops this pick proceeds as if no duel opportunity
+    // existed: the normal affordability / fightAbove / sticky-target gates and the plain scorer keep the pressure
+    // without the all-in. No wave cap is added here — ctx.send already keeps home above the reserve (room =
+    // min(spendable, troops − 0.3 × cap)) and refuses a war wave trimmed under 0.9 of its ask.
+    if (duelFoe !== null && this.ctx.p.duelWaveGate && me.troops() < duelFoe.troops() * this.ctx.p.duelWaveRatio) {
+      // fired = the gate blocked a wave the plain duel would have SENT: warScorer's duel branch takes the foe only at
+      // maxSend ≥ duelRatio × its army (maxSend quoted from warScorer — 0.7 × troops at cap or in the endgame / push,
+      // else fightMaxShare; send's whole-or-nothing trim is not re-checked, a slight overcount)
+      const endgame = onTheClock(this.ctx.p, this.ctx.mg.ticks()) || this.ctx.sit.mode === "push";
+      const maxSend0 = Math.floor(me.troops() * (me.troops() >= cap * 0.95 || endgame ? 0.7 : this.ctx.p.fightMaxShare));
+      if (maxSend0 >= duelFoe.troops() * this.ctx.p.duelRatio) this.lim.fire("duelWaveGate", "hold");
+      const now = this.ctx.mg.ticks();
+      if (now - this.duelHeldLogged >= 600) { this.duelHeldLogged = now; this.ctx.log(`t${now} DUEL wave held: ${(me.troops() / Math.max(1, duelFoe.troops())).toFixed(2)}× in the ${this.ctx.p.duelRatio}–${this.ctx.p.duelWaveRatio}× band`); }
+      duelFoe = null;
+    }
     const opportunity = (this.ctx.mg.ticks() >= 3000 && nb.rivals.some((r) => this.collapsed(r) && r.troops() < this.ctx.sit.troops * 0.5)) || gapOwner !== null || threatHere !== null || annex.size > 0 || duelFoe !== null;
     // crown, not survival: a war is on when we can afford 2× someone's whole army out of the spendable troops,
     // not only when troops reach 70 % of a cap that cities keep raising
