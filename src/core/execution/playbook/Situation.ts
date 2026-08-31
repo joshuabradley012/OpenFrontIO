@@ -21,17 +21,26 @@ export interface Neighbours { bots: Player[]; rivals: Player[]; friends: Player[
  *  Static (no ctx): shared by the spawn picker (PlaybookBotExecution.basin, before the bot exists) and the
  *  `boatOpening` landing scorer (Military.openingBasin). */
 export function basin(game: Game, t: TileRef, radius: number, cap: number): number {
+  return basinContact(game, null, t, radius, cap).tiles;
+}
+
+/** `boatOpening` v3: the same flood, plus how many owned land tiles (not `me`'s) the basin's perimeter touches —
+ *  the eaters. Rivals and tribes both expand outward at ~boatEatRate tiles per tick per contact tile, so a basin's
+ *  worth at arrival is what is left after eatRate × contact × sail ticks of consumption. */
+export function basinContact(game: Game, me: Player | null, t: TileRef, radius: number, cap: number): { tiles: number; contact: number } {
   const seen = new Set<TileRef>([t]);
+  const eaters = new Set<TileRef>();
   const q: TileRef[] = [t];
   let i = 0;
   while (i < q.length && seen.size < cap) {
     const c = q[i++];
     for (const n of game.neighbors(c)) {
-      if (seen.has(n) || !game.isLand(n) || game.hasOwner(n) || game.manhattanDist(n, t) > radius) continue;
+      if (seen.has(n) || !game.isLand(n) || game.manhattanDist(n, t) > radius) continue;
+      if (game.hasOwner(n)) { if (game.owner(n) !== me) eaters.add(n); continue; }
       seen.add(n); q.push(n);
     }
   }
-  return seen.size;
+  return { tiles: seen.size, contact: eaters.size };
 }
 
 /** One evaluated picture of the game per tick; every rule reads this instead of re-deriving state. */

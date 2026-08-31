@@ -29,6 +29,10 @@ export interface PlaybookParams {
   boatOpeningCount: number; // boatOpening: transports kept alive at once while the opening runs (int)
   boatOpeningUntil: number; // boatOpening: the tick the opening ends at — the plain rules resume unchanged (int)
   boatBasinRadius: number; // boatOpening: manhattan radius of the free-land flood behind a candidate landing — the basin in the opening's basin/sail shore score (int)
+  boatEatRate: number; // boatOpening v3: wilderness tiles a rival/tribe eats per tick per basin-perimeter tile it touches — a candidate's basin is discounted by eatRate × contact × sail (the transport sails 1 tile/tick, so sail = arrival ticks) before scoring, so a basin that will be gone before the boat lands loses to a nearer/safer pick (measured in one Medium lab game: nations and tribes both expand ~0.02 tiles/tick per border tile in the opening)
+  boatTribeWorth: number; // boatOpening v3: what a tribe tile is worth in free-land tiles in the opening score — v2's 0.5 systematically undervalued tribes (Josh): their tiles cost the fight but never evaporate, unlike a contested basin
+  boatOceanUntil: number; // boatOpening v3: while tick < this, opening extras may sail up to the full BOAT_MAX_PATH (250, not the 80-tile early cap) and a distant new-landmass candidate scores ×boatOceanBonus — long trans-ocean crossings are only safe before warships appear (measured: first enemy warship t1730, first enemy port t1060, one Medium lab game; int)
+  boatOceanBonus: number; // boatOpening v3: score multiplier on a new-landmass candidate whose sail exceeds BOAT_MAX_PATH.early while the ocean window is open
   fightAbove: number; // start fighting rivals when troops exceed this share of cap
   fightRatio: number; // attack size as multiple of the target's whole army
   fightNotBeforeTick: number; // no wars with nations/humans before this tick
@@ -144,6 +148,10 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   boatOpeningCount: 2,
   boatOpeningUntil: 3000,
   boatBasinRadius: 100,
+  boatEatRate: 0.02, // one Medium lab game, t100–3000: tribes mean 0.0244 / median 0.0168, nations mean 0.0228 / median 0.0125 tiles per tick per border tile
+  boatTribeWorth: 1.0, // a mid-size tribe mass beats an equal-size contested wilderness (v2 hardcoded 0.5)
+  boatOceanUntil: 1500, // first enemy warship at t1730 in the measurement game — cross the ocean before that
+  boatOceanBonus: 1.3,
   fightAbove: 0.7,
   fightRatio: 2.0, // Medium 30-game sweep hz3: 1.67× = +1 crown but −13% land, 3 fewer top-3, loses paired 13–17; the gate (attack whenever affordable, from 3:00) stays
   fightNotBeforeTick: 1800,
