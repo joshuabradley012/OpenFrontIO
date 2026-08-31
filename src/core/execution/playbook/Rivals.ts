@@ -216,14 +216,7 @@ export class Rivals {
     for (const p of this.ring.keys()) if (!watched.includes(p)) { this.ring.delete(p); this.nationCache.delete(p); }
     // one pass over our border: how many of our border tiles touch each neighbour
     const mg = this.ctx.mg, counts = new Map<number, number>();
-<<<<<<< HEAD
-    const tm = this.ctx.p.threatMap, cellsW = Math.ceil(mg.width() / CELL), buckets = new Map<number, Bucket>();
-    let ourBorder = 0;
     for (const tile of borderOf(this.ctx.me)) {
-      ourBorder++;
-=======
-    for (const tile of this.ctx.me.borderTiles()) {
->>>>>>> bot/prune
       const owners: number[] = []; // a tile counts once per neighbouring owner
       for (const nb of mg.neighbors(tile)) {
         const id = mg.ownerID(nb);
@@ -329,28 +322,6 @@ export class Rivals {
   }
 
   // ---------------------------------------------------------------- opportunity #2: the nation script on the current state
-<<<<<<< HEAD
-  /** `wildernessAware`: does `p` have unowned, fallout-free, passable land next to its border? AiAttackBehavior.maybeAttack
-   *  (lines 60-95) then sends troops − maxTroops × expandRatio at TerraNullius and returns without looking at players.
-   *  Every 4th border tile is sampled (a wilderness edge is never one tile long); cached 50 ticks per rival. */
-  wildernessBound(p: Player): boolean {
-    const t = this.ctx.mg.ticks();
-    const c = this.wildCache.get(p);
-    if (c && t - c.tick < 50) return c.bound;
-    const mg = this.ctx.mg;
-    let bound = false, i = 0;
-    for (const tile of borderOf(p)) {
-      if ((i++ & 3) !== 0) continue;
-      for (const nb of mg.neighbors(tile)) {
-        if (mg.isLand(nb) && !mg.isImpassable(nb) && !mg.hasOwner(nb) && !mg.hasFallout(nb)) { bound = true; break; }
-      }
-      if (bound) break;
-    }
-    this.wildCache.set(p, { tick: t, bound });
-    return bound;
-  }
-=======
->>>>>>> bot/prune
   /** `drainedNations`: a nation under reserveRatio × max (the lower bound, so surely under its own) cannot attack anyone
    *  (attackBestTarget line 244). It is "drained" until its troops are expected back at triggerRatio × max, at the
    *  engine's current regrowth rate (Config.troopIncreaseRate, which only falls as troops rise — an underestimate,
