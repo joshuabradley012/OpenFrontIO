@@ -6,6 +6,7 @@
 // about (1148, 396) to (1176, 436) with Africa west of it and Arabia east; a 4–6-tile channel separates them. Our
 // rect on Africa's east bank has Arabia's free coast — a second continent — a short sail across the strait.
 import { describe, expect, test } from "vitest";
+import { BOAT_MAX_PATH } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
 import { Game, Player, PlayerType, UnitType } from "../../src/core/game/Game";
 import { TileRef } from "../../src/core/game/GameMap";
@@ -216,6 +217,117 @@ describe("boatOpening", () => {
     const attacking = h.until(() => h.me.outgoingAttacks().some((a) => a.target() === eater), 50);
     expect(attacking).toBe(true);
     expect(h.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1); // the push is a fire site
+  });
+
+  // ---- v3 fixtures ------------------------------------------------------------------------------------
+  // Okhotsk again, with fixture geometry checked against the empty-shore scan's 6-tile grid (a free mass is
+  // invisible to the opening unless the grid lands on one of its shore tiles - probed offline):
+  //  - the far target: the big mass south-west of the strait (probe: 2324 tiles), whose free carve
+  //    1545..1599 x 465..509 keeps a grid shore hit at 1556,493 at water-path ~100-160 - past the 80-tile
+  //    early cap, inside the full 250. The blocker owns the carve's west and south rims (contact > 0).
+  //  - the near safe picks: a small tribe on the island's north half (tribes are border-scanned, grid-proof)
+  //    and the free 118-tile mass at 1585,435..1604,463 (grid hits 1598,445 and 1586,463, water-path ~70 -
+  //    inside the early cap, and the plain first boat's landing).
+  function blockFar(h: PlaybookHarness): void {
+    const b = h.rival("Blocker");
+    conquerRect(h.game, b, [1614, 125, 1801, 377]); // east: Kuril-side chains
+    conquerRect(h.game, b, [1602, 125, 1801, 355]); // north-east coast
+    conquerRect(h.game, b, [1560, 125, 1601, 324]); // mainland north of our rect
+    conquerRect(h.game, b, [1500, 378, 1610, 390]); // Hokkaido-side chains
+    conquerRect(h.game, b, [1614, 378, 1801, 390]);
+    conquerRect(h.game, b, [1500, 391, 1801, 464]); // everything between the strait and the carve
+    conquerRect(h.game, b, [1500, 465, 1538, 580]); // west of the carve
+    conquerRect(h.game, b, [1600, 465, 1801, 580]); // east of the carve
+    conquerRect(h.game, b, [1539, 510, 1599, 580]); // the carve's south rows: the eater on the free basin's rim
+    conquerRect(h.game, b, [1360, 125, 1544, 600]); // west continent + mainland (NOT x1545+: the carve stays free)
+  }
+  // the island split into two clamped tribes: the plain first boat eats one, the extras always have the other —
+  // tribes are border-scanned (grid-proof) and sail ~2-8, well under the early cap
+  const NEAR_TRIBES: RivalSpec[] = [
+    { name: "NearTribeA", type: PlayerType.Bot, at: [1607, 360], troops: 1_000, tiles: [1602, 356, 1613, 364] },
+    { name: "NearTribeB", type: PlayerType.Bot, at: [1607, 372], troops: 1_000, tiles: [1602, 365, 1613, 377] },
+  ];
+  // the window needs the sailed path (the cap it lifts is BOAT_MAX_PATH.early on the water path)
+  const V3_OCEAN: Partial<PlaybookParams> = { ...V2, boatsWaterPath: true, boatEatRate: 0.02, boatTribeWorth: 1.0, boatOceanBonus: 1.3 };
+  const sailOf = (l: string) => Number(/sail=(\d+)/.exec(l)![1]);
+  const isFar = (l: string) => l.includes("BOAT OPENING") && / sail=\d+/.test(l) && sailOf(l) > BOAT_MAX_PATH.early;
+  const isNear = (l: string) => l.includes("BOAT OPENING") && l.includes("tribe NearTribe");
+  const oceanSetup = (bot: Partial<PlaybookParams>) => playbookSetup({ map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 100_000, rivals: [BLOCKER, ...NEAR_TRIBES], bot });
+  /** Run until `stop`, clamping the near tribes (they must stay affordable and constant across configs). */
+  function runOcean(h: PlaybookHarness, stop: () => boolean, max: number): boolean {
+    const tribes = [h.rival("NearTribeA"), h.rival("NearTribeB")];
+    return h.until(() => { for (const t of tribes) if (t.isAlive() && t.troops() > 1000) t.setTroops(1000); return stop(); }, max);
+  }
+
+  test("v3: the ocean window lifts the sail cap - the rich carve at water-path ~100+ beats the near tribe before boatOceanUntil", async () => {
+    const h = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 9000 });
+    blockFar(h);
+    expect(runOcean(h, () => h.log.some(isFar), 500)).toBe(true);
+    const line = h.log.find(isFar)!;
+    expect(Number(/eta=(\d+)/.exec(line)![1])).toBe(sailOf(line)); // the transport sails 1 tile/tick: eta = sail
+    expect(h.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1);
+  });
+
+  test("v3: after boatOceanUntil the early cap holds - the extras take a near tribe, nothing sails past the cap", async () => {
+    const h = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 0 });
+    blockFar(h);
+    expect(runOcean(h, () => h.log.some((l) => l.includes("BOAT OPENING")), 500)).toBe(true);
+    for (const l of h.log.filter((x) => x.includes("BOAT OPENING") && / sail=\d+/.test(x))) expect(sailOf(l)).toBeLessThanOrEqual(BOAT_MAX_PATH.early);
+    expect(h.log.some(isNear)).toBe(true);
+  });
+
+  test("v3: ETA discount - the contested carve at long sail loses to the near tribe when boatEatRate is high, wins at 0", async () => {
+    // Same carve, window open both times. At boatEatRate 2.0 the ~100-tick sail forfeits the whole basin
+    // (2.0 x contact x sail >> basin, the eaters on its west and south rims), so the extras take the near
+    // tribe instead; at 0 the far crossing wins as in the window test.
+    const safe = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 9000, boatEatRate: 2.0 });
+    blockFar(safe);
+    expect(runOcean(safe, () => safe.log.some((l) => l.includes("BOAT OPENING")), 500)).toBe(true);
+    for (const l of safe.log.filter((x) => x.includes("BOAT OPENING") && / sail=\d+/.test(x))) expect(sailOf(l)).toBeLessThanOrEqual(BOAT_MAX_PATH.early);
+    expect(safe.log.some(isNear)).toBe(true); // the safer pick: tribes don't evaporate
+    const greedy = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 9000, boatEatRate: 0 });
+    blockFar(greedy);
+    expect(runOcean(greedy, () => greedy.log.some(isFar), 500)).toBe(true); // discount off: the same basin is taken
+  });
+
+  test("v3: boatTribeWorth 1.0 picks the tribe mass where 0.2 picks the equal contested wilderness", async () => {
+    // The island is one ~160-tile tribe at sail ~2; an equal free strip of the mass south of the strait
+    // (1600..1639 x 390..414, grid shore hits at 1610,397 and 1604,403, its south rows owned by a nation -
+    // contested) is the wilderness alternative at sail ~30. Both are new masses near the 20-tile sail floor, so
+    // the coefficient decides. Our troops are clamped to 2000 until t651 (boatShare 0.2 keeps every plain
+    // early-boat wave under the 500-troop floor, so the plain rule times out into boatSent), then jump to
+    // 20k: the first opening pass sees both candidates affordable at once and the scored order picks.
+    const mk = async (w: number) => {
+      const h = await playbookSetup({
+        map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 2_000,
+        rivals: [
+          BLOCKER,
+          { name: "IslandTribe", type: PlayerType.Bot, at: [1607, 368], troops: 1_000, tiles: [1602, 356, 1613, 377] },
+          { name: "Contester", type: PlayerType.Nation, at: [1607, 430], troops: 3_000, tiles: [1600, 415, 1639, 478] },
+        ],
+        bot: { ...V2, boatShare: 0.2, boatEatRate: 0.02, boatTribeWorth: w },
+      });
+      const b = h.rival("Blocker");
+      conquerRect(h.game, b, [1614, 125, 1801, 377]);
+      conquerRect(h.game, b, [1602, 125, 1801, 355]);
+      conquerRect(h.game, b, [1560, 125, 1601, 324]);
+      conquerRect(h.game, b, [1500, 378, 1599, 389]);
+      conquerRect(h.game, b, [1614, 378, 1801, 390]);
+      conquerRect(h.game, b, [1500, 391, 1599, 580]); // west of the strip's mass
+      conquerRect(h.game, b, [1640, 391, 1801, 580]); // east of it
+      conquerRect(h.game, b, [1600, 479, 1639, 580]); // south of it
+      conquerRect(h.game, b, [1360, 125, 1559, 600]); // west continent + mainland
+      const tribe = h.rival("IslandTribe");
+      h.until(() => {
+        if (tribe.troops() > 1000) tribe.setTroops(1000);
+        if (h.game.ticks() <= 651 && h.me.troops() > 2000) h.me.setTroops(2000);
+        if (h.game.ticks() === 652) h.me.setTroops(20_000);
+        return h.log.some((l) => l.includes("BOAT OPENING"));
+      }, 900);
+      return h.log.find((l) => l.includes("BOAT OPENING"))!;
+    };
+    expect(await mk(1.0)).toContain("tribe IslandTribe"); // the default: tribes weigh their tiles in full
+    expect(await mk(0.2)).toContain("empty shore"); // undervalued tribes: the equal contested wilderness wins
   });
 
   test("an opening that never becomes active is decision-identical to the plain bot (log equality)", async () => {

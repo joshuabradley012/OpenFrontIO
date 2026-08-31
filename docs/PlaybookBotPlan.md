@@ -1889,6 +1889,38 @@ wilderness mass beats a nearer small basin, the near shore of a tiny-strait isla
 tribe mass beats a small contested free basin, and a tribe that eats the landing gets clicked from the beachhead).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 Watch it in the GUI: `localStorage.playbookParams = '{"boatOpening":true}'` then load `?bot=1` (PlaybookBotGUI.md).
+
+**v3 (branch `bot/boat-opening-v3`)** — three refinements from Josh's v2 GUI session ("the boats are really
+excellent now"), all inside the same flag, flag-off byte-identical:
+
+1. **Don't target wilderness that will be gone before the boat lands.** The basin flood
+   (`Situation.basinContact`) now also counts the owned land tiles on the basin's perimeter — the eaters —
+   and a candidate's worth is `max(0, basin − boatEatRate × contact × sail)`; the transport sails 1 tile/tick
+   (`TransportShipExecution.ticksPerMove`), so sail = arrival ticks. `boatEatRate` (0.02) was measured, not
+   guessed: over t100–3000 of one Medium lab game, tribes expand a mean 0.0244 (median 0.0168) and nations
+   0.0228 (median 0.0125) tiles per tick per border tile. Tribe tiles are never discounted (tribes get eaten,
+   they don't evaporate), so a soon-to-be-eaten free basin beside a tribe mass tilts the pick toward the tribe
+   itself. A basin the eaters will have consumed entirely before arrival (discounted worth 0) is dropped
+   outright, not merely down-ranked — the extras hold the boat rather than feed a doomed crossing, and a later
+   pass re-scans. The basin cache now refreshes every 100 ticks (contact grows as rivals close in) and the
+   BOAT OPENING line ends `… eta=… eaten=…`.
+2. **Tribes weigh more.** The tribe-tile coefficient is `boatTribeWorth` (1.0, CMA-tunable; v2 hardcoded 0.5,
+   which Josh judged a systematic undervaluation) — a mid-size tribe mass now beats an equal-size contested
+   wilderness; ×OPENING_CONTESTED (1.5) with a rival adjacent is unchanged.
+3. **Cross the ocean before warships appear.** Nations build their first warship once they have a port, no
+   warship yet and 250k gold (1-in-50 chance per attack pass, NationWarshipBehavior via NationExecution);
+   measured on Medium: first enemy port t1060, first enemy warship t1730. While `tick < boatOceanUntil`
+   (int 1500) the opening extras may sail up to the full BOAT_MAX_PATH (250; otherwise the 80-tile early cap),
+   and a new-landmass candidate whose sail exceeds that early cap scores ×`boatOceanBonus` (1.3) on top of the
+   ×1.5 second-continent preference. The plain first boat, wave sizes (boatShare cap) and every other gate are
+   unchanged; after the window, long crossings fall back to v2 behaviour.
+
+Params: `boatEatRate` (0.02), `boatTribeWorth` (1.0), `boatOceanUntil` (int 1500), `boatOceanBonus` (1.3) —
+all appended to scripts/lab/specs/wins.json for the CMA (validated with `cmaes.py --dry-run`).
+Tests: v3 block in tests/playbook/boatOpening.test.ts (an eaten-out basin at long sail loses to the nearer safe
+pick and wins with the discount off; boatTribeWorth 1.0 picks the tribe mass where 0.2 picks the equal
+contested wilderness; the ocean window lifts the sail cap before boatOceanUntil and not after).
+A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 ## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)
 
 Loss cluster 3 above: 40 of the 41 losses stop growing by minute 33 (wins keep growing to 61) — the bot sits at
