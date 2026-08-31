@@ -27,7 +27,7 @@ import { Economy } from "./Economy";
 import { Military } from "./Military";
 import { MirvRisk } from "./MirvRisk";
 import { DEFAULT_PLAYBOOK, PlaybookParams } from "./Params";
-import { Situation, SituationQueries } from "./Situation";
+import { basin, Situation, SituationQueries } from "./Situation";
 
 export { DEFAULT_PLAYBOOK } from "./Params";
 export type { PlaybookParams } from "./Params";
@@ -396,19 +396,10 @@ export class PlaybookBotExecution implements Execution {
     return null;
   }
   static lastSpawnDiag = "";
-  /** Unowned land tiles reachable from `t` over unowned land within `radius` (manhattan), capped at `cap`. */
+  /** Unowned land tiles reachable from `t` over unowned land within `radius` (manhattan), capped at `cap`.
+   *  The flood itself lives in Situation.ts (basin) so Military's `boatOpening` landing scorer can share it. */
   static basin(game: Game, t: TileRef, radius: number, cap: number): number {
-    const seen = new Set<TileRef>([t]);
-    const q: TileRef[] = [t];
-    let i = 0;
-    while (i < q.length && seen.size < cap) {
-      const c = q[i++];
-      for (const n of game.neighbors(c)) {
-        if (seen.has(n) || !game.isLand(n) || game.hasOwner(n) || game.manhattanDist(n, t) > radius) continue;
-        seen.add(n); q.push(n);
-      }
-    }
-    return seen.size;
+    return basin(game, t, radius, cap);
   }
   /** Walk `d` tiles away from the sea in the direction with the most land, so the spawn circle is not half water. */
   private static inland(game: Game, shore: TileRef, d: number): TileRef {
