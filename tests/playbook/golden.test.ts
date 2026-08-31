@@ -15,7 +15,7 @@ import { playbookSetup } from "../util/PlaybookSetup";
 // estimator layer — the material is otherwise identical to the old hash's (verified line by line), so the
 // bot's decisions are unchanged.
 const GOLDEN =
-  "9f12829d66cdcdcae0ce7f7d04bc34c436f9a03f395e62d32f610e2223e6cdc3";
+  "8ecd01afe4f28eab396d002fd6f525234fe49bbb0e4ee303de193ca1c3aa7394";
 const SNAPSHOT_TICKS = [100, 300, 600, 900, 1200, 1500, 1800, 2100, 2400];
 
 describe("golden", () => {
@@ -29,7 +29,13 @@ describe("golden", () => {
         { name: "South", type: PlayerType.Nation, at: [90, 170], ai: true },
         // a weak scripted human next door: never allied (the bot only asks players >= half its size), so the
         // war rules (prey, posts, waves, retreats) run inside the golden window
-        { name: "West", type: PlayerType.Human, at: [45, 100], tiles: [25, 85, 60, 115], troops: 15_000 },
+        {
+          name: "West",
+          type: PlayerType.Human,
+          at: [45, 100],
+          tiles: [25, 85, 60, 115],
+          troops: 15_000,
+        },
       ],
     });
     for (const r of h.rivals) expect(r.numTilesOwned()).toBeGreaterThan(0);
@@ -37,9 +43,14 @@ describe("golden", () => {
     for (const t of SNAPSHOT_TICKS) {
       h.step(t - h.game.ticks());
       const players = [h.me, ...h.rivals]
-        .map((p) => `${p.name()}:${p.numTilesOwned()}/${Math.round(p.troops())}/${p.gold()}`)
+        .map(
+          (p) =>
+            `${p.name()}:${p.numTilesOwned()}/${Math.round(p.troops())}/${p.gold()}`,
+        )
         .join(" ");
-      snaps.push(`t${t} ${players} out=${h.me.outgoingAttacks().length} allies=${h.me.allies().length}`);
+      snaps.push(
+        `t${t} ${players} out=${h.me.outgoingAttacks().length} allies=${h.me.allies().length}`,
+      );
     }
     const fired = [...h.bot.fired].map(([k, v]) => `${k}:${v}`).join(",");
     const material = [...h.log, `fired=${fired}`, ...snaps].join("\n");

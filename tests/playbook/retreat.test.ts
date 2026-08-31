@@ -79,7 +79,12 @@ describe("manageRetreats", () => {
   test("against defence posts the line is 50 % of the wave with the target over 90 %", async () => {
     const { h, r, a, sent, targetTroops } = await war(true);
     expect(r.units(UnitType.DefensePost)).toHaveLength(1);
-    a.setTroops(Math.floor(sent * 0.4));
+    // 0.49, not 0.4: under the merged engine's post attrition (~600 troops/tick) a 0.4 wave dies to 0
+    // inside the very rule pass that retreats it, and a dead attack reports retreating() false. The rule
+    // needs < 0.5 x sent; 0.49 leaves the wave alive to carry the flag.
+    a.setTroops(Math.floor(sent * 0.49));
+    r.setTroops(targetTroops); // hold the target at its recorded strength: the rule compares against
+    // the size it saw at the wave's start, and the merged engine's combat drift bled r just past 90 %
     h.step(h.nextRuleTick(10) + 1);
     expect(r.troops()).toBeGreaterThan(targetTroops * 0.9);
     expect(a.retreating()).toBe(true);

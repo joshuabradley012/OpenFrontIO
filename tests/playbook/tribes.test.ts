@@ -57,7 +57,7 @@ describe("harvestBots click cap", () => {
     expect(h.log.filter((l) => l.includes("bot T "))).toHaveLength(1); // one click, not a second one
     const followUp = want - first;
     expect(jumps[0].by).toBeGreaterThan(followUp * 0.8); // minus the wave's own losses in that tick
-    expect(jumps[0].by).toBeLessThanOrEqual(followUp);
+    expect(jumps[0].by).toBeLessThanOrEqual(followUp + 1e-6); // DetMath leaves a float epsilon on the wave size
   });
 
   test("a tribe within the cap is taken in one click and never followed up", async () => {
