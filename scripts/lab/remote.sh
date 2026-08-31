@@ -192,7 +192,7 @@ run_pool() {
   mkdir -p "$DEST"
   i=0
   for ip in "${ips[@]}"; do
-    rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log root@"$(rh "$ip")":/root/lab-out/ "$DEST"/
+    rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log --exclude 'sed*' --exclude 'queue*' root@"$(rh "$ip")":/root/lab-out/ "$DEST"/ || [ $? -eq 24 ]
     rsync -az -e "$RSYNC_SSH $(rso "$ip")" root@"$(rh "$ip")":/root/lab-out/sweep.log "$DEST"/sweep.$slug.$i.log
     i=$((i + 1))
   done
@@ -244,7 +244,7 @@ run_sprt() {
   # progress: the boxes' sweep.log lines, merged; a chunk is complete when every game of its queue file has one
   progress() { for ip in "${ips[@]}"; do $SSH@"$ip" 'cat /root/lab-out/sweep.log 2>/dev/null; true' 2>/dev/null; done > "$DEST/progress.log"; }
   chunk_left() { comm -23 <(awk -F'|' '{print $1" "$2" "$3}' "$1" | sort) <(grep -E '^(done|FAILED|SKIPPED) ' "$DEST/progress.log" | awk '{print $2" "$3" "$4}' | sort) | wc -l | tr -d ' '; }
-  pull() { for ip in "${ips[@]}"; do rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log --exclude 'queue*' root@"$(rh "$ip")":/root/lab-out/ "$DEST"/ ; done; bash scripts/lab/aggregate.sh "$DEST" >/dev/null 2>&1 || true; }
+  pull() { for ip in "${ips[@]}"; do rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log --exclude 'sed*' --exclude 'queue*' --exclude 'queue*' root@"$(rh "$ip")":/root/lab-out/ "$DEST"/ ; done; bash scripts/lab/aggregate.sh "$DEST" >/dev/null 2>&1 || true; }
   stop_all() {
     $SSH@"$QUEUE_HOST" 'cd /root/lab-out && rm -f queue.open && flock queue.lock sh -c ": > queue.txt"' || true
     for ip in "${ips[@]}"; do $SSH@"$ip" 'pkill -f "[s]cripts/lab/sweep.sh"; pkill -f "[t]ests/lab/playbook.lab.ts"; true' & done; wait

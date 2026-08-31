@@ -2031,3 +2031,7 @@ against the same MIRVed-down cluster).
 ## `flips1` — the shelf vs the combo baseline (2026-08-31, `lab-out/flips1`, SEED=flips, ~120 games each)
 
 None of the eight default-off candidates graduates against the new defaults: strictOneWar REJECT (−0.07), relationAware −0.31, plateauBreak −0.14, samOnRisk −0.07, retaliateAware −0.07, boatEscort +0.03 (its early leads faded a third time), contestLeader +0.00, drainedNations +0.01. Reading: the combo defaults banked the shelf's value; these stay off. First Hetzner run of the overlapped SPRT mode — worked cleanly.
+
+## `nf1` — the loss-cluster flags vs combo (2026-08-31, `lab-out/nf1`, SEED=nf1, 108 games each; med9 dropped after a launcher stall)
+
+mirvCounterforce 72 wins vs base 71 (+0.003, pairs 8/7); +samOnRisk 72 (+0.011); duelWaveGate 1.8/1.9 both SPRT REJECT (−0.02/−0.04). The counterforce fires correctly (the north-russia liveness smoke reproduced the losing shape and won) but does not convert to net wins at scale — consistent with the loss analysis's own finding that winners absorb MIRVs behind SAM walls rather than prevent them. All four stay default-off. Infrastructure: the overlapped-SPRT launcher died on rsync exit 24 (a box-side sed temp file vanished mid-pull) — remote.sh now excludes sed*/queue* from pulls and tolerates exit 24. Plateau note: base wins 66–68 % across the last three sweeps; single default-off flags no longer move it.
