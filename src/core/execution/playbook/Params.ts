@@ -8,7 +8,20 @@
 // alive, 800k vs 705k tiles) and homeFloor (declared and defaulted but read nowhere — A1 finding).
 // Removed after losing their 30-game A/Bs (PlaybookBotPlan.md C3): simWars (Estimate.ts), scoredSpend (Spend.ts), bsrReserve, phaseGates — the first two live in git history.
 // Removed after ab1 (PlaybookBotPlan.md "Review-package A/B ab1"): campaigns (Campaign.ts, review #6; 38W/60L, dScore −0.19, p=0.03) — in git history at 85ce33c8e.
-// Removed after ab2 (PlaybookBotPlan.md #4): simWars, restored on the calibrated estimator and lost again (dScore −0.43 at 18 mirrored pairs; with hystRetreats −0.52) — in git history at a36b357b5. Estimate.ts stays (hystRetreats, utility, the EST/ACT calibration log).
+// Removed after ab2 (PlaybookBotPlan.md #4): simWars, restored on the calibrated estimator and lost again (dScore −0.43 at 18 mirrored pairs; with hystRetreats −0.52) — in git history at a36b357b5.
+// Pruned 2026-08-31 (branch bot/prune; last commit with the code: 38219433a) — flags that measured dead or harmful
+// across the full-game A/Bs, each with its params, code paths, tests and docs section:
+//   utility + Utility.ts + utilCapMid/utilCapSteep/utilCommit/utilFreeLandCost/utilScoreFull (ab1: noise, 53W/44L at best)
+//   threatMap + ThreatMap.ts + threatReserveGain/threatBusyWeight/threatVulnWeight/threatPreRatio (ab1 −0.07, fix-era noise)
+//   buildSearch + BuildSearch.ts + buildCapGoldPerTroop/buildHorizon (ab1 49W/50L; planner CPU)
+//   hystRetreats + hystMargin/hystSlope/hystStrikes/retreatBelowRatio (ab2 REJECT −0.06)
+//   webDefense + webRatio/webUntil + Situation.web (fix1: 1 live pair in 120 — never fires)
+//   markTargets (ab1 41W/58L, 4 deaths vs 0)
+//   wildernessAware, steamrollCap, holdHumans (never fire in the lab)
+//   warRoiCap + warRoiMax/warRoiMinTiles/warRoiWindow/warRoiCooldown (fix1 70W vs base 78, leaning harmful)
+//   the estimator layer: Estimate.ts, estOpts, the EST/ACT calibration log, estLossScaleNation/Human/Bot,
+//   estSpeedScale, scripts/lab/calibrate.py — its last consumers were utility and hystRetreats (simWars already gone).
+//   The WAR RESULT per-war accounting stays (warYield reads it; loss_analysis.py parses it).
 
 export interface PlaybookParams {
   expandContested: number; // share of home troops per click into empty land while a rival borders us
@@ -41,7 +54,6 @@ export interface PlaybookParams {
   fightNotBeforeTick: number; // no wars with nations/humans before this tick
   fightMinCities: number; // ... or before this many cities
   fightMaxShare: number; // never commit more than this share of home troops to one target
-  retreatBelowRatio: number; // hystRetreats: a wave under this × the target's troops whose re-estimate no longer wins is lost outright (read nowhere with the flag off)
   capFullShare: number; // buy cap when troops exceed this share of cap
   citiesBeforePort: number;
   portMinPartnerDist: number;
@@ -61,47 +73,18 @@ export interface PlaybookParams {
   portWithoutPartnerTick: number; // first port on any ocean coast from this tick even with no partner (1e9 = never)
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
-  buildSearch: boolean; // #7: Economy.build() takes its purchase from BuildSearch.ts (BOSS-style fast-forward search to a phase horizon; "save" when the best plan's first buy is not affordable yet) instead of the ordered chain; posts under attack, the first SAM under an enemy silo, mirvFund and the silo escrow stay. Default off until the 30-game Medium A/B
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
-  threatReserveGain: number; // threatMap: reserve × clamp(1 + gain × undefended / troops, 1, 2) — how fast unanswered border pressure raises the reserve (the brief's 0.5 floor halved the reserve in every calm minute and the army sailed off in boats: africa smoke rank 29 vs 2)
-  threatMap: boolean; // review #5: a per-border-segment influence map (ThreatMap.ts) drives the reserve (undefended pressure, not max bsr), the war scorer (busy-elsewhere bonus, thin-border penalty), threat-post placement (hottest segment, not the border midpoint) and a pre-positioned post where a rival masses; default off until the 30-game Medium A/B
-  // Opportunity #4 (estimator calibration): every estimateAttack call scales its per-tile loss by the defender's class
-  // and its tiles/tick by estSpeedScale. 1.0 = the raw replay; paste the values scripts/lab/calibrate.py fits from a
-  // sweep's EST/ACT log pairs (docs/PlaybookBotPlan.md "Calibrating the estimator").
-  estLossScaleNation: number;
-  estLossScaleHuman: number;
-  estLossScaleBot: number;
-  estSpeedScale: number;
-  hystRetreats: boolean; // #4: manageRetreats judges a war every 100 ticks as 'continue' (estimate, 600-tick horizon) vs 'retreat now', continue must win by 0.1 + 0.2 × clamp(maxBsr − 1, 0, 2) and lose twice in a row before the wave comes home; a wave under retreatBelowRatio × the target's troops that no longer wins is lost outright; off = the literal 20 % / 70 % thresholds every 10 ticks. Default off until the 30-game Medium A/B
-  // Opportunity #2 (nation AI as a perfect-information opponent), one flag per edge; all default off until the 30-game Medium A/B
-  markTargets: boolean; // fight()/counterAttack mark the war target (TargetPlayerExecution, the human 'target' button) so allied nations' `assist` and their nuke targeting pile on; re-marked every targetCooldown while the war runs
-  wildernessAware: boolean; // a nation with unowned, fallout-free land on its border sends its surplus there and returns before looking at players (AiAttackBehavior.maybeAttack): nationCanAttack/nationWouldSend read false/0 for it, and the reserve halves while every unfriendly nation neighbour is wilderness-bound
+  // Opportunity #2 (nation AI as a perfect-information opponent), one flag per edge; default off until the 30-game Medium A/B
   drainedNations: boolean; // a nation under its reserve ratio (troops < 0.3 × max) is drained until it regrows to its trigger ratio: fight() takes it at 1.5× (affordable gate and score bonus), and the counter is never sized below the wave it cancels
   retaliateAware: boolean; // nations retaliate only against their largest attacker: a target already under a bigger attack (or marked by one of our allies) is preferred and taken at 1.2× with a wave kept below the bigger one; absorbs the brief's `secondAttacker`
-  utility: boolean; // #3: one `troops` rule replaces counter/expand/tribes/wars — every troop option (expand click, tribe click, war wave per candidate, counter) is scored in one currency (expected tiles per troop × curved considerations, Utility.ts) and executed by rank then weight; counters always go, one war per pass, the invariants (reserve, whole-or-nothing wars, one war at a time, hold, sticky target) stay. Default off until the 30-game Medium A/B
   relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
   takeFallout: boolean; // expand into irradiated land: PlayerImpl.nearby() hides unowned fallout tiles, so `wilderness` is false when only fallout borders us and expand() never sends a click — yet a TerraNullius attack takes those tiles (at 2.5–5× the loss, conquest clears the fallout). With the flag on, an expand click goes at the contested share whenever unowned fallout land touches our border and troops are ≥ fightAbove × cap (idle troops are free); default off until the 30-game Medium A/B
   steamrollLevels: boolean; // the nations' steamroll MIRV rule counts city LEVELS (Player.unitCount sums unit.level()), not units: keep our city-level sum under 0.9 × mult × the runner-up's level sum (floor: the rule's minLeader) — no new city and no city level past it; spare gold goes to ports, rail, bombs, SAMs instead. Captures can still cross the line (nationMirvAware then buys SAM cover)
-  steamrollCap: boolean; // the city-unit cap follows the nations' steamroll-MIRV rule (NationMIRVBehavior: leader past 10 units at ≥ 1.5× the runner-up on Medium, 1.25× Hard) at 0.9× the multiplier instead of the flat 1.15×; default off until the 30-game Medium A/B
-  holdHumans: boolean; // the 45 s expiry hold also applies to a human ally stronger than us (troops > 0.85× ours), not only to nations; default off until the 30-game Medium A/B
-  // Constants of the ab1-neutral flags, exposed so cmaes.py can tune them with the flag on (scripts/lab/specs/neutral-flags.json).
+  // Constants of the surviving opportunity-#2 flags, exposed so cmaes.py can tune them with the flag on.
   // Defaults = the hand-picked values, so nothing moves until a spec says so. Only read while the flag is on.
-  utilCapMid: number; // utility: midpoint of the troops/cap logistic on a war option (fightAbove was the midpoint)
-  utilCapSteep: number; // utility: steepness of that logistic (10 = a clear step over ±0.2)
-  utilCommit: number; // utility: weight multiplier for the running war's target (sticky war)
-  utilFreeLandCost: number; // utility: troops a tile of terra nullius costs the expand click (mag/5 = 16–24)
-  utilScoreFull: number; // utility: the scorer's value at which its consideration saturates (0.5 + 0.5 × linear(score, 0, full))
-  threatBusyWeight: number; // threatMap: war-scorer bonus per unit of the rival's busyElsewhere
-  threatVulnWeight: number; // threatMap: war-scorer penalty per Σ vulnerability / our troops
-  threatPreRatio: number; // threatMap: theirs/ours on a segment at which a pre-positioned post is asked for
-  buildCapGoldPerTroop: number; // buildSearch: gold-equivalent of one troop of cap in the objective (BuildSearch.CAP_GOLD_PER_TROOP)
-  buildHorizon: number; // buildSearch: the opening/consolidate plan horizon in ticks (war capped at 4000, endgame at the 25:00 clock)
   retalRatio: number; // retaliateAware: the wave as the smaller attacker, × the target's troops
   drainRatio: number; // drainedNations: the wave on a drained nation, × its troops (affordable gate, scorer gate, size)
   drainBelow: number; // drainedNations: a nation under this × its max troops counts as drained (nations' reserveRatio lower bound)
-  hystMargin: number; // hystRetreats: 'continue' must beat 'retreat' by this share
-  hystSlope: number; // hystRetreats: ... plus this × clamp(maxBsr − 1, 0, 2) on the other borders
-  hystStrikes: number; // hystRetreats: consecutive losing re-estimates before the wave comes home (int)
   strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
   boatsNearest: boolean; // every boat rule (seaExpansion, earlyBoat, huntBotsByBoat) measures a candidate from the nearest of a sample of our ocean-shore tiles — where the engine launches from (SpatialQuery.closestShoreByWater) — instead of an arbitrary middle border tile; candidates are ranked value / max(1, d / 40) so a free shore 60 tiles away beats a richer target 200 away, and a shore across water may be as close as 10 tiles (was 30); default off until the 30-game Medium A/B
   boatsWaterPath: boolean; // every boat rule (earlyBoat, huntBotsByBoat, seaExpansion, finishByBoat) ranks a candidate by the length of the water path the transport will sail (Military.waterPath: a breadth-first fill over water tiles from our sampled shore, ≤ 40k tiles, cached 100 ticks) instead of the straight-line distance, and refuses a landing whose path exceeds Military.BOAT_MAX_PATH for that rule (early 80, tribe 150, sea 200, finish 250); composes with boatsNearest on or off; default off until the 30-game Medium A/B
@@ -112,17 +95,9 @@ export interface PlaybookParams {
   bombBudget: boolean; // a planned bomb fund: once we own a silo and maybeBomb has a target, Economy.build escrows the price of the NEXT planned bomb (Military.bombPlan: Hydrogen when the best cluster's owner has ≥ 8000 tiles and 5M is within ~90 s of income, else Atom) before every discretionary buy (city levels past the cap-needed ones, ports past the first, port levels, rail, warships, SAM level-ups); the hard overrides (a post where an attack lands, the first SAM under an enemy silo, the cap-needed city at capFullShare) still go first, and maybeBomb buys the planned bomb the moment gold covers it (no bombReserve add-on). Off = spend first, bomb with what is left above bombReserve (45 lab games: 1,071 atoms vs 7 hydrogens, first bomb ~9:00). Default off until the 30-game Medium A/B
   warYield: boolean; // per-war return accounting drives decisions: manageRetreats brings a war home when its measured cost over the last 200 ticks exceeds yieldMaxTroopsPerTile (unless the target is collapsed / annexable / the gap owner), and the war scorer adds 4 × clamp(1 − expectedCost / yieldMaxTroopsPerTile, 0, 1), expectedCost = the target's last measured troops/tile against us, else its density × 1.3 (Config.attackLogic's altAttackerLoss = 1.3 × defender density × mag/100); a target retreated from for its price is refused for 600 ticks unless it becomes an opportunity. The WAR RESULT log line is always on. Default off until the 30-game Medium A/B
   yieldMaxTroopsPerTile: number; // warYield: the running cost (troops lost per tile taken over the last 200 ticks) above which a war is retreated, and the scorer's zero point; 120 = 6 × free land's ~20 a tile
-  warRoiCap: boolean; // loss cluster 1's bleed (rm1 losses ground wars at 1,400–37,000 troops/tile): a per-target realized ROI — troops lost per tile gained, an EMA over the last warRoiWindow resolved waves (WAR RESULT's numbers) folded with the running wave's realized-so-far — past warRoiMax on warRoiMinTiles of sample retreats the running wave (the existing retreat path, so RetreatExecution and hysteresis apply; counters exempt) and blacklists the target for warRoiCooldown ticks below opportunity rank (collapsed / gap owner / hold-mode threat / drained / annexable bypass, and the sticky filter releases a vetoed target); default off until the full-game A/B
-  warRoiMax: number; // warRoiCap: realized troops lost per tile above which a war is abandoned
-  warRoiMinTiles: number; // warRoiCap: tiles of realized sample before the cap may fire (int); a 0-tile war qualifies on troops alone at warRoiMinTiles × warRoiMax lost
-  warRoiWindow: number; // warRoiCap: resolved waves the per-target ROI EMA averages over (int)
-  warRoiCooldown: number; // warRoiCap: ticks an abandoned target is refused below opportunity rank (int)
   nationMirvAware: boolean; // exploit the nations' MIRV rules (MirvRisk.ts) instead of triggering them: the 25:00 crown MIRV goes only at a target that cannot counter (no silo, or neither the live MIRV price nor a built MIRV); near the steamroll line (city LEVELS — the rule sums them — ≥ 0.9 × mult × the runner-up and > minLeader − 1) while a nation is armed (can fire, or a silo and half the price: it fires the tick it reaches the price), no new city or city level, SAM cover for every city unit is the top discretionary buy (levels to 3 first, price escrowed like the bomb fund) and a war target whose cities would carry us over the line is refused (unless it is the only MIRV-capable rival or an opportunity); in hold mode a war whose tiles would carry our share to the denial line − 0.01 is refused unless it removes the last threat. Default off until the 30-game Medium A/B
   samOnRisk: boolean; // rm1 loss analysis (2026-08-30, docs/PlaybookBotPlan.md): 19 of 41 base full-game losses were steamroll-rule MIRVs landing minutes AFTER our own `MIRV RISK steamroll` warning, with ~3 SAMs standing — while the rule is true against us and a nation is armed (MirvRisk.armed), Economy.build raises the wall: a launcher per 4 city units (min 2) at 300-tick spacing, every launcher levelled to 3, a second silo (the counter MIRV), and the next launcher/silo price is escrowed out of every discretionary buy like the bomb fund; default off until the full-game A/B
-  clockTicks: number; // the game clock the timed rules assume (18000 = the 30-minute public game): the endgame posture (phase 'endgame', a second war at cap, 1.2× waves and 70 % sends, no buy that cannot pay back — seaFull) starts 3000 ticks before it and the build planner's horizon ends at it; 0 = an open-ended game (the lab's MIN=full, which runs until someone wins): the timed gates never fire and the endgame phase comes from the rank / enemy-silo test alone
-  webDefense: boolean; // loss cluster 4 (the alliance-web rush, rm1): before webUntil, a border web — ≥ 2 non-ally neighbours allied WITH EACH OTHER whose combined nation-rule sendable (RivalView.nationWouldSend) exceeds webRatio × our troops — makes requestAlliances ask the member most likely to accept first (even one kept as prey), the threat-post rule treat every member as a threat, and the reserve read the web's combined sendable where it reads a max (bounded ×2 as today); default off until the full-game A/B
-  webRatio: number; // webDefense: the web's combined sendable over our troops at which it counts
-  webUntil: number; // webDefense: no web detection from this tick on (int; 6000 = 10:00 — the rush that kills is early)
+  clockTicks: number; // the game clock the timed rules assume (18000 = the 30-minute public game): the endgame posture (phase 'endgame', a second war at cap, 1.2× waves and 70 % sends, no buy that cannot pay back — seaFull) starts 3000 ticks before it; 0 = an open-ended game (the lab's MIN=full, which runs until someone wins): the timed gates never fire and the endgame phase comes from the rank / enemy-silo test alone
   contestLeader: boolean; // loss cluster 2 (rm1: 13/41 losses ended rank 2–3 while the winner ran to 80 % and we boated 1,500-tile weaklings): while we are rank ≤ contestRank by tiles among non-bots, the leader is not us or a friend, its tiles exceed contestLeadRatio × ours and it is still growing (two tile samples 300 ticks apart), the boats seaExpansion / huntBotsByBoat already send are re-aimed from "weak X" / tribe targets at the leader's coastline (its ports/cities shore, same sizes and gates), maybeBomb / maybeMIRV treat the leader as a priority target like `threats`, and the war scorer adds +4 when it borders us; redirects targets, never sizes. Default off until the 30-game Medium A/B
   contestRank: number; // contestLeader: contest only while our tile rank among non-bot players is ≤ this (int)
   contestLeadRatio: number; // contestLeader: the leader's tiles must exceed this × ours
@@ -174,7 +149,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   fightNotBeforeTick: 1800,
   fightMinCities: 2,
   fightMaxShare: 0.6,
-  retreatBelowRatio: 0.4,
   capFullShare: 0.6,
   citiesBeforePort: 1,
   portMinPartnerDist: 300,
@@ -195,36 +169,21 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
   trustWars: true, // kept 2026-08-29: ladder1 (45 paired 30-min games, shifted grid) trustWars+nationAware off = 11W-17L-17T vs on, dScore −0.06 [−0.19, +0.05], undecided; small positive mean, rarely fires — see PlaybookBotPlan.md Ladder
   nationAware: true, // kept with trustWars (see above)
-  threatMap: false,
-  threatReserveGain: 2,
-  estLossScaleNation: 1.0, // uncalibrated until a sweep has been through calibrate.py
-  estLossScaleHuman: 1.0,
-  estLossScaleBot: 1.0,
-  estSpeedScale: 1.0,
-  hystRetreats: false, // default off until the 30-game Medium A/B (PlaybookBotPlan.md #4)
-  markTargets: false, // default off until the 30-game Medium A/B
-  wildernessAware: false, // default off until the 30-game Medium A/B
   drainedNations: false, // default off until the 30-game Medium A/B
   retaliateAware: false, // default off until the 30-game Medium A/B
   relationAware: false, // default off until the 30-game Medium A/B
-  buildSearch: false, // default off until the 30-game Medium A/B
-  takeFallout: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"takeFallout":false} vs {})ntil the 30-game Medium A/B
+  takeFallout: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"takeFallout":false} vs {})
   steamrollLevels: true, // ON by default 2026-08-30: the 30-min africa baseline sat at 27 vs 22.5 by 9:30 and 101 vs 37.5 by 13:00 and every MIRV it took was this rule; A/B as a removal, {"steamrollLevels":false} vs {}
-  steamrollCap: false,
-  holdHumans: false,
   strictOneWar: false,
-  boatsNearest: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"boatsNearest":false} vs {})ntil the 30-game Medium A/B
-  finishByBoat: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"finishByBoat":false} vs {})ntil the 30-game Medium A/B
+  boatsNearest: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"boatsNearest":false} vs {})
+  finishByBoat: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"finishByBoat":false} vs {})
   nationMirvAware: false, // default off until the 30-game Medium A/B
   samOnRisk: false, // default off until the full-game A/B (rm1 follow-up)
   clockTicks: 18000, // the 30-minute public game; tests/lab/playbook.lab.ts sets 0 for MIN=full
-  webDefense: false, // default off until the full-game A/B (docs/PlaybookBotPlan.md "Web defence")
-  webRatio: 2.0,
-  webUntil: 6000,
   plateauBreak: false, // default off until the 30-game Medium A/B
   plateauWindow: 3000, // 5 minutes: the loss curves flatten over minutes, not seconds
   plateauGrowth: 0.05,
-  multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})ntil the 30-game Medium A/B
+  multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})
   contestLeader: false, // default off until the 30-game Medium A/B
   contestRank: 3,
   contestLeadRatio: 1.5,
@@ -236,30 +195,11 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   bombBudget: false, // default off until the 30-game Medium A/B
   warYield: false, // default off until the 30-game Medium A/B
   yieldMaxTroopsPerTile: 120,
-  warRoiCap: false, // default off until the full-game A/B
-  warRoiMax: 500,
-  warRoiMinTiles: 50,
-  warRoiWindow: 2,
-  warRoiCooldown: 3000,
-  utility: false, // default off until the 30-game Medium A/B
-  utilCapMid: 0.7,
-  utilCapSteep: 10,
-  utilCommit: 1.5,
-  utilFreeLandCost: 20,
-  utilScoreFull: 15,
-  threatBusyWeight: 3,
-  threatVulnWeight: 2,
-  threatPreRatio: 1.5,
-  buildCapGoldPerTroop: 20,
-  buildHorizon: 6000,
   retalRatio: 1.2,
   drainRatio: 1.5,
   drainBelow: 0.3,
-  hystMargin: 0.1,
-  hystSlope: 0.2,
-  hystStrikes: 2,
-  annexWars: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"annexWars":false} vs {})ntil the 30-game Medium A/B
-  lapseToAttack: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"lapseToAttack":false} vs {})ntil the 30-game Medium A/B
+  annexWars: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"annexWars":false} vs {})
+  lapseToAttack: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"lapseToAttack":false} vs {})
   boatEscort: false, // default off until the full-game A/B
   escortMinSail: 60,
   escortFromTick: 1200,

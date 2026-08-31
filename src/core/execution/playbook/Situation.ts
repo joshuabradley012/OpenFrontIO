@@ -53,8 +53,6 @@ export interface Situation {
   // B2: the phase of the game we are in and what we know about each non-bot neighbour (exposure only until C1)
   phase: Phase;
   rival: Map<Player, RivalView>;
-  /** `webDefense`: the border web (SituationQueries.web) — null with the flag off, after webUntil, or when none qualifies. */
-  web: { members: Player[]; send: number } | null;
   /** `contestLeader`: the runaway leader to contest right now (null: flag off, or no runaway — see SituationQueries.contest). */
   contest: Player | null;
   /** `duelPush`: the foe of a WON duel — the strongest of the ≤ duelPlayers − 1 other living non-bot, non-teammate
@@ -348,38 +346,6 @@ export class SituationQueries {
       for (const n of mg.neighbors(c)) { if (seen.has(n) || !mg.isLand(n) || mg.manhattanDist(n, t) > radius) continue; seen.add(n); q.push(n); }
     }
     return true;
-  }
-
-  // ---------------------------------------------------------------- border web (`webDefense`)
-  private webCache: { tick: number; web: { members: Player[]; send: number } | null } = { tick: -1e9, web: null };
-  private lastWebLog = -1e9;
-  /** `webDefense` (loss cluster 4, the alliance-web rush): before webUntil, ≥ 2 of our non-ally neighbours who are
-   *  allied WITH EACH OTHER and whose combined nation-rule sendable troops (RivalView.nationWouldSend, what trustWars
-   *  already computes) exceed webRatio × our troops. Returns the qualifying cluster with the largest combined
-   *  sendable, members sorted strongest-sender-first; recomputed on the 10-tick cadence the rival view runs on.
-   *  Logged `WEB <names> could send …k` (rate-limited). */
-  web(sit: Situation): { members: Player[]; send: number } | null {
-    const p = this.ctx.p;
-    if (!p.webDefense || sit.tick >= p.webUntil) return null;
-    if (sit.tick % 10 !== 0 && sit.tick - this.webCache.tick < 10) return this.webCache.web;
-    const send = (r: Player) => sit.rival.get(r)?.nationWouldSend ?? 0;
-    // connected components of the "allied with each other" graph over our unfriendly neighbours
-    const left = new Set(sit.rivals);
-    let best: { members: Player[]; send: number } | null = null;
-    for (const r of sit.rivals) {
-      if (!left.has(r)) continue;
-      left.delete(r);
-      const club = [r];
-      for (let i = 0; i < club.length; i++) for (const o of left) if (club[i].isAlliedWith(o)) { left.delete(o); club.push(o); }
-      if (club.length < 2) continue;
-      const total = club.reduce((s, m) => s + send(m), 0);
-      if (best === null || total > best.send) best = { members: club, send: total };
-    }
-    if (best !== null && best.send > sit.troops * p.webRatio) best.members.sort((a, b) => send(b) - send(a) || b.troops() - a.troops());
-    else best = null;
-    this.webCache = { tick: sit.tick, web: best };
-    if (best !== null && sit.tick - this.lastWebLog >= 600) { this.lastWebLog = sit.tick; this.ctx.log(`t${sit.tick} WEB ${best.members.map((m) => m.name()).join("+")} could send ${Math.round(best.send / 1000)}k at our ${Math.round(sit.troops / 1000)}k`); }
-    return best;
   }
 
   // ---------------------------------------------------------------- defence posts

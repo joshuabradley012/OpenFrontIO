@@ -14,9 +14,9 @@ const WAR: Partial<PlaybookParams> = { fightNotBeforeTick: 0, fightMinCities: 0,
 
 const attacks = (log: string[]) => log.filter((l) => /^t\d+ ATTACK /.test(l));
 
-async function twoWeak(multiWar: boolean, utility = false) {
+async function twoWeak(multiWar: boolean) {
   const h = await playbookSetup({
-    spawn: [50, 40], tiles: ME, troops: 300_000, bot: { ...WAR, multiWar, utility },
+    spawn: [50, 40], tiles: ME, troops: 300_000, bot: { ...WAR, multiWar },
     rivals: [
       { name: "A", type: PlayerType.Nation, at: [37, 75], tiles: COLS[1], troops: 20_000 },
       { name: "B", type: PlayerType.Nation, at: [62, 75], tiles: COLS[2], troops: 20_000 },
@@ -45,14 +45,6 @@ describe("multiWar: wars", () => {
     expect(sent[0] + sent[1]).toBeLessThanOrEqual(300_000 * 0.6);
     expect(h.log.some((l) => l.includes("WAR #2 beside the running ones"))).toBe(true);
     expect(h.me.outgoingAttacks().filter((a) => a.target().isPlayer())).toHaveLength(2);
-    expect(h.bot.fired.get("multiWar")).toBe(1);
-  });
-
-  test("on with utility: the troops rule opens both wars in one pass too", async () => {
-    const h = await twoWeak(true, true);
-    const lines = attacks(h.log);
-    expect(lines).toHaveLength(2);
-    expect(new Set(lines.map((l) => / ATTACK (\w) /.exec(l)![1]))).toEqual(new Set(["A", "B"]));
     expect(h.bot.fired.get("multiWar")).toBe(1);
   });
 

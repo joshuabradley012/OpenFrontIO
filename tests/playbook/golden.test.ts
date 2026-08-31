@@ -11,8 +11,11 @@ import { describe, expect, test } from "vitest";
 import { PlayerType } from "../../src/core/game/Game";
 import { playbookSetup } from "../util/PlaybookSetup";
 
+// 2026-08-31 (bot/prune): hash regenerated because the always-on EST/ACT log lines were removed with the
+// estimator layer — the material is otherwise identical to the old hash's (verified line by line), so the
+// bot's decisions are unchanged.
 const GOLDEN =
-  "2dbc482cb92b9693b82fc83a853972c44db316691dbbd7c962d60db5e6379def";
+  "124f707d7b747f91c182ba61e553cc891b391bf0d424a8e438370fa6ae9de22f";
 const SNAPSHOT_TICKS = [100, 300, 600, 900, 1200, 1500, 1800, 2100, 2400];
 
 describe("golden", () => {

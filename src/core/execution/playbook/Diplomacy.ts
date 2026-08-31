@@ -110,20 +110,9 @@ export class Diplomacy {
     const me = this.ctx.me;
     const { rivals } = this.q.neighbours();
     rivals.sort((a, b) => b.troops() - a.troops());
-    // `webDefense`: the web member most likely to accept — relationAware's wouldAcceptAlliance when on, else the
-    // strongest sender (sit.web is sorted that way) — is asked FIRST every pass instead of the generic
-    // strongest-first order, and is not kept as prey: an alliance into the web is the defence, and the plain path
-    // kept the weak member as food while its allies could pile in
-    let webPick: Player | null = null;
-    const web = this.ctx.sit.web;
-    if (web !== null) {
-      const cands = web.members.filter((m) => rivals.includes(m));
-      webPick = (this.ctx.p.relationAware ? cands.find((m) => this.q.rivals.wouldAcceptAlliance(m)) : undefined) ?? cands[0] ?? null;
-      if (webPick !== null) { rivals.splice(rivals.indexOf(webPick), 1); rivals.unshift(webPick); }
-    }
     for (const o of rivals) {
       if (o === this.military.currentTarget || o === this.plannedTarget_) continue;
-      if (o === webPick ? this.annexRefuse(o) : this.isPrey(o) || this.annexRefuse(o)) continue; // an ally can never be annexed
+      if (this.isPrey(o) || this.annexRefuse(o)) continue; // an ally can never be annexed
       if (!me.canSendAllianceRequest(o)) continue;
       // `relationAware`: ask a nation only when its own decision rules would say yes (Rivals.wouldAcceptAlliance) —
       // a refusal we asked for is not a signal, and the trust dock for it (Rivals.onRequestRefused) counted our spam
@@ -133,7 +122,6 @@ export class Diplomacy {
         continue;
       }
       if (this.duelRefuse(o, "request")) continue; // `duelPush`: the sole rival of a won duel is never courted
-      if (o === webPick && this.isPrey(o)) this.lim.fire("webDefense", "request"); // the plain path would have kept it as prey
       this.ctx.mg.addExecution(new AllianceRequestExecution(me, o.id()));
     }
   }

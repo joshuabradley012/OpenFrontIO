@@ -5,9 +5,8 @@
 // Exposure only: nothing here changes behaviour until a consumer (C1) reads `sit.rival`.
 
 import { Difficulty, GameMode, Player, PlayerType, Relation, TerraNullius } from "../../game/Game";
-import { BotContext, FireLimiter } from "./Context";
+import { BotContext } from "./Context";
 import type { Situation } from "./Situation";
-import { Bucket, CELL, ThreatMap } from "./ThreatMap";
 
 export interface RivalView {
   /** Troop change per 100 ticks over the ring buffer (up to 8 samples, one every 50 ticks). */
@@ -26,9 +25,6 @@ export interface RivalView {
   nationCanAttack: boolean;
   /** Troops a land attack on us would carry under its reserve ratio and troopSendCap (0 for humans and bots). */
   nationWouldSend: number;
-  /** `wildernessAware`: a nation with unowned, fallout-free land next to its border spends its surplus there first
-   *  (AiAttackBehavior.maybeAttack) — it cannot attack a player this tick. Always false with the flag off. */
-  wildernessBound: boolean;
   /** `drainedNations`: tick until which a nation under its reserve ratio is expected to stay below its trigger ratio
    *  (−1 = not drained). Its attack rules stop it from attacking anyone before the reserve ratio. */
   drainedUntil: number;
@@ -101,16 +97,9 @@ export class Rivals {
   private nationCache = new Map<Player, { tick: number; friendly: boolean; can: boolean; send: number }>();
   /** The RivalView map, rebuilt on the 10-tick cadence every reader runs on (or when the watched set changes). */
   private view: { tick: number; key: string; map: Map<Player, RivalView> } | null = null;
-  /** `threatMap`: the per-segment influence map, rebuilt in the same border pass (empty while the flag is off). */
-  readonly threat: ThreatMap;
-  private wildCache = new Map<Player, { tick: number; bound: boolean }>();
   private drained = new Map<Player, number>(); // drainedUntil per nation
-  private lim: FireLimiter;
 
-  constructor(private ctx: BotContext) {
-    this.threat = new ThreatMap(ctx);
-    this.lim = new FireLimiter(ctx);
-  }
+  constructor(private ctx: BotContext) {}
 
   trust(p: Player): number {
     return this.trustOf.get(p) ?? 0.5;
@@ -168,10 +157,8 @@ export class Rivals {
       const friendly = me.isFriendly(p);
       if (!nr || t - nr.tick >= 10 || nr.friendly !== friendly) { // a new ally (or a lapsed one) is re-read at once, not after the cache's 10 ticks
         const nation = p.type() === PlayerType.Nation && !friendly;
-        let send = nation ? this.nationWouldSend(p) : 0;
-        let can = nation && this.nationCanAttack(p, send, sit.troops);
-        // `wildernessAware`: free land next door takes its whole surplus before any player is considered
-        if (can && this.ctx.p.wildernessAware && this.wildernessBound(p)) { can = false; send = 0; this.lim.fire("wildernessAware", "view"); }
+        const send = nation ? this.nationWouldSend(p) : 0;
+        const can = nation && this.nationCanAttack(p, send, sit.troops);
         nr = { tick: t, friendly, can, send };
         this.nationCache.set(p, nr);
       }
@@ -182,7 +169,6 @@ export class Rivals {
         bsr: this.bsr(p, borderTiles, sit.troops),
         borderShare: this.borderShare(p, borderTiles),
         nationCanAttack: nr.can, nationWouldSend: nr.send,
-        wildernessBound: this.ctx.p.wildernessAware && isNation && this.wildernessBound(p),
         drainedUntil: isNation ? this.drainedUntil(p, t) : -1,
         largestAttacker, largestAttack,
         relation: isNation ? p.relation(me) : null,
@@ -227,30 +213,19 @@ export class Rivals {
       r.head = (r.head + 1) % SAMPLES; r.n = Math.min(SAMPLES, r.n + 1);
     }
     for (const p of this.ring.keys()) if (!watched.includes(p)) { this.ring.delete(p); this.nationCache.delete(p); }
-    // one pass over our border: how many of our border tiles touch each neighbour. With `threatMap` on the same
-    // pass buckets the tiles into CELL × CELL cells per owner (a segment) for ThreatMap.compute.
+    // one pass over our border: how many of our border tiles touch each neighbour
     const mg = this.ctx.mg, counts = new Map<number, number>();
-    const tm = this.ctx.p.threatMap, cellsW = Math.ceil(mg.width() / CELL), buckets = new Map<number, Bucket>();
-    let ourBorder = 0;
     for (const tile of this.ctx.me.borderTiles()) {
-      ourBorder++;
       const owners: number[] = []; // a tile counts once per neighbouring owner
       for (const nb of mg.neighbors(tile)) {
         const id = mg.ownerID(nb);
-        if (id === 0) continue;
-        if (owners.includes(id)) { if (tm) { const b = buckets.get(id * 1048576 + ((mg.y(tile) >> 4) * cellsW + (mg.x(tile) >> 4))); if (b) b.theirTiles++; } continue; }
+        if (id === 0 || owners.includes(id)) continue;
         owners.push(id);
         counts.set(id, (counts.get(id) ?? 0) + 1);
-        if (!tm) continue;
-        const x = mg.x(tile), y = mg.y(tile), cell = (y >> 4) * cellsW + (x >> 4), key = id * 1048576 + cell;
-        let b = buckets.get(key);
-        if (!b) { b = { cell, ownerID: id, tiles: 0, theirTiles: 0, sx: 0, sy: 0, members: [] }; buckets.set(key, b); }
-        b.tiles++; b.theirTiles++; b.sx += x; b.sy += y; b.members.push(tile);
       }
     }
     this.border.clear();
     for (const p of watched) this.border.set(p, counts.get(p.smallID()) ?? 0);
-    if (tm) this.threat.compute(buckets.values(), watched, ourBorder, this.ctx.me.troops());
   }
 
   private deltas(r: Ring): [number, number] {
@@ -342,31 +317,10 @@ export class Rivals {
   couldAttackAtExpiry(p: Player, ourTroops: number): { can: boolean; send: number } {
     if (p.type() !== PlayerType.Nation) return { can: false, send: 0 };
     const send = this.nationWouldSend(p, true);
-    const can = this.nationCanAttack(p, send, ourTroops);
-    if (can && this.ctx.p.wildernessAware && this.wildernessBound(p)) { this.lim.fire("wildernessAware", "expiry"); return { can: false, send: 0 }; }
-    return { can, send };
+    return { can: this.nationCanAttack(p, send, ourTroops), send };
   }
 
   // ---------------------------------------------------------------- opportunity #2: the nation script on the current state
-  /** `wildernessAware`: does `p` have unowned, fallout-free, passable land next to its border? AiAttackBehavior.maybeAttack
-   *  (lines 60-95) then sends troops − maxTroops × expandRatio at TerraNullius and returns without looking at players.
-   *  Every 4th border tile is sampled (a wilderness edge is never one tile long); cached 50 ticks per rival. */
-  wildernessBound(p: Player): boolean {
-    const t = this.ctx.mg.ticks();
-    const c = this.wildCache.get(p);
-    if (c && t - c.tick < 50) return c.bound;
-    const mg = this.ctx.mg;
-    let bound = false, i = 0;
-    for (const tile of p.borderTiles()) {
-      if ((i++ & 3) !== 0) continue;
-      for (const nb of mg.neighbors(tile)) {
-        if (mg.isLand(nb) && !mg.isImpassable(nb) && !mg.hasOwner(nb) && !mg.hasFallout(nb)) { bound = true; break; }
-      }
-      if (bound) break;
-    }
-    this.wildCache.set(p, { tick: t, bound });
-    return bound;
-  }
   /** `drainedNations`: a nation under reserveRatio × max (the lower bound, so surely under its own) cannot attack anyone
    *  (attackBestTarget line 244). It is "drained" until its troops are expected back at triggerRatio × max, at the
    *  engine's current regrowth rate (Config.troopIncreaseRate, which only falls as troops rise — an underestimate,
