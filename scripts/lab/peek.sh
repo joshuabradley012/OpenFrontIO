@@ -17,4 +17,9 @@ for n in $(hcloud server list -l "pool=$POOL" -o noheader -o columns=name); do
   fi
 done; wait
 bash scripts/lab/aggregate.sh "$OUT" >/dev/null 2>&1 || true
-python3 scripts/lab/summarize.py "$OUT" 2>/dev/null | grep -E "^config|^[a-z0-9]+ +[0-9]+ |wins .* vs" || echo "no finished games yet"
+# compact by default: one line per config sorted by wins (PAIRS=1 adds the paired win lines)
+python3 scripts/lab/summarize.py "$OUT" 2>/dev/null | awk -v pairs="${PAIRS:-0}" '
+  /^config /{hdr=1; next}
+  /^  .* wins .* vs/{ if (pairs=="1") print; next }
+  /^[a-z0-9_]+ +[0-9]+ +[0-9]+/ && hdr { n=NF; printf "%-10s %3s games  %3s wins  %5s  score %s\n", $1, $2, $(n-2), $(n-1), $(n-3) }
+' | sort -k4 -n -r || echo "no finished games yet"
