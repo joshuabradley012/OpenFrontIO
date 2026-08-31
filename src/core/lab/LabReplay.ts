@@ -8,7 +8,11 @@
 // SHIFT), the params (PARAMS / EXPAND / EVERY, MIN=full → clockTicks 0) and TRIBES. Keep this file's game
 // assembly in exact statement order — execution scheduling and PRNG draws depend on it.
 
-import { GameConfig } from "../Schemas";
+import {
+  AttackLogicInput,
+  AttackLogicResult,
+  Config,
+} from "../configuration/Config";
 import { NationExecution } from "../execution/NationExecution";
 import {
   DEFAULT_PLAYBOOK,
@@ -19,40 +23,76 @@ import { SpawnExecution } from "../execution/SpawnExecution";
 import { TribeSpawner } from "../execution/TribeSpawner";
 import { WinCheckExecution } from "../execution/WinCheckExecution";
 import {
-  Cell, Difficulty, Game, GameMapSize, GameMapType, GameMode, GameType, Nation, Player, PlayerInfo, PlayerType, TerraNullius, UnitType,
+  Cell,
+  Difficulty,
+  Game,
+  GameMapSize,
+  GameMapType,
+  GameMode,
+  GameType,
+  Nation,
+  Player,
+  PlayerInfo,
+  PlayerType,
+  UnitType,
 } from "../game/Game";
 import { createGame } from "../game/GameImpl";
 import { GameMap, TileRef } from "../game/GameMap";
 import { Nation as ManifestNation } from "../game/TerrainMapLoader";
 import { UserSettings } from "../game/UserSettings";
+import { GameConfig } from "../Schemas";
 import { TestConfig } from "./TestConfig";
-import { Config } from "../configuration/Config";
 
 /** The lab's config: TestConfig (instant/cheap test knobs) with the production combat maths, blast radii and
  *  SAM ranges restored — what every lab result was measured under. Moved here from tests/lab/playbook.lab.ts. */
 export class LabConfig extends TestConfig {
-  attackLogic(gm: Game, a: number, at: Player, d: Player | TerraNullius, t: TileRef) { return Config.prototype.attackLogic.call(this, gm, a, at, d, t); }
-  attackTilesPerTick(a: number, at: Player, d: Player | TerraNullius, n: number) { return Config.prototype.attackTilesPerTick.call(this, a, at, d, n); }
-  disableNavMesh(): boolean { return false; }
-  radiusPortSpawn(): number { return 20; }
-  deletionMarkDuration(): number { return 300; }
-  nukeMagnitudes(t: UnitType) { return Config.prototype.nukeMagnitudes.call(this, t); }
-  nukeSpeed(t: UnitType) { return Config.prototype.nukeSpeed.call(this, t); }
-  defaultSamRange(): number { return 70; }
-  samRange(level: number): number { return Config.prototype.samRange.call(this, level); }
-  defaultNukeTargetableRange(): number { return 150; }
+  attackLogic(input: AttackLogicInput): AttackLogicResult {
+    return Config.prototype.attackLogic.call(this, input);
+  }
+  disableNavMesh(): boolean {
+    return false;
+  }
+  radiusPortSpawn(): number {
+    return 20;
+  }
+  deletionMarkDuration(): number {
+    return 300;
+  }
+  nukeMagnitudes(t: UnitType) {
+    return Config.prototype.nukeMagnitudes.call(this, t);
+  }
+  nukeSpeed(t: UnitType) {
+    return Config.prototype.nukeSpeed.call(this, t);
+  }
+  defaultSamRange(): number {
+    return 70;
+  }
+  samRange(level: number): number {
+    return Config.prototype.samRange.call(this, level);
+  }
+  defaultNukeTargetableRange(): number {
+    return 150;
+  }
   /** The headless lab overrides this to true; the client replay keeps render updates on. */
-  headless(): boolean { return false; }
+  headless(): boolean {
+    return false;
+  }
 }
 
 export class HeadlessLabConfig extends LabConfig {
-  headless(): boolean { return true; } // no render updates / sync hash: ~5 % of a game, no effect on the sim
+  headless(): boolean {
+    return true;
+  } // no render updates / sync hash: ~5 % of a game, no effect on the sim
 }
 
 /** The six spawn regions of the standard grid, in batch order (SPAWNRANK's GLOBAL walk indexes this order). */
 export const LAB_REGIONS: [string, [number, number]][] = [
-  ["north-russia", [1200, 140]], ["north-america", [450, 300]], ["east-asia", [1600, 350]],
-  ["africa", [1100, 550]], ["south-america", [620, 650]], ["australia", [1680, 660]],
+  ["north-russia", [1200, 140]],
+  ["north-america", [450, 300]],
+  ["east-asia", [1600, 350]],
+  ["africa", [1100, 550]],
+  ["south-america", [620, 650]],
+  ["australia", [1680, 660]],
 ];
 
 export interface LabSpec {
@@ -69,10 +109,19 @@ export interface LabSpec {
 
 /** What buildLabGame needs of the world: terrain from the map bins and the RAW manifest nations
  *  (TerrainMapData.nations is exactly this; the lab reads resources/maps/world/manifest.json itself). */
-export interface LabWorld { gameMap: GameMap; miniMap: GameMap; nations: ManifestNation[] }
+export interface LabWorld {
+  gameMap: GameMap;
+  miniMap: GameMap;
+  nations: ManifestNation[];
+}
 
 export interface LabSpawnPicker {
-  pickSpawn(game: Game, prefer?: [number, number], exclude?: [number, number][], radius?: number): TileRef | null;
+  pickSpawn(
+    game: Game,
+    prefer?: [number, number],
+    exclude?: [number, number][],
+    radius?: number,
+  ): TileRef | null;
 }
 
 /** Parse a transcript's `replay:` line (tests/lab/playbook.lab.ts replayRecipe) back into the spec, applying
@@ -85,18 +134,32 @@ export function parseReplayRecipe(recipe: string): LabSpec {
   while ((m = re.exec(recipe.trim().replace(/^replay:\s*/, ""))) !== null) {
     env[m[1]] = m[2].startsWith("'") ? m[2].slice(1, -1) : m[2];
   }
-  if (env.BOT_DIR) throw new Error("lab replay: BOT_DIR recipes need that bot's code checked out — run it headless instead");
+  if (env.BOT_DIR)
+    throw new Error(
+      "lab replay: BOT_DIR recipes need that bot's code checked out — run it headless instead",
+    );
   const o = env.PARAMS ? JSON.parse(env.PARAMS) : {};
-  if (o.__bot !== undefined) throw new Error(`lab replay: a milestone-bot game (__bot ${o.__bot}) needs .history/${o.__bot} — run it headless instead`);
+  if (o.__bot !== undefined)
+    throw new Error(
+      `lab replay: a milestone-bot game (__bot ${o.__bot}) needs .history/${o.__bot} — run it headless instead`,
+    );
   const params: PlaybookParams = { ...DEFAULT_PLAYBOOK };
-  if (env.EXPAND) { params.expandContested = Number(env.EXPAND); params.expandFree = Number(env.EXPAND) / 2; }
+  if (env.EXPAND) {
+    params.expandContested = Number(env.EXPAND);
+    params.expandFree = Number(env.EXPAND) / 2;
+  }
   if (env.EVERY) params.expandEvery = Number(env.EVERY);
-  if (env.PARAMS) { Object.assign(params, o); if (o.spawnInland !== undefined) DEFAULT_PLAYBOOK.spawnInland = o.spawnInland; } // runLab's global: the static picker reads DEFAULT_PLAYBOOK
+  if (env.PARAMS) {
+    Object.assign(params, o);
+    if (o.spawnInland !== undefined)
+      DEFAULT_PLAYBOOK.spawnInland = o.spawnInland;
+  } // runLab's global: the static picker reads DEFAULT_PLAYBOOK
   const minutes = env.MIN === "full" ? 170 : env.MIN ? Number(env.MIN) : 20;
   if (env.MIN === "full" && o.clockTicks === undefined) params.clockTicks = 0;
   const region = env.SPAWN ?? "";
   const pref0 = LAB_REGIONS.find(([n]) => n === region)?.[1];
-  if (pref0 === undefined) throw new Error(`lab replay: unknown SPAWN region '${region}'`);
+  if (pref0 === undefined)
+    throw new Error(`lab replay: unknown SPAWN region '${region}'`);
   const shift = Number(env.SHIFT ?? 0);
   return {
     minutes,
@@ -126,18 +189,34 @@ export function parseReplayRecipe(recipe: string): LabSpec {
  *     excluded, instead of restarting from rank 0 — so rank i is always the i-th tile of one deterministic
  *     sequence and two ranks of one region can never coincide either (in rm1 a restarted 60-tile walk re-found
  *     a 120-tile walk's tile: med5/med9 africa at 903,480). Ranks that resolve at 120 pick the same tile as before. */
-export function pickLabSpawn(game: Game, spec: LabSpec, picker: LabSpawnPicker): { tile: TileRef; rank: number; excludeRadius: number } {
+export function pickLabSpawn(
+  game: Game,
+  spec: LabSpec,
+  picker: LabSpawnPicker,
+): { tile: TileRef; rank: number; excludeRadius: number } {
   const regionIdx = LAB_REGIONS.findIndex(([n]) => n === spec.region);
-  const rank = spec.global ? spec.spawnRank * 6 + Math.max(0, regionIdx) : spec.spawnRank;
+  const rank = spec.global
+    ? spec.spawnRank * 6 + Math.max(0, regionIdx)
+    : spec.spawnRank;
   let vetoed: ((t: TileRef) => boolean) | null = null;
   if (!spec.global && regionIdx >= 0) {
     // every centre shifted by the same offset as spec.prefer (= own centre + SHIFT)
-    const sx = spec.prefer[0] - LAB_REGIONS[regionIdx][1][0], sy = spec.prefer[1] - LAB_REGIONS[regionIdx][1][1];
-    const centres: [number, number][] = LAB_REGIONS.map(([, [cx, cy]]) => [cx + sx, cy + sy]);
+    const sx = spec.prefer[0] - LAB_REGIONS[regionIdx][1][0],
+      sy = spec.prefer[1] - LAB_REGIONS[regionIdx][1][1];
+    const centres: [number, number][] = LAB_REGIONS.map(([, [cx, cy]]) => [
+      cx + sx,
+      cy + sy,
+    ]);
     vetoed = (t: TileRef) => {
-      const x = game.x(t), y = game.y(t);
-      const own = Math.hypot(x - centres[regionIdx][0], y - centres[regionIdx][1]);
-      return centres.some(([cx, cy], i) => i !== regionIdx && Math.hypot(x - cx, y - cy) < own);
+      const x = game.x(t),
+        y = game.y(t);
+      const own = Math.hypot(
+        x - centres[regionIdx][0],
+        y - centres[regionIdx][1],
+      );
+      return centres.some(
+        ([cx, cy], i) => i !== regionIdx && Math.hypot(x - cx, y - cy) < own,
+      );
     };
   }
   const stages = [120, 60, 30, 15];
@@ -146,9 +225,17 @@ export function pickLabSpawn(game: Game, spec: LabSpec, picker: LabSpawnPicker):
   let t: TileRef | null = null;
   for (let i = 0; i <= rank; i++) {
     for (;;) {
-      t = picker.pickSpawn(game, spec.global ? undefined : spec.prefer, exclude, stages[stage]);
+      t = picker.pickSpawn(
+        game,
+        spec.global ? undefined : spec.prefer,
+        exclude,
+        stages[stage],
+      );
       if (t === null) {
-        if (stage < stages.length - 1) { stage++; continue; } // region exhausted: relax, keeping the walk so far
+        if (stage < stages.length - 1) {
+          stage++;
+          continue;
+        } // region exhausted: relax, keeping the walk so far
         break;
       }
       exclude.push([game.x(t), game.y(t)]);
@@ -183,18 +270,48 @@ export function labReplaySteps(
   picker: LabSpawnPicker = BotCls,
   config?: LabConfig,
 ): LabReplaySteps {
-  const nations: Nation[] = world.nations.map((n, i) => new Nation(
-    new Cell(n.coordinates![0], n.coordinates![1]),
-    new PlayerInfo(n.name, PlayerType.Nation, null, `nation_${i}`, false, null, [], null, n.flag ?? null),
-  ));
-  const game = createGame([], nations, world.gameMap, world.miniMap, config ?? new LabConfig(labGameConfig(spec), new UserSettings(), false));
+  const nations: Nation[] = world.nations.map(
+    (n, i) =>
+      new Nation(
+        new Cell(n.coordinates![0], n.coordinates![1]),
+        new PlayerInfo(
+          n.name,
+          PlayerType.Nation,
+          null,
+          `nation_${i}`,
+          false,
+          null,
+          [],
+          null,
+          n.flag ?? null,
+        ),
+      ),
+  );
+  const game = createGame(
+    [],
+    nations,
+    world.gameMap,
+    world.miniMap,
+    config ?? new LabConfig(labGameConfig(spec), new UserSettings(), false),
+  );
   const gameID = "lab" + spec.seed;
   // Common random numbers: every PRNG in the game derives from gameID — nations simpleHash(nation id) +
   // simpleHash(gameID), tribes simpleHash(gameID) + 2, the bot simpleHash("playbook") + 7 — and the spawn is
   // picked deterministically from the state after 3 ticks.
   game.addExecution(...nations.map((n) => new NationExecution(gameID, n)));
-  game.addExecution(...new TribeSpawner(game, gameID, nations.map((n) => n.spawnCell!)).spawnTribes(spec.tribes));
-  const info = new PlayerInfo("PlaybookBot", PlayerType.Human, clientID, "playbook");
+  game.addExecution(
+    ...new TribeSpawner(
+      game,
+      gameID,
+      nations.map((n) => n.spawnCell!),
+    ).spawnTribes(spec.tribes),
+  );
+  const info = new PlayerInfo(
+    "PlaybookBot",
+    PlayerType.Human,
+    clientID,
+    "playbook",
+  );
   game.addPlayer(info);
   return {
     game,
@@ -225,7 +342,15 @@ export function buildLabGame(
   BotCls: typeof PlaybookBotExecution = PlaybookBotExecution,
   picker: LabSpawnPicker = BotCls,
   config?: LabConfig,
-): { game: Game; me: Player; bot: PlaybookBotExecution; spawn: TileRef; rank: number; excludeRadius: number; gameID: string } {
+): {
+  game: Game;
+  me: Player;
+  bot: PlaybookBotExecution;
+  spawn: TileRef;
+  rank: number;
+  excludeRadius: number;
+  gameID: string;
+} {
   const steps = labReplaySteps(spec, world, clientID, BotCls, picker, config);
   const { game, gameID } = steps;
   // spawn phase: nations/tribes place themselves in the first ticks; we pick a spot and are placed with them
@@ -233,13 +358,32 @@ export function buildLabGame(
   const pick = steps.placeSpawn();
   for (let i = 0; i < 3; i++) game.executeNextTick();
   const { me, bot } = steps.finish();
-  return { game, me, bot, spawn: pick.tile, rank: pick.rank, excludeRadius: pick.excludeRadius, gameID };
+  return {
+    game,
+    me,
+    bot,
+    spawn: pick.tile,
+    rank: pick.rank,
+    excludeRadius: pick.excludeRadius,
+    gameID,
+  };
 }
 
 /** LabConfig factory for buildLabGame callers that need the game config first (the lab's headless variant). */
 export function labGameConfig(spec: LabSpec): GameConfig {
   return {
-    gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA, gameType: GameType.Singleplayer,
-    difficulty: spec.difficulty, nations: "default", donateGold: false, donateTroops: false, bots: spec.tribes, infiniteGold: false, infiniteTroops: false, instantBuild: false, randomSpawn: false,
+    gameMap: GameMapType.World,
+    gameMapSize: GameMapSize.Normal,
+    gameMode: GameMode.FFA,
+    gameType: GameType.Singleplayer,
+    difficulty: spec.difficulty,
+    nations: "default",
+    donateGold: false,
+    donateTroops: false,
+    bots: spec.tribes,
+    infiniteGold: false,
+    infiniteTroops: false,
+    instantBuild: false,
+    randomSpawn: false,
   };
 }

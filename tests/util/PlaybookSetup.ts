@@ -6,7 +6,11 @@
 // opponents are ordinary players whose armies the test drives with
 // AttackExecution / AllianceRequestExecution, or real NationExecutions when
 // `ai: true` is set (the golden test uses those).
-import { Config } from "../../src/core/configuration/Config";
+import {
+  AttackLogicInput,
+  AttackLogicResult,
+  Config,
+} from "../../src/core/configuration/Config";
 import { AttackExecution } from "../../src/core/execution/AttackExecution";
 import { NationExecution } from "../../src/core/execution/NationExecution";
 import {
@@ -33,22 +37,8 @@ import { TestConfig } from "./TestConfig";
 /** TestConfig with the real attack maths, as in tests/lab/playbook.lab.test.ts: the bot's retreat,
  *  counter and tribe rules only make sense against the production loss curves. */
 export class PlaybookTestConfig extends TestConfig {
-  attackLogic(
-    gm: Game,
-    a: number,
-    at: Player,
-    d: Player | TerraNullius,
-    t: TileRef,
-  ) {
-    return Config.prototype.attackLogic.call(this, gm, a, at, d, t);
-  }
-  attackTilesPerTick(
-    a: number,
-    at: Player,
-    d: Player | TerraNullius,
-    n: number,
-  ) {
-    return Config.prototype.attackTilesPerTick.call(this, a, at, d, n);
+  attackLogic(input: AttackLogicInput): AttackLogicResult {
+    return Config.prototype.attackLogic.call(this, input);
   }
 }
 

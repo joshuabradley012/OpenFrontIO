@@ -71,10 +71,10 @@ function buildWaterChain(game: Game): PathFinder<TileRef> {
  * terrain only (nothing in the transformers or the HPA graph looks at owners or
  * units), so a (from, to) query always has the same answer for one graph
  * version — and the memo lives and dies with the chain, which is rebuilt per
- * waterGraphVersion. Trade ships between the same two ports, warships hunting
- * them and transports asked the full pipeline again for every voyage: ~8–11 % of
- * a long headless game. Bounded: full → cleared (a miss, never a different
- * answer). Callers get their own copy.
+ * waterGraphVersion. Trade ships between the same two ports asked the full
+ * pipeline again for every voyage. LRU with a byte budget: ~64 % of a
+ * 170-minute game's queries hit at this size, and the store stays small enough
+ * for the client worker, where the sim also runs. Callers get their own copy.
  */
 export class WaterPathMemo implements PathFinder<TileRef> {
   private static readonly DEFAULT_MAX_BYTES = 24_000_000;
@@ -139,7 +139,7 @@ export class WaterPathMemo implements PathFinder<TileRef> {
 
 /**
  * @param memoized - answer through the per-game WaterPathMemo. Opt-in for the
- *   callers whose queries repeat (trade ships: port tile → port tile); a warship
+ *   callers whose queries repeat (trade ships: port tile to port tile); a warship
  *   hunting a moving ship asks a new (from, to) every tick and would only flush it.
  */
 function sharedWaterChain(game: Game, memoized = false): PathFinder<TileRef> {
