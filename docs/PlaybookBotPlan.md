@@ -682,79 +682,15 @@ transcripts are byte-identical to base after stripping those lines (see "Pruning
 
 ## Opportunity #2 — the nation AI as a perfect-information opponent (2026-08-29)
 
-> **Pruned 2026-08-31 (`bot/prune`, last at 38219433a):** `markTargets` (ab1 41W/58L, dScore −0.081, 4 deaths vs 0)
-> and `wildernessAware` (11W/7L/81T — never changes a decision) are deleted with their code and tests.
-> `retaliateAware`, `drainedNations` and `relationAware` survive as flags (their constants stay in the CMA
-> specs). The test references below are historical.
+**Removed 2026-08-31 (branch `bot/prune2`; the code lives in git history, last at 0a8f35bc4).**
+The five nation-script flags are all gone now. `markTargets` (ab1 41W/58L, 4 deaths vs 0) and `wildernessAware`
+(never fires) went with `bot/prune`; `drainedNations` (+ drainRatio/drainBelow, RivalView.drainedUntil; flips1
++0.01 and mapped to no loss cluster), `retaliateAware` (+ retalRatio, the shadow-wave logic,
+RivalView.largestAttacker; flips1 −0.07) and `relationAware` (+ the wouldAcceptAlliance replay of
+getAllianceDecision, RivalView.relation, the prey-pick preference; flips1 −0.31) went with `bot/prune2` after
+losing flips1 against the combo defaults. `Rivals.NATION_RULES` keeps only the attack-rule constants
+`trustWars`/`nationAware` still read (reserveRatio, tooWeakShare, retain, targetDuration/targetCooldown).
 
-Branch `bot/nation-exploit`. The opponent pool is a deterministic script whose
-source is in the repo (`AiAttackBehavior.ts`, `NationAllianceBehavior.ts`,
-`NationNukeBehavior.ts`); these flags evaluate that script on the current state
-instead of modelling it. Five default-off `PlaybookParams` flags, one per edge
-(the brief's sixth, `secondAttacker`, is folded into `retaliateAware`: "join an
-ally's marked target as the smaller attacker" is the same rule with the mark as
-a second trigger). All nation-only; humans keep the existing handling. The rule
-constants are in `Rivals.NATION_RULES` with file:line references.
-
-- `markTargets` — `Military.mark()`: `TargetPlayerExecution` (the human
-  'target' button) on the war target when `fight()` commits, on a non-bot
-  attacker when a counter starts, and again from `fight()` whenever
-  `canTarget()` allows (targetCooldown 150; a mark lives 100 ticks). Every
-  allied nation with relation ≥ Friendly answers with `assist` (an attack of
-  its own, `AiAttackBehavior.ts:487-514`) and points its nukes at the mark
-  (`NationNukeBehavior.ts:220-231`). Costs: −40 relation from the target (it is
-  at −70 from the attack already), −20 from each assisting ally. No ally: no
-  mark. Note the relation window: an alliance starts at +100 and decays 0.05 a
-  tick, so an ally assists only inside ~1000 ticks of the alliance (or a gift).
-- `wildernessAware` — `Rivals.wildernessBound(p)`: every 4th border tile of a
-  nation is checked for an unowned, fallout-free, passable land neighbour
-  (cached 50 ticks). `maybeAttack` (`AiAttackBehavior.ts:60-95`) sends such a
-  nation's whole surplus at TerraNullius and returns, so `nationCanAttack` reads
-  false and `nationWouldSend` 0 (RivalView and `couldAttackAtExpiry`): the
-  trustWars pile-in veto and the nationAware expiry hold stand down. While every
-  unfriendly neighbour is a wilderness-bound nation, `sit.reserve` is halved.
-- `drainedNations` — `RivalView.drainedUntil`: a nation under 0.3 × max cannot
-  attack anyone (`attackBestTarget` line 244); the tick it is back at 0.5 × max
-  is estimated from `Config.troopIncreaseRate` (capped 3000). `fight()` accepts
-  a drained nation at 1.5× in the affordable gate, scores it like `collapsed`
-  (18 + ratio at ≥ 1.5×) and lets it through the sticky-target filter; the wave
-  is 1.5×. `counterAttack` never sizes the counter below the incoming wave + 1
-  (the reserve permitting) so the wave is cancelled, not trimmed.
-- `retaliateAware` — `RivalView.largestAttacker/largestAttack`
-  (`findIncomingAttackPlayer`, lines 405-426: `retaliate` and the nuke target
-  answer only the largest non-bot unfriendly wave). `Military.shadowWave(r)`:
-  if someone else's wave on r is larger than 1.2 × r + 1000, or an ally of ours
-  has r in `targets()`, r is scored +2 and gated at 1.2× instead of fightRatio,
-  with a 1.2× wave (below the bigger one). A wave that would become the largest
-  gets the normal gate.
-- `relationAware` — `Rivals.wouldAcceptAlliance(p)` replays
-  `getAllianceDecision` (lines 88-148) dice aside: traitor, too-many-alliances
-  (Hard/Impossible), threat (Medium 2.5× troops; Hard/Impossible per rules),
-  relation < Neutral, Friendly, enough-alliances, early window, similarly
-  strong (lowest dice values). `requestAlliances` skips a nation that would
-  refuse (logged once per 1800 ticks), so no trust is docked for a refusal we
-  asked for. `Diplomacy.preyPick`: among neighbours within 1.15× of the
-  weakest, the nation whose relation to us is highest is the prey (a lapsed
-  ally is still Friendly/Neutral: a hit leaves it Distrustful, not Hostile, so
-  no `hated` hunt at 3× and no embargo). The war scorer adds +2 (Friendly) /
-  +0.5 (Neutral). Only the enum is visible, not the raw value.
-
-Each flag fires `ctx.fire()` through `FireLimiter` (Context.ts, one count per
-100 ticks per site). Tests: `tests/playbook/{markTargets,wildernessAware,
-drainedNations,retaliateAware,relationAware}.test.ts`. Golden unchanged with
-all five off.
-
-Local smoke (africa, Medium, 6 min, one game each): base rank 2 / 44.4k tiles
-(fired realRetreats:3, trustWars:3); all five on rank 3 / 33.7k tiles (fired
-wildernessAware:1, relationAware:7, markTargets:7, drainedNations:4,
-retaliateAware:0). A 12-minute africa game with `retaliateAware` alone: rank 1,
-197.9k tiles, seven "as the smaller attacker" waves (fired retaliateAware:2,
-rate-limited). One game is not evidence either way.
-
-A/B, one flag at a time:
-`CONFIGS='{"base":{},"x":{"drainedNations":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
-(and the same for `markTargets`, `wildernessAware`, `retaliateAware`,
-`relationAware`); then the combination of whichever win.
 ## Review packages (2026-08-29, "PlaybookBot vs the field")
 
 ### #7 — Fast-forward build search (`buildSearch`) and a value function from records
@@ -767,8 +703,10 @@ the m4 bundle, which lost the full-game gate. Deleted with the flag, both params
 
 ## Fixes + perf package (2026-08-29, branch `bot/fixes-perf`)
 
-> **Pruned 2026-08-31 (`bot/prune`, last at 38219433a):** `steamrollCap` (ab1 2W/1L/95T) and `holdHumans` (never
-> fires in the lab) are deleted with their code and tests; `strictOneWar` (the only ab1 positive) stays.
+> **Pruned 2026-08-31:** `steamrollCap` (ab1 2W/1L/95T) and `holdHumans` (never fires in the lab) went with
+> `bot/prune` (last at 38219433a); `strictOneWar` (the only ab1 positive, +0.02) followed with `bot/prune2` after
+> flips1 rejected it against the combo defaults (SPRT REJECT −0.07; last at 0a8f35bc4). The perf work and the
+> no-flag bug fixes below are all still in.
 
 Review opportunity #8 ("cheap CPU wins") and the bug table.
 
@@ -795,17 +733,8 @@ shifts off a SAM-covered centre (or holds when every tile is covered); the rule
 table reads `expandEvery` / `allianceEvery`. None of these reach the golden
 window (its hash is unchanged); each has a test in `tests/playbook/fixesPerf.test.ts`.
 
-**Three new flags, default off until the 30-game Medium A/B:**
-- `steamrollCap` — city-unit cap = 0.9 × the nations' steamroll multiplier
-  (1.5× Medium / 1.25× Hard, never under the rule's 10-unit floor) instead of
-  the flat max(9, 1.15× runner-up). Fires when it lifts a cap the flat rule hit.
-- `holdHumans` — the 45 s expiry hold also for a human ally stronger than us.
-- `strictOneWar` — counters occupy the second war slot: one war plus counters,
-  no second war (opportunity wars included) while a counter runs; a counter on
-  the current target counts as that war.
-
-A/B: `CONFIGS='{"base":{},"cap":{"steamrollCap":true},"hold":{"holdHumans":true},"one":{"strictOneWar":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`.
-Tests: `tests/playbook/{fixesPerf,steamrollCap,holdHumans,strictOneWar}.test.ts`.
+The package's three flags (`steamrollCap`, `holdHumans`, `strictOneWar`) are described in the pruning note above;
+the tests that remain are `tests/playbook/fixesPerf.test.ts`.
 
 ### #3 — One currency for troops (`utility`)
 
@@ -968,8 +897,7 @@ accepts and whose score beats every current unfriendly neighbour's
 `wouldTarget` score becomes the planned target whatever `rivals.length` is —
 unless an unfriendly neighbour with troops > 0.6× ours borders us and the ally
 is not annexable. Logged `let alliance lapse to attack <name> (score …)`;
-fires on each such lapse. The old prey rule, `relationAware`'s prey pick and
-the `campaigns` lapse are untouched and run first.
+fires on each such lapse. The old prey rule is untouched and runs first.
 
 **Tests.** `tests/playbook/annexWars.test.ts`: a 4 × 4 target on the ocean
 shore of `half_land_half_ocean` with the rest of the land ours is annexable
@@ -1041,11 +969,10 @@ whole-or-nothing test, unchanged) and the total committed — `attackStart`'s
 send per running non-counter war, else what is left of the wave, plus the
 waves opened earlier in the pass — stays under `fightMaxShare` of the army
 (`troops + committed`); each wave ≥ 1000. `MULTI_WAR_SLOTS` = 3 counts every
-running non-bot attack, so **a running counter occupies a slot** (the
+running non-bot attack, so **a running counter occupies a slot** (the old
 `strictOneWar` finding, 15W/6L, carried over). The sticky-target filter binds
 the first war only; an extra war never becomes `currentTarget_` and does not
-refresh `lastWarTick`. `strictOneWar` (if on) still wins: its check runs first
-and refuses the pass. With `utility` on, a further war option in the ranked
+refresh `lastWarTick`. With `utility` on, a further war option in the ranked
 list re-runs `warPick` against the slots and commitments the first one left.
 Logged `WAR #n beside the running ones`; fires per extra war. (b) tribes:
 concurrency 2 below 60 % of cap, 3 above (never under the old value), and
@@ -1064,7 +991,7 @@ its border is still gated by its whole army) and
 `tests/playbook/multiWar.test.ts` (two weak neighbours: off → one war per
 pass, on → both in the same pass under `fightMaxShare`, with `utility` on
 too; three neighbours fill three slots; a counter on the current target
-leaves room for two; `strictOneWar` on top refuses the pass; three tribes
+leaves room for two; three tribes
 below 60 % of cap: on → two first clicks in one pass, off → one). Golden
 unchanged; a 3-minute africa transcript with `{}` is byte-identical before
 and after (only `botMs`/`gameMs` differ).
@@ -1736,28 +1663,12 @@ a tribe on our own mass is exempt at factor 0).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 ## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)
 
-Loss cluster 3 above: 40 of the 41 losses stop growing by minute 33 (wins keep growing to 61) — the bot sits at
-rank 2–3 behind a runaway with nothing forcing it back into the game. The flag samples our tile count every 300
-ticks (`Military.plateauRule`, a ring buffer); a **plateau** = alive, rank > 1 among non-bots, tiles grew <
-`plateauGrowth` (0.05) over `plateauWindow` (3000) ticks, no outgoing non-bot attack, and not in `hold` mode (the
-finish rule owns that posture). On detection it escalates **once per window**, in order:
-
-1. **Forced sea expansion** — `seaExpansion(forced)`: the capShare gates ("land first while free", "under attack")
-   are skipped and every distance cap is ×1.5 — a reachable free/weak shore across water beats sitting still.
-2. **Forced war** — through `warPick`/`actWar`: the affordability gate is skipped and the ratio floor drops to 1×
-   (the affordable ratio, even below `fightAbove`), and the pick switches to the **largest** adjacent non-ally the
-   gates accept. Every other invariant stays: whole-or-nothing, the reserve, capFloor 0.3, the posts (1.5×) and
-   thin-empire (3×) gates.
-3. **Boxed in by allies** — no unfriendly neighbour at all: the weakest adjacent alliance lapses at its next
-   expiry (`Diplomacy.planLapse`, the plannedTarget mechanism `lapseToAttack` also uses).
-
-The plateau rule runs after wars and sea expansion in the tick's table, so an action taken here is one the plain
-rules declined that same tick — it logs `PLATEAU t… tiles a→b (x % in w ticks) rank r: <action>` and fires
-`plateauBreak` per forced action. Params: `plateauWindow` (int ticks), `plateauGrowth` (share). Tests:
-`tests/playbook/plateauBreak.test.ts`.
-
-A/B (judge on full games — the plateau is a full-game failure mode):
-`CONFIGS='{"base":{},"plat":{"plateauBreak":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+**Removed 2026-08-31 (branch `bot/prune2`; the code lives in git history, last at 0a8f35bc4).**
+A stalled-growth escalation (Military.plateauRule: tile count sampled every 300 ticks; on a plateau a forced sea
+expansion, else a forced war on the largest adjacent non-ally, else the weakest alliance lapses). fix1 +0.05 (led
++0.24 at 18 pairs, faded), flips1 −0.14 against the combo defaults — the combo's own pressure already fills the
+role. Deleted with `plateauWindow`/`plateauGrowth`, the `forced=` plumbing through
+seaExpansion/warPick/warScorer, `Diplomacy.planLapse`, `WarPick.alts` and its tests.
 
 ## `fix1` — the five loss-analysis flags, full games (2026-08-30, `lab-out/fix1`)
 
@@ -1865,7 +1776,7 @@ called by the loop's `boat()` before every launch (every boat rule, dry runs exc
   2 × `escortDeferTicks`. Assignments live in Military (`escorts`), the `escorts` rule every 10 ticks does the
   releases and the swarm launches, `prune()` is the backstop.
 - **Swarm**: a **worthy** target — an opening pick scoring ≥ 2 × `boatOpeningMinScore`, a `CONTEST leader` boat, a
-  boat onto the `duelPush` foe's shore, a `plateauBreak`-forced sea expansion — with **no escort possible** (no idle
+  boat onto the `duelPush` foe's shore — with **no escort possible** (no idle
   warship, no purchase pending) or **held `escortDeferTicks`** launches `escortSwarm` (3) boats instead: the same
   troops split evenly (each ≥ 500, else fewer boats), the first now and the rest one `escorts` pass (10 ticks) apart
   (they skip `boatDedupe` and the gate). Logged `ESCORT swarm n boats → (x,y)`. Prefer escort, swarm second, defer last.
@@ -1951,45 +1862,12 @@ Losses 71: endgame race at top-3 25 (in 17 we never fought the winner), MIRVed-d
 
 ## Duel wave gate (`duelWaveGate`, 2026-08-31, branch `bot/duel-wave-gate`)
 
-The combo loss analysis above: `duelRatio` 1.0 is right for DIPLOMACY (stop courting the last rival the moment we
-are level) but it also authorises the duel WAR wave near parity, and that wave is an all-in —
-`lab-out/salv2/p_combo_med8_north-russia.txt` shows `t23960 ATTACK Egypt 394074t/82671k ← 82597k (1.00×)`: 82.6M,
-every troop above the reserve, at an 82.7M foe; `DUEL over` the next tick (home 57.0M < the foe), cap 170M→33M, a
-game we led on the board lost. ~3 of 71 combo losses have this shape.
+**Removed 2026-08-31 (branch `bot/prune2`; the code lives in git history, last at 0a8f35bc4).**
+Held `duelPush`'s war wave until troops ≥ `duelWaveRatio` × the foe's (the salv2 82.6M-on-82.7M all-in own-goal).
+The plain duel branch already needs ~1.43× (maxSend ≥ duelRatio × the foe at the 0.7 send share), so the default
+1.2 was a near-no-op; swept where it bites, nf1 rejected both 1.8 and 1.9 (SPRT REJECT −0.02/−0.04). Deleted with
+`duelWaveRatio` and its tests; `duelPush`/`duelRatio` (default on) are untouched.
 
-With the flag on, `warPick`'s duel-opportunity branch additionally requires our troops ≥ `duelWaveRatio` (1.2) ×
-the foe's. In the band between `duelRatio` and `duelWaveRatio` the pick proceeds **as if no duel opportunity
-existed** — the normal affordability / `fightAbove` / sticky-target gates and the plain scorer keep the pressure
-without the all-in — while everything else keeps the `duelRatio` threshold untouched: `Situation.duel`, the push
-mode, Diplomacy's no-alliance/no-renewal, and the bombs / MIRV priority on the foe. Logged
-`DUEL wave held: <ratio>× in the <duelRatio>–<duelWaveRatio>× band` (≤ 1 per 600 ticks); fires (`duelWaveGate`,
-site `hold`) only when the gate blocked a wave the plain duel branch would actually have SENT (its score gate:
-`maxSend ≥ duelRatio ×` the foe's army).
-
-No wave cap was added: **ctx.send already guarantees the reserve** — `room = min(spendable, troops − 0.3 × cap)`
-with `spendable = troops − reserveShare × troops`, and a war wave trimmed under 0.9 of its ask is refused
-whole-or-nothing. The transcript's 82.6M wave was exactly spendable at reserveShare 0.408: the reserve held; the
-all-in is everything ABOVE the reserve, which is what the gate addresses.
-
-Base fact found while sizing the fixture (mirrors the duelPush section's 1.71 note, restated for duelRatio 1.0):
-warScorer's duel branch accepts only at `maxSend` (0.7 × troops in the push) ≥ `duelRatio` × the foe's army, so the
-plain duel wave never goes under troops ≈ **1.43×** the foe (send's whole-or-nothing raises the practical floor to
-~1.5–1.7× depending on reserveShare and the 0.3 capFloor). **At the default `duelWaveRatio` 1.2 the gate therefore
-never blocks a wave the plain duel would have sent** — in the 1.0–1.2 band it only strips the opportunity status
-(gate / sticky-target bypass), and `fired` stays 0 there by design. For the gate to bite on real waves the CMA (or
-the A/B) must set `duelWaveRatio` past ~1.43 — the salv2 Egypt all-in itself went at 1.69×, so ~1.8–2.0 is the
-range worth sweeping.
-
-Params: `duelWaveGate` (default off — it modifies default-on `duelPush`, so the A/B needs it flaggable),
-`duelWaveRatio` (1.2). Tests: `tests/playbook/duelWaveGate.test.ts` (duelPush pinned on at duelRatio 1.0; at 1.86×
-with the gate at 2.0 the wave is held + fires while the plain fixture sends the 1.00× all-in; at 2.17× it goes on
-both; the 1.0–1.2 band at the default holds the opportunity, diplomacy still refuses the foe, nothing fires — and
-the flag-off twin documents that the plain wave never went there either; below duelRatio no duel either way).
-Golden unchanged; MIN=3 africa/Medium transcript identical with the flag off (botMs/gameMs wall-clock fields only);
-6-min africa/Medium smoke with the flag on is clean (no duel reached — inert until a duel, as expected).
-
-A/B (full games — a duel is an endgame; sweep the ratio, since 1.2 is a near-no-op):
-`CONFIGS='{"base":{},"gate":{"duelWaveGate":true,"duelWaveRatio":1.8}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh`.
 ## MIRV counterforce (`mirvCounterforce`, 2026-08-31, branch `bot/mirv-counterforce`)
 
 Combo loss analysis (above): 24 of 71 losses were MIRVed down after leading while the bot fired ZERO MIRVs in 239
@@ -2035,3 +1913,28 @@ None of the eight default-off candidates graduates against the new defaults: str
 ## `nf1` — the loss-cluster flags vs combo (2026-08-31, `lab-out/nf1`, SEED=nf1, 108 games each; med9 dropped after a launcher stall)
 
 mirvCounterforce 72 wins vs base 71 (+0.003, pairs 8/7); +samOnRisk 72 (+0.011); duelWaveGate 1.8/1.9 both SPRT REJECT (−0.02/−0.04). The counterforce fires correctly (the north-russia liveness smoke reproduced the losing shape and won) but does not convert to net wins at scale — consistent with the loss analysis's own finding that winners absorb MIRVs behind SAM walls rather than prevent them. All four stay default-off. Infrastructure: the overlapped-SPRT launcher died on rsync exit 24 (a box-side sed temp file vanished mid-pull) — remote.sh now excludes sed*/queue* from pulls and tolerates exit 24. Plateau note: base wins 66–68 % across the last three sweeps; single default-off flags no longer move it.
+
+## Pruning II (2026-08-31, branch `bot/prune2`)
+
+Josh: "as slim and neat as possible." Second pass, deleting the flips1/nf1 shelf — every remaining default-off
+flag that lost (or never beat) its full-game A/B against the combo defaults — with its params, code paths, tests
+and docs section. Last commit with all of it: 0a8f35bc4.
+
+| deleted | evidence |
+|---|---|
+| `strictOneWar` | flips1 SPRT REJECT −0.07 |
+| `relationAware` (+ Rivals.wouldAcceptAlliance, RivalView.relation, the prey-pick preference, six NATION_RULES alliance constants) | flips1 −0.31 |
+| `plateauBreak` (+ plateauWindow/plateauGrowth, Military.plateauRule, the forced= plumbing through seaExpansion/warPick/warScorer, Diplomacy.planLapse, WarPick.alts) | flips1 −0.14 (fix1 +0.05 had faded) |
+| `duelWaveGate` (+ duelWaveRatio) | nf1 SPRT REJECT at 1.8 and 1.9 |
+| `drainedNations` (+ drainRatio/drainBelow, RivalView.drainedUntil, NATION_RULES.triggerRatio) | flips1 +0.01; maps to no loss cluster |
+| `retaliateAware` (+ retalRatio, Military.shadowWave, RivalView.largestAttacker/largestAttack) | flips1 −0.07 |
+| `scripts/lab/valuefit.py` | built for the removed buildSearch's value model; unused since |
+
+Kept as **Hard candidates** (flat on Medium, shaped for the Hard frontier — noted in the Params.ts header):
+`boatEscort` (+0.03), `contestLeader` (+0.00), `samOnRisk` (−0.07 alone, +0.011 beside counterforce),
+`mirvCounterforce` (+cfCooldown, +0.003) — and everything default-on is untouched.
+
+**Decision parity.** All six flags defaulted off and no always-on logging was touched: golden unchanged, and the
+default-config MIN=3 africa/Medium lab transcript is byte-identical to base (0a8f35bc4) except the FINAL line's
+botMs/gameMs wall-clock fields. Full suite green, tsc, oxlint+eslint (the 14 pre-existing DetMath errors are the
+same at base).

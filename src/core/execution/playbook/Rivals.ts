@@ -26,22 +26,11 @@ export interface RivalView {
   nationCanAttack: boolean;
   /** Troops a land attack on us would carry under its reserve ratio and troopSendCap (0 for humans and bots). */
   nationWouldSend: number;
-  /** `drainedNations`: tick until which a nation under its reserve ratio is expected to stay below its trigger ratio
-   *  (−1 = not drained). Its attack rules stop it from attacking anyone before the reserve ratio. */
-  drainedUntil: number;
-  /** `retaliateAware`: the attacker a nation's `retaliate` would answer — its largest incoming non-bot, unfriendly wave
-   *  (AiAttackBehavior.findIncomingAttackPlayer) — and that wave's troops. Null / 0 when nobody attacks it. */
-  largestAttacker: Player | null;
-  largestAttack: number;
-  /** `relationAware`: the nation's relation to us (PlayerImpl.relation: Hostile < −50 ≤ Distrustful < 0 ≤ Neutral < 50 ≤
-   *  Friendly); null for humans and bots, whose relation nobody reads. */
-  relation: Relation | null;
 }
 
 /** Nation attack-rule constants, copied verbatim from the AI code so a change there fails our tests, not our wars. */
 export const NATION_RULES = {
   // src/core/execution/NationExecution.ts:57-59 — drawn once per nation from its seeded PRNG
-  triggerRatio: [0.5, 0.6] as const, // nextInt(50, 60) / 100
   reserveRatio: [0.3, 0.4] as const, // nextInt(30, 40) / 100
   expandRatio: [0.1, 0.2] as const, // nextInt(10, 20) / 100
   // src/core/execution/utils/AiAttackBehavior.ts:878-891 isAttackTooWeak: Hard/Impossible FFA, troops < target × 0.2
@@ -63,17 +52,6 @@ export const NATION_RULES = {
   // last mark) and docks the target's relation to us by 40; src/core/configuration/Config.ts:631-636
   targetDuration: 100, // ticks a mark stays in targets()
   targetCooldown: 150, // ticks between two marks by the same player
-  // src/core/execution/nation/NationAllianceBehavior.ts:88-148 getAllianceDecision, dice aside: traitor → no;
-  // too many alliances (150-169: Hard ≥ 50 % / Impossible ≥ 25 % of the non-bot players) → no; threat (220-252) → yes;
-  // relation < Neutral → no; Friendly (308-327) → yes; enough alliances (274-306: Medium ≥ nextInt(4, 6), Hard/Impossible
-  // "not all my neighbours", else ≥ nextInt(3, 5) / nextInt(2, 4)) → no; early game (187-218) → yes; similarly strong
-  // (330-369: their troops+outgoing > ours × nextInt(70, 80) %, or tiles > ours × nextInt(80, 90) % with half our troops).
-  threatTroops: { [Difficulty.Medium]: 2.5, [Difficulty.Impossible]: 1.5 } as Partial<Record<Difficulty, number>>,
-  earlyGameTicks: { [Difficulty.Easy]: 3000, [Difficulty.Medium]: 1800, [Difficulty.Hard]: 1800, [Difficulty.Impossible]: 600 } as Record<Difficulty, number>,
-  enoughAlliances: { [Difficulty.Easy]: Infinity, [Difficulty.Medium]: 4, [Difficulty.Hard]: 3, [Difficulty.Impossible]: 2 } as Record<Difficulty, number>, // lower bound of the dice
-  tooManyAlliancesShare: { [Difficulty.Hard]: 0.5, [Difficulty.Impossible]: 0.25 } as Partial<Record<Difficulty, number>>,
-  similarTroops: { [Difficulty.Easy]: 0.6, [Difficulty.Medium]: 0.7, [Difficulty.Hard]: 0.75, [Difficulty.Impossible]: 0.8 } as Record<Difficulty, number>, // lower bound of the dice
-  similarTiles: { [Difficulty.Easy]: 0.7, [Difficulty.Medium]: 0.8, [Difficulty.Hard]: 0.85, [Difficulty.Impossible]: 0.9 } as Record<Difficulty, number>,
 };
 
 interface Ring {
@@ -98,7 +76,6 @@ export class Rivals {
   private nationCache = new Map<Player, { tick: number; friendly: boolean; can: boolean; send: number }>();
   /** The RivalView map, rebuilt on the 10-tick cadence every reader runs on (or when the watched set changes). */
   private view: { tick: number; key: string; map: Map<Player, RivalView> } | null = null;
-  private drained = new Map<Player, number>(); // drainedUntil per nation
 
   constructor(private ctx: BotContext) {}
 
@@ -163,16 +140,11 @@ export class Rivals {
         nr = { tick: t, friendly, can, send };
         this.nationCache.set(p, nr);
       }
-      const isNation = p.type() === PlayerType.Nation;
-      const [largestAttacker, largestAttack] = isNation ? this.largestAttacker(p) : [null, 0];
       out.set(p, {
         troopsDelta, tilesDelta, trust: this.trust(p), borderTiles,
         bsr: this.bsr(p, borderTiles, sit.troops),
         borderShare: this.borderShare(p, borderTiles),
         nationCanAttack: nr.can, nationWouldSend: nr.send,
-        drainedUntil: isNation ? this.drainedUntil(p, t) : -1,
-        largestAttacker, largestAttack,
-        relation: isNation ? p.relation(me) : null,
       });
     }
     this.view = { tick: t, key, map: out };
@@ -321,69 +293,6 @@ export class Rivals {
     return { can: this.nationCanAttack(p, send, ourTroops), send };
   }
 
-  // ---------------------------------------------------------------- opportunity #2: the nation script on the current state
-  /** `drainedNations`: a nation under reserveRatio × max (the lower bound, so surely under its own) cannot attack anyone
-   *  (attackBestTarget line 244). It is "drained" until its troops are expected back at triggerRatio × max, at the
-   *  engine's current regrowth rate (Config.troopIncreaseRate, which only falls as troops rise — an underestimate,
-   *  capped at 3000 ticks). The estimate is refreshed while it stays under the line and kept once it climbs out. */
-  drainedUntil(p: Player, t: number): number {
-    const mg = this.ctx.mg;
-    const max = Math.max(1, mg.config().maxTroops(p));
-    if (p.troops() < max * this.ctx.p.drainBelow) { // drainBelow = NATION_RULES.reserveRatio[0] by default
-      const need = max * NATION_RULES.triggerRatio[0] - p.troops();
-      const rate = Math.max(1, mg.config().troopIncreaseRate(p));
-      const until = t + Math.min(3000, Math.ceil(need / rate));
-      this.drained.set(p, until);
-      return until;
-    }
-    const kept = this.drained.get(p);
-    if (kept !== undefined && kept > t) return kept;
-    this.drained.delete(p);
-    return -1;
-  }
-  /** `retaliateAware`: AiAttackBehavior.findIncomingAttackPlayer (lines 405-426): the largest incoming wave from a
-   *  non-bot the nation is not friendly with, and its troops. */
-  largestAttacker(p: Player): [Player | null, number] {
-    let best: Player | null = null, troops = 0;
-    for (const a of p.incomingAttacks()) {
-      const att = a.attacker();
-      if (att.type() === PlayerType.Bot || p.isFriendly(att) || a.troops() <= troops) continue;
-      troops = a.troops(); best = att;
-    }
-    return [best, troops];
-  }
-  /** `relationAware`: would NationAllianceBehavior.getAllianceDecision (lines 88-148) say yes to our request, dice aside?
-   *  The dice (confusion, the early-game and Friendly rolls, the ranges) are read at their permissive end, so a `false`
-   *  is a certain refusal and a `true` is the best case. Humans: always true (the rules are nation-only). */
-  wouldAcceptAlliance(p: Player): boolean {
-    if (p.type() !== PlayerType.Nation) return true;
-    const me = this.ctx.me, mg = this.ctx.mg, cfg = mg.config(), d = cfg.gameConfig().difficulty;
-    if (me.isTraitor()) return false; // line 97: 90 % refusal
-    const tooMany = NATION_RULES.tooManyAlliancesShare[d];
-    if (tooMany !== undefined && me.alliances().length >= mg.players().filter((o) => o.type() !== PlayerType.Bot).length * tooMany) return false;
-    // threat (220-252): the one rule that beats a bad relation
-    const threat = d === Difficulty.Medium ? me.troops() > p.troops() * NATION_RULES.threatTroops[d]!
-      : d === Difficulty.Hard ? me.troops() > p.troops() && cfg.maxTroops(me) > cfg.maxTroops(p) * 2
-      : d === Difficulty.Impossible ? me.troops() > p.troops() * NATION_RULES.threatTroops[d]! || (me.troops() > p.troops() && (cfg.maxTroops(me) > cfg.maxTroops(p) * 1.5 || me.numTilesOwned() > p.numTilesOwned() * 1.5))
-      : false;
-    if (threat) return true;
-    if (cfg.gameConfig().gameMode === GameMode.Team && d === Difficulty.Impossible) return false; // 268: always
-    const rel = p.relation(me);
-    if (rel < Relation.Neutral) return false;
-    if (rel === Relation.Friendly) return true;
-    // enough alliances (274-306)
-    if (d === Difficulty.Hard || d === Difficulty.Impossible) {
-      const bordering = p.nearby().filter((n): n is Player => n.isPlayer() && n.type() !== PlayerType.Bot);
-      if (bordering.length >= 2 && bordering.includes(me) && bordering.length <= bordering.filter((o) => p.isFriendly(o)).length + 1) return false;
-    }
-    if (p.alliances().length >= NATION_RULES.enoughAlliances[d]) return false;
-    if (mg.ticks() < NATION_RULES.earlyGameTicks[d] + cfg.numSpawnPhaseTurns()) return true;
-    // similarly strong (330-369), read with the lowest thresholds the dice can draw
-    const out = (o: Player) => o.outgoingAttacks().reduce((s, a) => s + a.troops(), 0);
-    const theirs = p.troops() + out(p), ours = me.troops() + out(me);
-    if (ours > theirs * NATION_RULES.similarTroops[d]) return true;
-    return me.numTilesOwned() > p.numTilesOwned() * NATION_RULES.similarTiles[d] && ours > theirs * 0.5;
-  }
   nationCanAttack(p: Player, wouldSend: number, ourTroops: number): boolean {
     if (p.type() !== PlayerType.Nation || !p.isAlive()) return false;
     const mg = this.ctx.mg;

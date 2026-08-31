@@ -19,7 +19,7 @@ import { PlaybookHarness, playbookSetup, Rect, RivalSpec } from "../util/Playboo
 const QUIET: Partial<PlaybookParams> = {
   expandFree: 0, expandContested: 0, fightNotBeforeTick: 1e9, multiWar: false, annexWars: false, lapseToAttack: false,
   takeFallout: false, finishByBoat: false, boatsWaterPath: false, boatsNearest: true, boatsAfterCoast: false, boatDedupe: true,
-  boatDedupeRadius: 40, boatAtTick: 1e9, boatOpening: false, contestLeader: false, duelPush: false, plateauBreak: false,
+  boatDedupeRadius: 40, boatAtTick: 1e9, boatOpening: false, contestLeader: false, duelPush: false,
   escortMinSail: 60, escortFromTick: 0, escortThreatRange: 130, escortBuy: true, escortMaxShips: 2, escortSwarm: 3, escortDeferTicks: 600,
 };
 const ME: Rect = [1120, 396, 1150, 445]; // Africa's Red Sea bank, coast at y 396–407

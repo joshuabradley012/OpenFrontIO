@@ -1,5 +1,5 @@
 // Flag `multiWar`: (a) a second and third war beside the running ones when the next wave fits above the reserve and the
-// total committed stays under fightMaxShare of the army — a running counter occupies a slot (the strictOneWar finding);
+// total committed stays under fightMaxShare of the army — a running counter occupies a slot;
 // (b) tribes: concurrency 2 below 60 % of cap (3 above) and the pass keeps clicking while the next click is affordable.
 // Off = one war at a time (opened by one warPick per pass) and one tribe click per pass below fightAbove.
 import { describe, expect, test } from "vitest";
@@ -63,19 +63,13 @@ describe("multiWar: wars", () => {
     expect(h.bot.fired.get("multiWar")).toBe(1);
   });
 
-  test("on with strictOneWar: the counter on the current target is the war — no other opens, strictOneWar fires", async () => {
-    const h = await fourWeak(true, true);
-    expect(attacks(h.log)).toHaveLength(0);
-    expect(h.bot.fired.get("strictOneWar") ?? 0).toBeGreaterThan(0);
-    expect(h.bot.fired.get("multiWar")).toBeUndefined();
-  });
 });
 
 /** A, B, C, D under us, all affordable; with `counter` a counter wave on A (the current target, so manageRetreats keeps it)
  *  occupies a slot before the wars rule runs. */
-async function fourWeak(counter: boolean, strictOneWar = false) {
+async function fourWeak(counter: boolean) {
   const h = await playbookSetup({
-    spawn: [50, 40], tiles: ME, troops: 300_000, bot: { ...WAR, multiWar: true, strictOneWar },
+    spawn: [50, 40], tiles: ME, troops: 300_000, bot: { ...WAR, multiWar: true },
     rivals: [
       { name: "A", type: PlayerType.Nation, at: [12, 75], tiles: COLS[0], troops: 20_000 },
       { name: "B", type: PlayerType.Nation, at: [37, 75], tiles: COLS[1], troops: 20_000 },

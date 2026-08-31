@@ -22,6 +22,18 @@
 //   the estimator layer: Estimate.ts, estOpts, the EST/ACT calibration log, estLossScaleNation/Human/Bot,
 //   estSpeedScale, scripts/lab/calibrate.py — its last consumers were utility and hystRetreats (simWars already gone).
 //   The WAR RESULT per-war accounting stays (warYield reads it; loss_analysis.py parses it).
+// Pruned 2026-08-31 (branch bot/prune2; last commit with the code: 0a8f35bc4) — the flips1/nf1 shelf, each flag
+// with its params, code paths, tests and docs section:
+//   strictOneWar (flips1 SPRT REJECT −0.07)
+//   relationAware + Rivals.wouldAcceptAlliance (the getAllianceDecision replay) + RivalView.relation (flips1 −0.31)
+//   plateauBreak + plateauWindow/plateauGrowth + Military.plateauRule and the forced= plumbing (flips1 −0.14)
+//   duelWaveGate + duelWaveRatio (nf1 SPRT REJECT at 1.8 and 1.9)
+//   drainedNations + drainRatio/drainBelow + RivalView.drainedUntil (flips1 +0.01 — maps to no loss cluster)
+//   retaliateAware + retalRatio + the shadow-wave logic and RivalView.largestAttacker (flips1 −0.07)
+//   scripts/lab/valuefit.py (built for the removed buildSearch's value model; unused since)
+// Hard candidates (kept default off — flat on Medium in flips1/nf1, but shaped for the Hard frontier, where SAM
+// walls, MIRV exchanges and contested corridors actually decide games): boatEscort (+0.03), contestLeader (+0.00),
+// samOnRisk (−0.07 alone, +0.011 beside mirvCounterforce), mirvCounterforce + cfCooldown (+0.003).
 // Default-on flags: boatDedupe, takeFallout, steamrollLevels, boatsNearest, finishByBoat, multiWar, annexWars,
 // lapseToAttack, trustWars, nationAware — and, since the combo A/B (2026-08-31, 68% vs 59% over 478 fresh-seed
 // full games, p=0.030, PlaybookBotPlan.md 'Combo confirmed'), duelPush (@ duelRatio 1.0) and boatOpening
@@ -79,18 +91,8 @@ export interface PlaybookParams {
   nearbyEvery: number; // ticks the neighbouring-player set is cached for (1 = recompute every tick, the original behaviour)
   trustWars: boolean; // C1: fight() skips a target whose living ally on our border could pile in (nationCanAttack with nationWouldSend ≥ half our spendable) and prefers low-trust targets (+2 × (1 − trust)); off = the plain scorer
   nationAware: boolean; // C1: the expiry hold and the renewal gift use the nation attack rules (Rivals.couldAttackAtExpiry) instead of the 0.85× / 0.9× troop heuristics
-  // Opportunity #2 (nation AI as a perfect-information opponent), one flag per edge; default off until the 30-game Medium A/B
-  drainedNations: boolean; // a nation under its reserve ratio (troops < 0.3 × max) is drained until it regrows to its trigger ratio: fight() takes it at 1.5× (affordable gate and score bonus), and the counter is never sized below the wave it cancels
-  retaliateAware: boolean; // nations retaliate only against their largest attacker: a target already under a bigger attack (or marked by one of our allies) is preferred and taken at 1.2× with a wave kept below the bigger one; absorbs the brief's `secondAttacker`
-  relationAware: boolean; // requestAlliances only asks a nation when NationAllianceBehavior.getAllianceDecision would accept (threat, Friendly, early window, similarly strong, capacity); prey and the war scorer prefer a nation whose relation to us is still Friendly (a lapsed ally: a hit leaves it Distrustful, not Hostile)
   takeFallout: boolean; // expand into irradiated land: PlayerImpl.nearby() hides unowned fallout tiles, so `wilderness` is false when only fallout borders us and expand() never sends a click — yet a TerraNullius attack takes those tiles (at 2.5–5× the loss, conquest clears the fallout). With the flag on, an expand click goes at the contested share whenever unowned fallout land touches our border and troops are ≥ fightAbove × cap (idle troops are free); default off until the 30-game Medium A/B
   steamrollLevels: boolean; // the nations' steamroll MIRV rule counts city LEVELS (Player.unitCount sums unit.level()), not units: keep our city-level sum under 0.9 × mult × the runner-up's level sum (floor: the rule's minLeader) — no new city and no city level past it; spare gold goes to ports, rail, bombs, SAMs instead. Captures can still cross the line (nationMirvAware then buys SAM cover)
-  // Constants of the surviving opportunity-#2 flags, exposed so cmaes.py can tune them with the flag on.
-  // Defaults = the hand-picked values, so nothing moves until a spec says so. Only read while the flag is on.
-  retalRatio: number; // retaliateAware: the wave as the smaller attacker, × the target's troops
-  drainRatio: number; // drainedNations: the wave on a drained nation, × its troops (affordable gate, scorer gate, size)
-  drainBelow: number; // drainedNations: a nation under this × its max troops counts as drained (nations' reserveRatio lower bound)
-  strictOneWar: boolean; // a running counter occupies the second war slot: one war plus counters, but no second war (opportunity wars included) while a counter runs; default off until the 30-game Medium A/B
   boatsNearest: boolean; // every boat rule (seaExpansion, earlyBoat, huntBotsByBoat) measures a candidate from the nearest of a sample of our ocean-shore tiles — where the engine launches from (SpatialQuery.closestShoreByWater) — instead of an arbitrary middle border tile; candidates are ranked value / max(1, d / 40) so a free shore 60 tiles away beats a richer target 200 away, and a shore across water may be as close as 10 tiles (was 30); default off until the 30-game Medium A/B
   boatsWaterPath: boolean; // every boat rule (earlyBoat, huntBotsByBoat, seaExpansion, finishByBoat) ranks a candidate by the length of the water path the transport will sail (Military.waterPath: a breadth-first fill over water tiles from our sampled shore, ≤ 40k tiles, cached 100 ticks) instead of the straight-line distance, and refuses a landing whose path exceeds Military.BOAT_MAX_PATH for that rule (early 80, tribe 150, sea 200, finish 250); composes with boatsNearest on or off; default off until the 30-game Medium A/B
   boatsAfterCoast: boolean; // no early boat and no tribe boat while free land is still reachable by land on our own landmass (sit.wilderness or Situation.freeLandReachable) unless we start on a small landmass (islandMaxTiles): expand to the coast first, then boat; seaExpansion keeps its own wilderness gate, finishByBoat is unchanged; default off until the 30-game Medium A/B
@@ -108,16 +110,11 @@ export interface PlaybookParams {
   contestLeader: boolean; // loss cluster 2 (rm1: 13/41 losses ended rank 2–3 while the winner ran to 80 % and we boated 1,500-tile weaklings): while we are rank ≤ contestRank by tiles among non-bots, the leader is not us or a friend, its tiles exceed contestLeadRatio × ours and it is still growing (two tile samples 300 ticks apart), the boats seaExpansion / huntBotsByBoat already send are re-aimed from "weak X" / tribe targets at the leader's coastline (its ports/cities shore, same sizes and gates), maybeBomb / maybeMIRV treat the leader as a priority target like `threats`, and the war scorer adds +4 when it borders us; redirects targets, never sizes. Default off until the 30-game Medium A/B
   contestRank: number; // contestLeader: contest only while our tile rank among non-bot players is ≤ this (int)
   contestLeadRatio: number; // contestLeader: the leader's tiles must exceed this × ours
-  plateauBreak: boolean; // loss cluster 3 (rm1 loss analysis: 40 of 41 losses stop growing by minute 33, wins keep growing to 61): our tile count is sampled every 300 ticks; alive, rank > 1 among non-bots, growth < plateauGrowth over plateauWindow ticks, no outgoing non-bot attack and not in hold mode = a plateau, escalated once per window — a forced sea expansion (capShare gates off, 1.5× the distance caps), else a forced war on the largest adjacent non-ally through warPick/actWar (affordability gate and the ratio floor relaxed to 1×; whole-or-nothing, reserve and capFloor stay), else (boxed in by allies) the weakest adjacent alliance lapses at its next expiry. Default off until the 30-game Medium A/B
-  plateauWindow: number; // plateauBreak: ticks of flat growth before the escalation, and between escalations (int, a multiple of the 300-tick sample)
-  plateauGrowth: number; // plateauBreak: tile growth over the window below which we count as plateaued
-  multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. strictOneWar still wins. Default off until the 30-game Medium A/B
+  multiWar: boolean; // a second and third simultaneous war (a running counter occupies a slot) when the next wave is affordable above the reserve and the total committed stays under fightMaxShare of the army; the sticky target applies to the first war only; tribes: concurrency 2 (+1 above 60 % of cap) and up to three first clicks per pass while the next is affordable. Default off until the 30-game Medium A/B
   duelPush: boolean; // finish a won duel (GUI 2026-08-30: two non-bot players left, us at 38 % of the land with 13.3M troops vs 7.55M, and the bot spent 10+ minutes requesting alliances with its only rival — the finish rule's push needs 45 % of the map and requestAlliances courts the sole rival forever): while the living non-bot, non-teammate players are ≤ duelPlayers (us included) and our troops are ≥ duelRatio × the strongest other's (the foe), Diplomacy never asks, accepts or renews an alliance with the foe (an existing one lapses through the planned-target mechanism, never a betrayal), the mode is `push` whatever our share (hold still wins: a MIRV-capable foe over the denial line fires whatever we do), the war rule takes the foe as an opportunity at duelRatio (no affordability / fightAbove gate, the war-count invariant lets it run beside counters, the posts / thin-empire gates do not apply — it is the only target left) with a duelRatio wave, and bombs / MIRV take the foe as a priority target like the threats. Behind (troops < duelRatio × the foe's) nothing changes — the flag finishes a won game. Default ON since the combo A/B (2026-08-31, PlaybookBotPlan.md 'Combo confirmed')
   duelPlayers: number; // duelPush: a duel while the living non-bot, non-teammate players (us included) number at most this (int)
   duelRatio: number; // duelPush: our troops over the foe's from which the duel counts as won — and the ratio the duel war is sent at
-  duelWaveGate: boolean; // duelPush's WAR wave held until our troops are ≥ duelWaveRatio × the foe's (salv2 p_combo_med8_north-russia: the duel wave sent every troop above the reserve — 82.6M on an 82.7M foe, 1.00× — cap 170M→33M, a led game lost; ~3 of 71 combo losses). Diplomacy / the push mode / bombs / MIRV keep the duelRatio (1.0) threshold — no alliances or renewals with the foe the moment we are level. Between duelRatio and duelWaveRatio the warPick duel-opportunity branch is off: the normal war gates decide as if no duel opportunity existed. NOTE: warScorer's duel branch only accepts at maxSend (0.7 × troops at cap / in the push) ≥ duelRatio × the foe's army, so the plain wave already needs ~duelRatio/0.7 ≈ 1.43× — a duelWaveRatio under that only strips the opportunity status (gate bypass / sticky-target bypass) in the band; the CMA must push it past ~1.43 to block real waves. Default off — it modifies default-on duelPush, so the A/B needs it flaggable
-  duelWaveRatio: number; // duelWaveGate: our troops over the foe's before the duel war wave may go (the diplomacy threshold stays duelRatio)
-  boatEscort: boolean; // Josh (GUI): "moving warships to corridors where it's trying to place a boat so it can get across". Engine facts (WarshipExecution/ShellExecution): a warship shells every enemy transport within warshipTargettingRange (130) with no reload against transports and a homing one-shot shell, so a transport whose path passes within 130 of a live enemy warship is sunk, escorted or not — an escort cannot screen it, it can only CLEAR the corridor (1000 HP, ~262 a shell per 20 ticks, the threat retreats at 75 % and stops firing once docked). So from escortFromTick a crossing longer than escortMinSail whose corridor (Military.corridor: the water path, else the straight line) has a live enemy warship within escortThreatRange is HELD, our idle warship nearest the threat is moved (MoveWarshipExecution) to the corridor point nearest it (or one is bought there — escortBuy, under escortMaxShips, behind the funds), and the crossing sails on a later pass once the corridor is clear; a worthy target (an opening pick scoring ≥ 2× boatOpeningMinScore, a contest / duel / plateau-forced boat) with no escort possible — or held escortDeferTicks — swarms escortSwarm staggered boats instead (Josh: "try multiple boats"; note the no-reload rule means a swarm only gets through what the threat has not yet reached). Short hops sail as before. Default off until the full-game A/B
+  boatEscort: boolean; // Josh (GUI): "moving warships to corridors where it's trying to place a boat so it can get across". Engine facts (WarshipExecution/ShellExecution): a warship shells every enemy transport within warshipTargettingRange (130) with no reload against transports and a homing one-shot shell, so a transport whose path passes within 130 of a live enemy warship is sunk, escorted or not — an escort cannot screen it, it can only CLEAR the corridor (1000 HP, ~262 a shell per 20 ticks, the threat retreats at 75 % and stops firing once docked). So from escortFromTick a crossing longer than escortMinSail whose corridor (Military.corridor: the water path, else the straight line) has a live enemy warship within escortThreatRange is HELD, our idle warship nearest the threat is moved (MoveWarshipExecution) to the corridor point nearest it (or one is bought there — escortBuy, under escortMaxShips, behind the funds), and the crossing sails on a later pass once the corridor is clear; a worthy target (an opening pick scoring ≥ 2× boatOpeningMinScore, a contest / duel boat) with no escort possible — or held escortDeferTicks — swarms escortSwarm staggered boats instead (Josh: "try multiple boats"; note the no-reload rule means a swarm only gets through what the threat has not yet reached). Short hops sail as before. Default off until the full-game A/B
   escortMinSail: number; // boatEscort: a crossing longer than this (sail tiles) is checked for warships (int)
   escortFromTick: number; // boatEscort: no escort logic before this tick — a little before the first enemy warships (measured t1730; int)
   escortThreatRange: number; // boatEscort: an enemy warship within this many tiles of a corridor tile contests it (the engine sinks from 130; int)
@@ -178,12 +175,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   nearbyEvery: 10, // 90-game Medium 20-min A/B (openfront-00, 2026-08-29): 5 and 10 are a wash vs 1 (14W/15L, 14W/16L; alive 29/29/30) while bot CPU per game drops 19.0 s → 5.3 s. Details: PlaybookBotLab.md "Where a game's time goes".
   trustWars: true, // kept 2026-08-29: ladder1 (45 paired 30-min games, shifted grid) trustWars+nationAware off = 11W-17L-17T vs on, dScore −0.06 [−0.19, +0.05], undecided; small positive mean, rarely fires — see PlaybookBotPlan.md Ladder
   nationAware: true, // kept with trustWars (see above)
-  drainedNations: false, // default off until the 30-game Medium A/B
-  retaliateAware: false, // default off until the 30-game Medium A/B
-  relationAware: false, // default off until the 30-game Medium A/B
   takeFallout: true, // ON by Josh's call 2026-08-30 (A/B as a removal, {"takeFallout":false} vs {})
   steamrollLevels: true, // ON by default 2026-08-30: the 30-min africa baseline sat at 27 vs 22.5 by 9:30 and 101 vs 37.5 by 13:00 and every MIRV it took was this rule; A/B as a removal, {"steamrollLevels":false} vs {}
-  strictOneWar: false,
   boatsNearest: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"boatsNearest":false} vs {})
   finishByBoat: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"finishByBoat":false} vs {})
   nationMirvAware: false, // default off until the 30-game Medium A/B
@@ -191,9 +184,6 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   mirvCounterforce: false, // default off until the full-game A/B (combo loss-analysis follow-up)
   cfCooldown: 600,
   clockTicks: 18000, // the 30-minute public game; tests/lab/playbook.lab.ts sets 0 for MIN=full
-  plateauBreak: false, // default off until the 30-game Medium A/B
-  plateauWindow: 3000, // 5 minutes: the loss curves flatten over minutes, not seconds
-  plateauGrowth: 0.05,
   multiWar: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"multiWar":false} vs {})
   contestLeader: false, // default off until the 30-game Medium A/B
   contestRank: 3,
@@ -201,16 +191,11 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   duelPush: true, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
   duelPlayers: 2,
   duelRatio: 1.0, // combo defaults 2026-08-31: 68% vs 59% over 478 fresh-seed full games, p=0.030 (PlaybookBotPlan.md 'Combo confirmed')
-  duelWaveGate: false, // off until the full-game A/B (it modifies default-on duelPush)
-  duelWaveRatio: 1.2,
   boatsWaterPath: false, // OFF again 2026-08-30: rm1 (96 mirrored full games, wins objective, docs/PlaybookBotPlan.md) — removal won 63/96 vs base 48 (p=0.032); the water-path ranking hurts full games
   boatsAfterCoast: false, // default off until the 30-game Medium A/B
   bombBudget: false, // default off until the 30-game Medium A/B
   warYield: false, // default off until the 30-game Medium A/B
   yieldMaxTroopsPerTile: 120,
-  retalRatio: 1.2,
-  drainRatio: 1.5,
-  drainBelow: 0.3,
   annexWars: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"annexWars":false} vs {})
   lapseToAttack: true, // ON by Josh's call 2026-08-30 after watching the GUI (not yet A/B'd: run as a removal, {"lapseToAttack":false} vs {})
   boatEscort: false, // default off until the full-game A/B
