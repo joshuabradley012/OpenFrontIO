@@ -709,6 +709,7 @@ export class UnitImpl implements Unit {
       };
     }
     this._level++;
+    this.mg.bumpUnitsVersion(); // Game.unitCount(type) is level-weighted and memoised on this version
     if ([UnitType.MissileSilo, UnitType.SAMLauncher].includes(this.type())) {
       this._missileTimerQueue.push(this.mg.ticks());
     }
