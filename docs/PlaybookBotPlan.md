@@ -2038,3 +2038,57 @@ Smokes: MIN=3 africa/Medium default-config transcript byte-identical to base 251
 
 A/B (full games, wins objective): `CONFIGS='{"base":{},"bd":{"boatDefense":true}}' MIRROR=1 MINUTES=full WORKERS=4
 scripts/lab/remote.sh` — Hard is where Josh saw the gap, so also a DIFF=hard leg.
+
+## Tribe traps (`tribeBorders`, `thinGuard`, 2026-08-31, branch `bot/tribe-traps`)
+
+Josh (Hard GUI): "the bot still falls to a couple early game tribe taking traps" — (a) "it doesn't take the tribes
+bordering enemies first — it should, to establish better borders", and (b) "it creates really thin parts of its
+territory, open to getting cut off and giving a chunk to tribes".
+
+**What the hard0 transcripts say about (b)** (119 Hard full games, parsed for SPLIT lines): 4,238 SPLIT log lines,
+but the vast majority (~3,900) are big-gap pieces — boat landings on other landmasses, normal amphibious play, not
+cuts. Deduped to first occurrences, **67 real cuts** (gap ≤ 20 tiles held by a hostile, second piece ≥ 200 tiles):
+33 before t3000, 34 after. Of the 33 early cuts, 7 had an unfinished tribe wave (sent < want) running within the
+previous 400 ticks and in 2 the cutter WAS the tribe being eaten (e.g. north-russia t200: `bot Wolof Regime ←
+8252/18024` then `SPLIT ... gap 9 held by Hebrew Sultanate`) — so the half-eaten-tribe salient is real but not
+dominant; the bigger early source is landing basins and expansion arms pinched between two nations (the australia
+games: a 3–4k-tile piece cut at a 4–10-tile gap held alternately by Australia/New Zealand). Late cuts follow wars
+and sea-expansion boats. Conclusion: prevention needs both the follow-up speed-up (finish the tribe) AND the
+geometric pinch watch (the nation-pinch case the tribe theory does not cover).
+
+**`tribeBorders`** — harvestBots eats the weakest bordering tribe first; under the flag only the ORDER changes
+(same sizing, gates, concurrency): a tribe whose sampled border (every 3rd tile, cached 100 ticks —
+`Military.tribeRival`) touches a non-ally rival is eaten before the plain pick — weakest first among those, equal
+troops tie-break toward the tribe whose border is most ours already (eating it shortens our exposed frontier
+most). When the pass's first click differs from what the plain order would have picked under the same gates, it
+fires (`tribeBorders/pick`) and logs `TRIBE PRIORITY <name> (borders <rival>)`.
+
+**`thinGuard`** — every 100 ticks (`Military.thinGuard`, rule `thin`, inert off) scan our sampled border (every
+3rd tile of the borderOf snapshot) for pinches: from a border tile with non-owned LAND right behind it, walk up to
+`thinWidth` (6) tiles across our territory; hitting non-owned land again is a pinch of that width (water breaks
+the probe: a strait is not land-cuttable). One pinch per pass, the narrowest, 600-tick / 2×thinWidth dedupe,
+logged `THIN (x,y) width~w faces A / B`. Then: (1) a side facing free land → an immediate expand click at the
+contested share (the widening move, through send()'s budgets; fires `widen`); (2) a side facing a tribe → that
+tribe is marked and goes FIRST in harvestBots' order for 600 ticks (through the existing budgets; the changed pick
+logs `TRIBE PRIORITY <name> (thin pinch)`); (3) a rival on both sides → `Military.thinPostWant` requests a defense
+post at the pinch, consumed by Economy.build right after the boatDefense landing post, same ≤8-post budget (logs
+`THIN post at (x,y)`, fires `post`). Additionally, while a tribe wave is unfinished, follow-ups go at HALF
+`botFollowUpTicks` (fires `followUp` when the full cadence would still have waited) — the half-eaten-tribe fix.
+
+Params: `tribeBorders` (bool), `thinGuard` (bool), `thinWidth` (int, 6). Both default off. Tests:
+`tests/playbook/tribeBorders.test.ts` (the ordering flips to the rival-bordering tribe, plain order clicks the
+weakest), `tests/playbook/thinGuard.test.ts` (a 6-wide corridor fixture: rival flanks → THIN + a post covering the
+pinch, free flanks → the widening click, tribe flanks → TRIBE PRIORITY over a weaker tribe; follow-up jump at t61
+instead of tribes.test's t111; flag off → none of it). Golden unchanged (both off); MIN=3 africa/Medium transcript
+byte-identical to base bcf649f7a (FINAL botMs/gameMs only).
+
+Smokes (single seed each — the A/B decides): 6-min africa/Medium `tribeBorders` fired 2 (4 TRIBE PRIORITY lines),
+FINAL rank=14 share=0.42 vs the flags-off control rank=4 share=0.62; `thinGuard` fired 6 (12 THIN, 1 thin-pinch
+TRIBE PRIORITY; 0 THIN posts — the 6 posts the generic rules had built already covered the rival-faced pinches, so
+the want cleared on hasUnitNearby), FINAL rank=1 share=1.00 (control 0.62). 12-min africa/Hard: `tribeBorders` fired
+2 (3 TRIBE PRIORITY), rank=25 share=0.01; `thinGuard` fired 7 (17 THIN, 1 `THIN post at (1006,473)`, 1 thin-pinch
+priority), rank=12 share=0.08. Most observed pinches are width 1–2 expansion arms in the opening.
+
+A/B (full games, wins objective): `CONFIGS='{"base":{},"tb":{"tribeBorders":true},"tg":{"thinGuard":true},"both":
+{"tribeBorders":true,"thinGuard":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh` — the traps are a
+Hard finding, so also a DIFF=hard leg.

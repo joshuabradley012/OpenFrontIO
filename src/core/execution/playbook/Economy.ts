@@ -477,6 +477,36 @@ export class Economy {
         }
       }
     }
+    // `thinGuard` (2): a post at a pinch a rival could cut (Military.thinPostWant) — after the landing post,
+    // before the threat posts: an actual thin corridor beats a general threat for the same ≤ 8-post budget.
+    const pinch = this.ctx.p.thinGuard ? this.military.thinPostWant : null;
+    if (
+      pinch !== null &&
+      gold >= cost(UnitType.DefensePost) &&
+      me.unitsOwned(UnitType.DefensePost) < 8
+    ) {
+      if (
+        this.ctx.mg.hasUnitNearby(
+          pinch.tile,
+          this.ctx.mg.config().defensePostRange(),
+          UnitType.DefensePost,
+          me.id(),
+          true, // one standing (or under construction) there already covers the pinch
+        )
+      ) {
+        this.military.thinPostWant = null;
+      } else {
+        const tile = this.landingPostTile(pinch.tile);
+        if (tile !== null && this.tryBuild(UnitType.DefensePost, tile)) {
+          this.military.thinPostWant = null;
+          this.ctx.log(
+            `t${ticks} THIN post at (${this.ctx.mg.x(tile)},${this.ctx.mg.y(tile)})`,
+          );
+          this.lim.fire("thinGuard", "post");
+          return;
+        }
+      }
+    }
     if (
       cityUnits.length >= 1 &&
       ticks >= 900 &&

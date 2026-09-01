@@ -555,6 +555,66 @@ export class Military {
     this.splitOwner = who && who !== me && !me.isFriendly(who) ? who : null;
     this.splitTile = this.ctx.mg.isLand(mid) && !this.ctx.mg.hasOwner(mid) ? mid : null;
   }
+  // ---------------------------------------------------------------- thinGuard: pinch watch
+  /** `thinGuard`: the pinch Economy.build should cover with a post (a rival on both sides of the corridor) —
+   *  set here, consumed there, dropped when stale. */
+  thinPostWant: { tile: TileRef; until: number } | null = null;
+  /** `thinGuard`: the tribe a pinch faces — harvestBots eats it first (through the existing budgets). */
+  private thinTribe: { bot: Player; until: number } | null = null;
+  /** Pinches already acted on (a pinch within 2 × thinWidth of one handled in the last 600 ticks is the same pinch). */
+  private thinHandled: { tile: TileRef; tick: number }[] = [];
+  /** `thinGuard` (every 100 ticks): scan our sampled border for pinches — a run of ≤ thinWidth of our tiles with
+   *  non-owned LAND on both ends (water does not count: a strait is not land-cuttable; splits ARE happening in the
+   *  hard0 transcripts and prevention beats watchSplit's reconnect-after-cut). One pinch per pass, the narrowest:
+   *  (1) a side facing free land → an immediate expand click at the contested share (the widening move, through
+   *  send()'s budgets); (2) a side facing a tribe → mark it so harvestBots eats that side first; (3) a rival on
+   *  both sides → request a defense post at the pinch through the existing ≤8-post budget. Logs `THIN (x,y) width~w`. */
+  thinGuard(): void {
+    const mg = this.ctx.mg, me = this.ctx.me, t = mg.ticks();
+    if (this.thinPostWant !== null && t > this.thinPostWant.until) this.thinPostWant = null;
+    if (this.thinTribe !== null && (t > this.thinTribe.until || !this.thinTribe.bot.isAlive())) this.thinTribe = null;
+    if (me.numTilesOwned() < 200) return; // a spawn blob is all edge — watchSplit's floor
+    this.thinHandled = this.thinHandled.filter((h) => t - h.tick < 600);
+    const w = Math.max(1, this.ctx.p.thinWidth);
+    const border = borderOf(me);
+    // the not-ours-but-land test, shared by both ends of a probe (free land, a tribe or a rival — never water/edge)
+    const openLand = (x: number, y: number): boolean => { if (!mg.isValidCoord(x, y)) return false; const r = mg.ref(x, y); return mg.isLand(r) && mg.owner(r) !== me; };
+    let best: { tile: TileRef; width: number; near: TileRef; far: TileRef } | null = null;
+    for (let i = 0; i < border.length; i += 3) {
+      const tile = border[i];
+      const x = mg.x(tile), y = mg.y(tile);
+      for (const [dx, dy] of [[1, 0], [0, 1]] as const) {
+        if (!openLand(x - dx, y - dy)) continue; // the near side of the probe: non-owned land right behind the border tile
+        for (let m = 1; m <= w; m++) { // walk into our territory looking for the far side
+          const px = x + dx * m, py = y + dy * m;
+          if (!mg.isValidCoord(px, py)) break;
+          const pr = mg.ref(px, py);
+          if (mg.owner(pr) === me) continue;
+          if (!mg.isLand(pr)) break; // water: a peninsula, not a land-cuttable corridor on this axis
+          if (best === null || m < best.width) best = { tile, width: m, near: mg.ref(x - dx, y - dy), far: pr };
+          break;
+        }
+      }
+    }
+    if (best === null) return;
+    if (this.thinHandled.some((h) => mg.manhattanDist(h.tile, best!.tile) <= 2 * w)) return; // this pinch is being handled
+    this.thinHandled.push({ tile: best.tile, tick: t });
+    const side = (r: TileRef): Player | null => { const o = mg.owner(r); return o.isPlayer() ? (o as Player) : null; };
+    const sides = [side(best.near), side(best.far)];
+    const tribe = sides.find((s) => s !== null && s.type() === PlayerType.Bot) ?? null;
+    const rival = sides.find((s) => s !== null && s.type() !== PlayerType.Bot && !me.isFriendly(s)) ?? null;
+    const free = sides.some((s) => s === null);
+    this.ctx.log(`t${t} THIN (${mg.x(best.tile)},${mg.y(best.tile)}) width~${best.width} faces ${sides.map((s) => (s === null ? "free land" : s.name())).join(" / ")}`);
+    // (1) prefer the widening move: free land → expand NOW at the contested share; a tribe → eat that side first
+    if (free) {
+      if (this.actExpand(Math.floor(this.ctx.sit.troops * this.ctx.p.expandContested)) > 0) this.lim.fire("thinGuard", "widen");
+      return;
+    }
+    if (tribe !== null) { this.thinTribe = { bot: tribe, until: t + 600 }; this.lim.fire("thinGuard", "pinch"); return; }
+    // (2) a rival across the pinch: a post makes cutting through it 5× more expensive (Economy holds the budget)
+    if (rival !== null && this.thinPostWant === null) { this.thinPostWant = { tile: best.tile, until: t + 600 }; this.lim.fire("thinGuard", "pinch"); }
+  }
+
   /** The 4-connected pieces of `p`'s territory — exact, from the border alone. Each row's owned tiles form runs
    *  whose ends are border tiles (a run end has a non-owned tile beside it), so the runs come from the sorted border
    *  tiles of the row plus the map's left/right edges (an edge tile is not a border tile: GameMap.isBorder); runs
@@ -645,6 +705,22 @@ export class Military {
     const { bots, wilderness } = this.q.neighbours();
     if (bots.length === 0) return;
     bots.sort((a, b) => a.troops() - b.troops());
+    // `tribeBorders` / `thinGuard`: only the ORDER changes (same sizing, gates, concurrency). Rival-bordering
+    // tribes are eaten before the plain weakest-first pick — their frontier becomes a real border before the rival
+    // takes them — and `thinGuard`'s pinch tribe goes first of all. Equal troops tie-break toward the tribe whose
+    // border is most ours already: eating it shortens our exposed frontier most.
+    const thinTribe = this.ctx.p.thinGuard && this.thinTribe !== null && bots.includes(this.thinTribe.bot) ? this.thinTribe.bot : null;
+    const plainOrder = this.ctx.p.tribeBorders || thinTribe !== null ? bots.slice() : null;
+    if (plainOrder !== null) bots.sort((a, b) => {
+      if (a === thinTribe) return -1;
+      if (b === thinTribe) return 1;
+      if (this.ctx.p.tribeBorders) {
+        const d = (this.tribeRival(b).rival !== null ? 1 : 0) - (this.tribeRival(a).rival !== null ? 1 : 0);
+        if (d !== 0) return d;
+        if (a.troops() === b.troops()) return this.tribeRival(b).oursShare - this.tribeRival(a).oursShare;
+      }
+      return a.troops() - b.troops();
+    });
     const plentiful = me.troops() > this.q.cap() * this.ctx.p.fightAbove;
     // free land costs 16–24 a tile; a tribe costs its density plus the losses of the fight. Eat tribes
     // once the wilderness is gone, or earlier only when we are plentiful and the click is small.
@@ -664,20 +740,75 @@ export class Military {
       if (want > maxSend) continue;
       const oldOk = active < oldMax && clicks < (plentiful ? 2 : 1); // what the one-at-a-time rule would have allowed
       if (!this.tribeClick(bot, want)) continue;
+      if (clicks === 0 && plainOrder !== null) this.notePriority(bot, plainOrder, maxSend, thinTribe);
       active++;
       clicks++;
       if (!oldOk) this.ctx.fire("multiWar");
       if (this.ctx.p.multiWar ? clicks >= 3 : !plentiful || clicks >= 2) return;
     }
   }
-  /** follow-up click: the guide's two-click — a second wave 10 s later merges into the first */
+  /** follow-up click: the guide's two-click — a second wave 10 s later merges into the first.
+   *  `thinGuard`: while the wave is unfinished, follow-ups go at HALF botFollowUpTicks — the hard0 transcripts show
+   *  the half-eaten tribe as a salient-maker (an unfinished wave leaves a thin arm into the tribe), so finish it
+   *  twice as fast. */
   private tribeFollowUp(bot: Player): void {
     const w = this.waves.get(bot);
-    if (!w || w.sent >= w.want || this.ctx.mg.ticks() - w.last < this.ctx.p.botFollowUpTicks) return;
+    if (!w || w.sent >= w.want) return;
+    const since = this.ctx.mg.ticks() - w.last;
+    const wait = this.ctx.p.thinGuard ? Math.max(1, Math.floor(this.ctx.p.botFollowUpTicks / 2)) : this.ctx.p.botFollowUpTicks;
+    if (since < wait) return;
     const send = this.ctx.send(bot.id(), Math.min(w.want - w.sent, Math.floor(this.ctx.sit.troops * this.ctx.p.botClickCap)), "tribe follow-up");
     if (send === 0) return;
+    if (this.ctx.p.thinGuard && since < this.ctx.p.botFollowUpTicks) this.lim.fire("thinGuard", "followUp"); // the full cadence would have waited
     w.sent += send; w.last = this.ctx.mg.ticks();
     this.noteFollowUp(bot, send);
+  }
+  // ---------------------------------------------------------------- tribeBorders: which tribe first
+  private tribeRivalCache = new Map<Player, { tick: number; rival: Player | null; oursShare: number }>();
+  /** `tribeBorders`: the non-ally rival (living non-bot player, not us, not our friend) touching most of `bot`'s
+   *  sampled border, and the share of the samples touching US (the annex walk's shape: every 3rd border tile,
+   *  cached 100 ticks — a tribe's border moves slowly). */
+  private tribeRival(bot: Player): { rival: Player | null; oursShare: number } {
+    const t = this.ctx.mg.ticks();
+    const c = this.tribeRivalCache.get(bot);
+    if (c !== undefined && t - c.tick < 100) return c;
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const touch = new Map<Player, number>();
+    let ours = 0, n = 0, i = 0;
+    for (const tile of borderOf(bot)) {
+      if ((i++ % 3) !== 0) continue;
+      n++;
+      let mine = false;
+      let riv: Player | null = null;
+      for (const nb of mg.neighbors(tile)) {
+        const o = mg.owner(nb);
+        if (!o.isPlayer()) continue;
+        if (o === me) mine = true;
+        else if (o.type() !== PlayerType.Bot && !me.isFriendly(o) && o.isAlive()) riv = o;
+      }
+      if (mine) ours++;
+      if (riv !== null) touch.set(riv, (touch.get(riv) ?? 0) + 1);
+    }
+    let rival: Player | null = null, best = 0;
+    for (const [r, k] of touch) if (k > best) { best = k; rival = r; }
+    const out = { tick: t, rival, oursShare: n > 0 ? ours / n : 0 };
+    this.tribeRivalCache.set(bot, out);
+    return out;
+  }
+  /** The first click of the pass went to a different tribe than the plain weakest-first order would have picked
+   *  (same gates): the flag changed the decision — count it and log TRIBE PRIORITY. */
+  private notePriority(clicked: Player, plain: Player[], maxSend: number, thinTribe: Player | null): void {
+    const me = this.ctx.me;
+    const plainPick = plain.find((b) => me.canAttackPlayer(b) && this.reachable(b) && !this.q.outgoingTo(b) && b !== clicked && Math.ceil(b.troops() * this.ctx.p.botRatio) + 500 <= maxSend) ?? clicked;
+    if (plainPick === clicked || plain.indexOf(plainPick) > plain.indexOf(clicked)) return; // same pick, or `clicked` came first in the plain order too
+    if (clicked === thinTribe) {
+      this.lim.fire("thinGuard", "tribe");
+      this.ctx.log(`t${this.ctx.mg.ticks()} TRIBE PRIORITY ${clicked.name()} (thin pinch)`);
+      return;
+    }
+    const r = this.tribeRival(clicked).rival;
+    this.lim.fire("tribeBorders", "pick");
+    this.ctx.log(`t${this.ctx.mg.ticks()} TRIBE PRIORITY ${clicked.name()} (borders ${r !== null ? r.name() : "nobody"})`);
   }
   /** The first click on a tribe: `want` in total, at most botClickCap of home now (act half of harvestBots). */
   private tribeClick(bot: Player, want: number): boolean {
