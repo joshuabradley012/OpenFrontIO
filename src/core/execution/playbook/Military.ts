@@ -1,7 +1,7 @@
 // Military: expansion, tribe harvesting, counter-attacks, wars and retreats, boats, bombs, MIRV, split watch.
 
 import { borderOf } from "./Border";
-import { Attack, Game, Player, PlayerType, Unit, UnitType } from "../../game/Game";
+import { Attack, Difficulty, Game, Player, PlayerType, Unit, UnitType } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { ConstructionExecution } from "../ConstructionExecution";
 import { MirvExecution } from "../MIRVExecution";
@@ -1115,15 +1115,23 @@ export class Military {
     this.cutOffCache.set(t, { tick: this.ctx.mg.ticks(), cutOff });
     return cutOff;
   }
+  /** `boatOpening` v6: the eat rate the opening prices a sail with — Hard/Impossible defenders get +33/+50 %
+   *  troops and nations expand at full rate, so the Medium-measured boatEatRate underestimates there (Josh's
+   *  Hard GUI sessions: landings on shores the tribes ate first). Medium/Easy keep boatEatRate. */
+  private eatRate(): number {
+    const d = this.ctx.mg.config().gameConfig().difficulty;
+    return d === Difficulty.Hard || d === Difficulty.Impossible ? this.ctx.p.boatEatRateHard : this.ctx.p.boatEatRate;
+  }
   /** `boatOpening`: free land behind a landing (Situation.basinContact — the spawn picker's flood, radius
    *  boatBasinRadius, cap OPENING_BASIN_TILES) plus the eaters on its perimeter, cached per candidate tile for
    *  WATER_CACHE_TICKS: basins only shrink as the world fills in, but the contact count grows as rivals close in,
-   *  and the v3 discount must not read a tick-60 perimeter at tick 800. */
-  private basinCache = new Map<TileRef, { tick: number; tiles: number; contact: number }>();
-  private openingBasin(t: TileRef): { tiles: number; contact: number } {
+   *  and the v3 discount must not read a tick-60 perimeter at tick 800. v6 collects the eater and shore tiles
+   *  themselves (bounded — see basinContact) for the landing-eaten re-anchor. */
+  private basinCache = new Map<TileRef, { tick: number; tiles: number; contact: number; eaters: readonly TileRef[]; shores: readonly TileRef[] }>();
+  private openingBasin(t: TileRef): { tiles: number; contact: number; eaters: readonly TileRef[]; shores: readonly TileRef[] } {
     const got = this.basinCache.get(t);
     if (got !== undefined && this.ctx.mg.ticks() - got.tick < WATER_CACHE_TICKS) return got;
-    const b = { tick: this.ctx.mg.ticks(), ...basinContact(this.ctx.mg, this.ctx.me, t, this.ctx.p.boatBasinRadius, OPENING_BASIN_TILES) };
+    const b = { tick: this.ctx.mg.ticks(), ...basinContact(this.ctx.mg, this.ctx.me, t, this.ctx.p.boatBasinRadius, OPENING_BASIN_TILES, true) };
     this.basinCache.set(t, b);
     return b;
   }
@@ -1205,19 +1213,28 @@ export class Military {
     const nearest = sample.length > 0;
     const dist = nearest ? (t: TileRef) => this.nearestShoreDist(t, sample) : distOld;
     // `boatsWaterPath`: rank by the path the ship sails (d), refuse beyond BOAT_MAX_PATH.early; dm is the
-    // straight-line distance (slOk: the straight-line ranking's candidates, for the liveness count)
-    const wp = this.ctx.p.boatsWaterPath ? this.waterPath() : null;
+    // straight-line distance (slOk: the straight-line ranking's candidates, for the liveness count).
+    // `boatOpening` v6: the OPENING extras always rank by the true water path, whatever boatsWaterPath says —
+    // the straight-line sail understated a crossing that rounds a river mouth or a peninsula, and Josh watched
+    // the openings land on the far side of one (the sail term AND the eta discount both need arrival ticks, and
+    // the transport sails the water path, not the chord). boatsWaterPath's own rule — the plain first boat and
+    // the mid-game rules — is untouched (and off: rm1 showed the RANKING hurts there; here the path only prices
+    // a candidate the opening scorer already chose to compare). A shore no water path reaches within
+    // WATER_MAX_DIST is no candidate at all.
+    const wp = this.ctx.p.boatsWaterPath || opening ? this.waterPath() : null;
     // with the flag on, our own coast is near by water too (a tile 40 tiles up it sails 40), so more candidates are
     // tried and the bounded breadth-first acrossWaterNear (radius 2 × dm + 20) does the land check — the depth-first
     // acrossWater gives up at 4000 tiles and calls a tile up our own coast "across water" on a big landmass
     const across = (t: TileRef, dm: number) => (nearest || wp ? this.q.acrossWaterNear(t, dm) : this.q.acrossWater(t));
-    // `boatOpening` v3 ocean window: long trans-ocean crossings are only safe before warships appear (nations
-    // build their first once they have a port and 250k gold; measured first enemy warship t1730) — while
-    // tick < boatOceanUntil the extras may sail up to the full BOAT_MAX_PATH (WATER_MAX_DIST) instead of the
-    // 80-tile early cap. The plain first boat keeps the plain cap; wave sizes (boatShare) are unchanged.
-    const ocean = opening && this.ctx.sit.tick < this.ctx.p.boatOceanUntil;
-    const earlyCap = ocean ? WATER_MAX_DIST : BOAT_MAX_PATH.early;
-    const cands: { tile: TileRef; troops: number; d: number; dm: number; sail: number; tribeTiles: number; contested: boolean; slOk: boolean; oldD: number; oldOk: boolean; what: string }[] = [];
+    // `boatOpening` v6 escalating sail budget (replaces v3's boatOceanUntil ocean window — Josh: "close boats
+    // very early, then further and further attempts before warships are everywhere"): the extras may sail up to
+    // maxSail(t) = boatSailMin + (WATER_MAX_DIST − boatSailMin) × clamp(t / boatSailRampTicks, 0, 1) water
+    // tiles — ~boatSailMin at spawn, the full BOAT_MAX_PATH (250) once warships are due (first enemy warship
+    // t1489–t2205 across the 6 measurement games). The plain first boat keeps the plain 80-tile cap; wave
+    // sizes (boatShare) are unchanged.
+    const ramp = Math.min(1, Math.max(0, this.ctx.sit.tick / Math.max(1, this.ctx.p.boatSailRampTicks)));
+    const earlyCap = opening ? Math.round(this.ctx.p.boatSailMin + (WATER_MAX_DIST - this.ctx.p.boatSailMin) * ramp) : BOAT_MAX_PATH.early;
+    const cands: { tile: TileRef; troops: number; d: number; dm: number; sail: number; tribeTiles: number; contested: boolean; slOk: boolean; oldD: number; oldOk: boolean; what: string; moved?: boolean }[] = [];
     // `boatOpening` contested check: the rivals (nations/humans) whose borders tell us a tribe's wilderness is being eaten
     const rivals = opening ? this.ctx.mg.players().filter((p) => p !== me && p.isAlive() && p.type() !== PlayerType.Bot) : [];
     for (const bot of this.ctx.mg.players()) {
@@ -1272,14 +1289,41 @@ export class Military {
       const byMass = new Map<number, { c: (typeof cands)[number]; ours: boolean; capped: boolean }>();
       for (const c of head) { const m = this.landmass(c.tile); const k = m.id * 2 + (c.tribeTiles > 0 ? 1 : 0); const cur = byMass.get(k); if (cur === undefined || c.sail < cur.c.sail) byMass.set(k, { c, ours: m.ours, capped: m.capped }); }
       // v3: a basin is discounted by what its eaters consume before we land — eta = sail ticks (the transport
-      // sails 1 tile/tick, TransportShipExecution.ticksPerMove), rate = boatEatRate per perimeter tile a
-      // rival/tribe touches. Tribe tiles are never discounted (tribes get eaten, they don't evaporate), so a
+      // sails 1 tile/tick, TransportShipExecution.ticksPerMove), rate = eatRate() per perimeter tile a
+      // rival/tribe touches (v6: boatEatRateHard on Hard/Impossible — the Medium-measured rate underestimated
+      // there). Tribe tiles are never discounted (tribes get eaten, they don't evaporate), so a
       // soon-to-be-eaten free basin beside a tribe mass tilts the pick toward the tribe itself.
-      const left = (c: (typeof cands)[number]) => { const b = this.openingBasin(c.tile); return b.tiles - Math.min(b.tiles, this.ctx.p.boatEatRate * b.contact * c.sail); };
+      const rate = this.eatRate();
+      const left = (c: (typeof cands)[number]) => { const b = this.openingBasin(c.tile); return b.tiles - Math.min(b.tiles, rate * b.contact * c.sail); };
       const worth = (c: (typeof cands)[number]) => c.tribeTiles > 0 ? (this.ctx.p.boatTribeWorth * c.tribeTiles + left(c)) * (c.contested ? OPENING_CONTESTED : 1) : left(c);
-      // v3 ocean window: a new-landmass candidate whose sail the plain 80-tile cap would refuse gets
-      // ×boatOceanBonus on top of the second-continent preference — the cheap continent grab closes when
-      // warships appear (after boatOceanUntil the cap above already dropped such candidates). v4: neither bonus
+      // v6: a candidate whose basin is still worth the trip but whose LANDING tile is itself projected eaten by
+      // arrival is re-anchored to a safer shore of the same basin, or dropped when none survives — landing INTO
+      // a just-taken shore fizzles the wave (the transport targets the LAUNCH-time owner, terra nullius), and
+      // that is exactly what Josh keeps watching on Hard. An eater's frontier advances ~rate tiles/tick locally,
+      // so a contact tile within rate × sail of a shore owns it by the boat's arrival. Tribe candidates are
+      // exempt (their wave targets the tribe itself — it cannot fizzle).
+      const nearEater = (eaters: readonly TileRef[], t: TileRef) => { let best = Infinity; for (const e of eaters) { const d = this.ctx.mg.manhattanDist(e, t); if (d < best) best = d; } return best; };
+      const anchor = (c: (typeof cands)[number]): boolean => {
+        if (c.tribeTiles > 0) return true;
+        const b = this.openingBasin(c.tile);
+        if (b.tiles - rate * b.contact * c.sail <= 0) return true; // worthless: the score drop below handles it
+        if (nearEater(b.eaters, c.tile) >= rate * c.sail) return true; // the landing tile outlives the sail
+        let bt: TileRef | null = null, bd = Infinity;
+        for (const s of b.shores) {
+          if (this.ctx.mg.hasOwner(s)) continue; // taken since the flood ran
+          const d = wp!.len(s); // v6: wp is always live while `opening`
+          if (d > earlyCap || d >= bd) continue;
+          if (nearEater(b.eaters, s) < rate * d) continue; // eaten by ITS arrival too
+          bt = s; bd = d;
+        }
+        if (bt === null) { this.lim.fire("boatOpening", "reanchor"); return false; } // every reachable shore of the basin is gone by arrival: drop
+        this.lim.fire("boatOpening", "reanchor");
+        c.tile = bt; c.sail = bd; c.d = bd; c.dm = bd; c.moved = true; // dm feeds acrossWaterNear's radius: the water path bounds the chord
+        return true;
+      };
+      // v3 ocean window, v6 inside the sail budget: a new-landmass candidate whose sail the plain 80-tile cap
+      // would refuse gets ×boatOceanBonus on top of the second-continent preference — the budget above is what
+      // now closes the cheap continent grab as warships appear. v4: neither bonus
       // for a `capped` mass (see landmass()), and every candidate is charged boatOpeningSailCost worth-tiles per
       // sail tile beyond BOAT_MAX_PATH.early — a long crossing locks boatShare of home at sea for sail ticks.
       const cost = (c: (typeof cands)[number]) => this.ctx.p.boatOpeningSailCost * Math.max(0, c.sail - BOAT_MAX_PATH.early);
@@ -1290,9 +1334,9 @@ export class Military {
       // mass is still a fine boat), and openingCutOff is the escape hatch: a basin walled off from us by other
       // players' land cannot be reached by land expansion, so a cut-off peninsula behind a rival keeps ×1.
       const factor = (c: (typeof cands)[number], own: boolean) =>
-        !own ? OPENING_NEW_MASS * (ocean && c.sail > BOAT_MAX_PATH.early ? this.ctx.p.boatOceanBonus : 1)
+        !own ? OPENING_NEW_MASS * (c.sail > BOAT_MAX_PATH.early ? this.ctx.p.boatOceanBonus : 1)
           : c.tribeTiles > 0 || this.openingCutOff(c.tile) ? 1 : this.ctx.p.boatOwnMassFactor;
-      const scoredAll = [...byMass.values()].map(({ c, ours, capped }) => ({ c, s: ((worth(c) - cost(c)) / Math.max(c.sail, OPENING_MIN_SAIL)) * factor(c, ours || capped) }));
+      const scoredAll = [...byMass.values()].filter(({ c }) => anchor(c)).map(({ c, ours, capped }) => ({ c, s: ((worth(c) - cost(c)) / Math.max(c.sail, OPENING_MIN_SAIL)) * factor(c, ours || capped) }));
       // v3: a basin the eaters will have consumed before the boat lands is not a target at ANY rank — dropped
       // outright, not down-ranked (a later pass re-scans; the contact count refreshes with the basin cache).
       // v4: an EMPTY-SHORE candidate below boatOpeningMinScore shares that fate — the extras hold the boat rather
@@ -1327,7 +1371,7 @@ export class Military {
         const m = this.landmass(c.tile);
         const own = m.ours || m.capped;
         const blocked = own && c.tribeTiles === 0 && this.openingCutOff(c.tile);
-        this.ctx.log(`t${this.ctx.mg.ticks()} BOAT OPENING ${this.ctx.sit.boats}/${this.ctx.p.boatOpeningCount} out → ${c.what} at ${this.ctx.mg.x(c.tile)},${this.ctx.mg.y(c.tile)}, ${c.d} tiles${wp ? " by water" : ""} basin=${b.tiles} sail=${c.sail} eta=${c.sail} eaten=${Math.round(Math.min(b.tiles, this.ctx.p.boatEatRate * b.contact * c.sail))} own=${own ? "yes" : "no"}${blocked ? " blocked=yes" : ""}`);
+        this.ctx.log(`t${this.ctx.mg.ticks()} BOAT OPENING ${this.ctx.sit.boats}/${this.ctx.p.boatOpeningCount} out → ${c.what} at ${this.ctx.mg.x(c.tile)},${this.ctx.mg.y(c.tile)}, ${c.d} tiles${wp ? " by water" : ""} basin=${b.tiles} sail=${c.sail} eta=${c.sail} cap=${earlyCap} eaten=${Math.round(Math.min(b.tiles, this.eatRate() * b.contact * c.sail))} own=${own ? "yes" : "no"}${blocked ? " blocked=yes" : ""}${c.moved ? " reanchored=yes" : ""}`);
       }
       if (nearest && !opening) {
         // liveness: what the old ranking (middle tile, 30-tile floor) would have launched at

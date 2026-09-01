@@ -1661,6 +1661,48 @@ through a free lane loses to a separate-mass candidate and, under the floor, to 
 ×1 pinned, so the factor is what decides; the rival-walled carve still launches at factor 0 with blocked=yes;
 a tribe on our own mass is exempt at factor 0).
 A/B: `CONFIGS='{"base":{},"x":{"boatOpening":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+**v6 (branch `bot/boat-opening-v6`)** — three opening-boat findings from Josh's Hard GUI sessions, all inside
+the (now default-ON) flag; flag-off byte-identical to base (MIN=3 across all 6 regions, transcripts equal
+modulo the wall-clock botMs/gameMs fields):
+
+1. **The sail is the true water path, always.** The opening scorer priced a crossing by straight line unless
+   `boatsWaterPath` was on — but that flag is default OFF (its ranking lost the rm1 full-game A/B), so the
+   extras kept landing on the far side of rivers and peninsulas ("the straight line looks short"). The
+   opening now always runs `Military.waterPath()` (the same cached fill boatsWaterPath uses; one fill per
+   pass, cached 100 ticks) for BOTH the sail term and the eta discount, independent of that flag; a shore no
+   water path reaches within WATER_MAX_DIST (250) is no candidate. The plain first boat and the mid-game
+   boat rules keep boatsWaterPath's own (off) behaviour, untouched. Test fixture: the Skagerrak — Jutland's
+   Kattegat shore is chord ~8 from southern Norway but ~115 real water tiles (the Danish straits are closed
+   on the test map); the plain straight-line boat picks it, the v6 extras land on the North Sea side at
+   sail ~25-40.
+2. **An escalating sail budget replaces the ocean window** (`boatOceanUntil` REMOVED — its all-or-nothing
+   window is gone; Josh: "close boats very early, then further and further attempts before warships are
+   everywhere"). maxSail(t) = `boatSailMin` (50) + (250 − boatSailMin) × clamp(t / `boatSailRampTicks`
+   (2000), 0, 1): ~50 tiles at spawn, the full BOAT_MAX_PATH at t2000 — first enemy warship t1489–t2205
+   across the 6 measurement games, so the longest attempts run right as the ocean closes. `boatOceanBonus`
+   (1.3) survives: a new-landmass candidate beyond the 80-tile early cap still gets it, now inside the
+   budget. The BOAT OPENING line gains `cap=` (the budget at launch).
+3. **Difficulty-aware eat rate + landing-eaten re-anchor.** Measured the v3 way on Hard (3 Hard + 3 Medium
+   lab games, tiles/tick per frontier-contact tile, t100–3000 africa): the pooled Hard/Medium ratio is only
+   1.013 (tribes 1.012, nations 1.031) — per-contact-tile expansion is nearly difficulty-independent, so
+   `boatEatRateHard` defaults to 0.0245 × 1.013 = 0.0248 (the knob exists for the CMA; Hard/Impossible read
+   it, Medium keeps boatEatRate). What Josh actually keeps seeing — landing INTO a just-taken shore — is
+   attacked directly: an empty-shore candidate whose basin is still worth the trip but whose LANDING tile
+   has an eater within eatRate × sail (the frontier advances ~eatRate tiles/tick locally; the wave targets
+   the launch-time owner, so an eaten shore fizzles it) is re-anchored to the nearest safe shore of the same
+   basin inside the budget (`reanchored=yes` on the log line, fire site `reanchor`), or dropped when every
+   reachable shore is projected eaten. Tribe candidates are exempt (their wave targets the tribe itself).
+
+Params: `boatSailMin` (int 50), `boatSailRampTicks` (int 2000), `boatEatRateHard` (0.0248); `boatOceanUntil`
+deleted. Golden unchanged: big_plains has zero water tiles, no boat rule can run there (verified).
+Tests: v6 block in tests/playbook/boatOpening.test.ts (the Skagerrak far-side fixture; the ramp holds the
+~124-tile carve at t100 and releases it once maxSail covers its path; a planted eater beside the discovered
+Arabia landing re-anchors the candidate and a full shore picket drops it; the same pins forfeit the carve on
+Hard via boatEatRateHard and take it on Medium).
+A/B: `CONFIGS='{"base":{},"x":{"boatOpening":false}}' MIN=full WORKERS=3 scripts/lab/remote.sh` (a removal —
+the flag is default-on; judge on winner= per the wins objective)
+
 ## Plateau break (`plateauBreak`, 2026-08-30, branch `bot/plateau-break`)
 
 **Removed 2026-08-31 (branch `bot/prune2`; the code lives in git history, last at 0a8f35bc4).**

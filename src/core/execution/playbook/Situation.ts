@@ -27,21 +27,29 @@ export function basin(game: Game, t: TileRef, radius: number, cap: number): numb
 
 /** `boatOpening` v3: the same flood, plus how many owned land tiles (not `me`'s) the basin's perimeter touches —
  *  the eaters. Rivals and tribes both expand outward at ~boatEatRate tiles per tick per contact tile, so a basin's
- *  worth at arrival is what is left after eatRate × contact × sail ticks of consumption. */
-export function basinContact(game: Game, me: Player | null, t: TileRef, radius: number, cap: number): { tiles: number; contact: number } {
+ *  worth at arrival is what is left after eatRate × contact × sail ticks of consumption.
+ *  v6: with `collect`, also the eater tiles and the basin's own shore tiles (each capped at BASIN_COLLECT, in
+ *  flood order — nearest the origin first, which is where the landing-eaten re-anchor looks), for Military's
+ *  projected-eaten landing check; `contact`/`tiles` are exact either way. */
+const BASIN_COLLECT = 256;
+export function basinContact(game: Game, me: Player | null, t: TileRef, radius: number, cap: number, collect = false): { tiles: number; contact: number; eaters: TileRef[]; shores: TileRef[] } {
   const seen = new Set<TileRef>([t]);
   const eaters = new Set<TileRef>();
+  const eaterTiles: TileRef[] = [];
+  const shores: TileRef[] = [];
   const q: TileRef[] = [t];
+  if (collect && game.isShore(t)) shores.push(t);
   let i = 0;
   while (i < q.length && seen.size < cap) {
     const c = q[i++];
     for (const n of game.neighbors(c)) {
       if (seen.has(n) || !game.isLand(n) || game.manhattanDist(n, t) > radius) continue;
-      if (game.hasOwner(n)) { if (game.owner(n) !== me) eaters.add(n); continue; }
+      if (game.hasOwner(n)) { if (game.owner(n) !== me) { if (collect && !eaters.has(n) && eaterTiles.length < BASIN_COLLECT) eaterTiles.push(n); eaters.add(n); } continue; }
       seen.add(n); q.push(n);
+      if (collect && shores.length < BASIN_COLLECT && game.isShore(n)) shores.push(n);
     }
   }
-  return { tiles: seen.size, contact: eaters.size };
+  return { tiles: seen.size, contact: eaters.size, eaters: eaterTiles, shores };
 }
 
 /** One evaluated picture of the game per tick; every rule reads this instead of re-deriving state. */
