@@ -362,9 +362,12 @@ export class SituationQueries {
     const rid = r.smallID();
     for (const dp of this.ctx.me.units(UnitType.DefensePost)) {
       let touches = false;
-      // cheap check: any tile of r within 30 manhattan of the post along a sampled ring
+      // cheap check: any tile of r within ~30 manhattan of the post along a sampled ring. `postStandoff` posts
+      // stand back from the border, so the rival they face is further: widen the scan by half the standoff
+      // (a diagonal border-normal stretches euclid 30 to manhattan ~42).
+      const scan = 30 + (this.ctx.p.postStandoff > 0 ? Math.ceil(this.ctx.p.postStandoff / 2) : 0);
       const x = this.ctx.mg.x(dp.tile()), y = this.ctx.mg.y(dp.tile());
-      for (let dy = -30; dy <= 30 && !touches; dy += 6) for (let dx = -30; dx <= 30; dx += 6) {
+      for (let dy = -scan; dy <= scan && !touches; dy += 6) for (let dx = -scan; dx <= scan; dx += 6) {
         if (!this.ctx.mg.isValidCoord(x + dx, y + dy)) continue;
         if (this.ctx.mg.ownerID(this.ctx.mg.ref(x + dx, y + dy)) === rid) { touches = true; break; }
       }

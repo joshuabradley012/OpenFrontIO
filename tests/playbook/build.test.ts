@@ -1,5 +1,6 @@
-// Rule: build() step 1 — when a non-bot attack lands and a post is affordable, a defence post goes up on the
-// contact border with the attacker, stepped 8–14 tiles back onto our side of it.
+// Rule: build() step 1 — when a non-bot attack lands and a post is affordable, a defence post goes up facing
+// the attacker: ~postStandoff (28) tiles back from the contact border, so the defense RADIUS edge (30) reaches
+// the attacker's land while the building stands off it (postStandoff.test.ts pins 0 for the old geometry).
 import { describe, expect, test } from "vitest";
 import { PlayerType, UnitType } from "../../src/core/game/Game";
 import { distToPlayer, playbookSetup, Rect } from "../util/PlaybookSetup";
@@ -39,14 +40,15 @@ describe("build(): defence post where an attack lands", () => {
     const tile = posts[0].tile();
     expect(posts[0].isUnderConstruction()).toBe(false);
     expect(h.game.owner(tile)).toBe(h.me);
-    // just behind the contact line (8–14 tiles back from the border midpoint, so ≤ ~20 from the attacker's land)
-    expect(distToPlayer(h.game, tile, r)).toBeGreaterThanOrEqual(5);
-    expect(distToPlayer(h.game, tile, r)).toBeLessThanOrEqual(20);
-    // on the attacker's side of our territory, not somewhere in the interior
+    // ~postStandoff (28) back from the contact line: the building stands off the attacker but its 30-tile
+    // radius still reaches the attacker's land
+    expect(distToPlayer(h.game, tile, r)).toBeGreaterThanOrEqual(25);
+    expect(distToPlayer(h.game, tile, r)).toBeLessThanOrEqual(30);
+    // behind the y=57 contact row by the standoff (our band is y 25..57), not off in a corner
     const y = h.game.y(tile);
-    expect(y).toBeGreaterThan(41); // our centre line
-    expect(y).toBeLessThanOrEqual(57);
-    expect(Math.abs(h.game.x(tile) - 50)).toBeLessThanOrEqual(12); // near the contact midpoint, not a corner
+    expect(y).toBeGreaterThanOrEqual(27);
+    expect(y).toBeLessThanOrEqual(31);
+    expect(Math.abs(h.game.x(tile) - 50)).toBeLessThanOrEqual(14); // near the contact midpoint, not a corner
   });
 
   test("no post without the gold for it", async () => {

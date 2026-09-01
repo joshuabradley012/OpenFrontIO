@@ -2056,12 +2056,8 @@ games: a 3–4k-tile piece cut at a 4–10-tile gap held alternately by Australi
 and sea-expansion boats. Conclusion: prevention needs both the follow-up speed-up (finish the tribe) AND the
 geometric pinch watch (the nation-pinch case the tribe theory does not cover).
 
-**`tribeBorders`** — harvestBots eats the weakest bordering tribe first; under the flag only the ORDER changes
-(same sizing, gates, concurrency): a tribe whose sampled border (every 3rd tile, cached 100 ticks —
-`Military.tribeRival`) touches a non-ally rival is eaten before the plain pick — weakest first among those, equal
-troops tie-break toward the tribe whose border is most ours already (eating it shortens our exposed frontier
-most). When the pass's first click differs from what the plain order would have picked under the same gates, it
-fires (`tribeBorders/pick`) and logs `TRIBE PRIORITY <name> (borders <rival>)`.
+**`tribeBorders`** — REMOVED 2026-08-31 (branch `bot/post-standoff`; Josh: "probably isn't good, remove it" — both
+single-seed smokes below were bad and it never got its A/B). Last commit with the code: c38fc2020.
 
 **`thinGuard`** — every 100 ticks (`Military.thinGuard`, rule `thin`, inert off) scan our sampled border (every
 3rd tile of the borderOf snapshot) for pinches: from a border tile with non-owned LAND right behind it, walk up to
@@ -2075,9 +2071,8 @@ post at the pinch, consumed by Economy.build right after the boatDefense landing
 `THIN post at (x,y)`, fires `post`). Additionally, while a tribe wave is unfinished, follow-ups go at HALF
 `botFollowUpTicks` (fires `followUp` when the full cadence would still have waited) — the half-eaten-tribe fix.
 
-Params: `tribeBorders` (bool), `thinGuard` (bool), `thinWidth` (int, 6). Both default off. Tests:
-`tests/playbook/tribeBorders.test.ts` (the ordering flips to the rival-bordering tribe, plain order clicks the
-weakest), `tests/playbook/thinGuard.test.ts` (a 6-wide corridor fixture: rival flanks → THIN + a post covering the
+Params: `thinGuard` (bool, default off), `thinWidth` (int, 6). Tests:
+`tests/playbook/thinGuard.test.ts` (a 6-wide corridor fixture: rival flanks → THIN + a post covering the
 pinch, free flanks → the widening click, tribe flanks → TRIBE PRIORITY over a weaker tribe; follow-up jump at t61
 instead of tribes.test's t111; flag off → none of it). Golden unchanged (both off); MIN=3 africa/Medium transcript
 byte-identical to base bcf649f7a (FINAL botMs/gameMs only).
@@ -2089,6 +2084,47 @@ the want cleared on hasUnitNearby), FINAL rank=1 share=1.00 (control 0.62). 12-m
 2 (3 TRIBE PRIORITY), rank=25 share=0.01; `thinGuard` fired 7 (17 THIN, 1 `THIN post at (1006,473)`, 1 thin-pinch
 priority), rank=12 share=0.08. Most observed pinches are width 1–2 expansion arms in the opening.
 
-A/B (full games, wins objective): `CONFIGS='{"base":{},"tb":{"tribeBorders":true},"tg":{"thinGuard":true},"both":
-{"tribeBorders":true,"thinGuard":true}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh` — the traps are a
-Hard finding, so also a DIFF=hard leg.
+A/B (full games, wins objective): `CONFIGS='{"base":{},"tg":{"thinGuard":true}}' MIRROR=1 MINUTES=full WORKERS=4
+scripts/lab/remote.sh` — the traps are a Hard finding, so also a DIFF=hard leg.
+
+## Defense-post standoff (`postStandoff`, 2026-08-31, branch `bot/post-standoff`)
+
+Josh (Hard GUI): "the bot builds defense posts too close to enemy borders, during pushes too — it uses the center
+of the building on their edge, not the edge of the defense radius like a human would."
+
+**Engine facts**: a defense post has no aura of its own — `AttackExecution.attackLogicInput` grants the defender
+`defensePostDefenseBonus` (5× attacker loss) and `defensePostSpeedBonus` (3× tile cost) on every conquered tile
+with a defender-owned post within `Config.defensePostRange()` = **30 tiles EUCLIDEAN** (`hasUnitNearby`, dist² ≤
+900). So a post ON the border wastes the enemy-side half of its circle and stands where the first push captures
+it; a post ~28 back protects the same border stretch AND the 28-deep band behind it, with the building a full
+radius from the enemy.
+
+**The change (default ON — a bug-shaped misplacement, no flag)**: every post site pick goes through
+`Economy.standoffPostTile` — the attack-landing and threat posts via `defensePostTile` (which used to step only
+8–14 tiles back), the `boatDefense` landing and `thinGuard` pinch posts via `landingPostTile` (which used to put
+the post ON the contact tile). From the border-contact midpoint, candidates are our buildable tiles on the ring
+~`postStandoff` away that stand at least (standoff − 2) from every scored border tile (pins them to the
+border-normal, off the border itself); the winner covers the most border tiles within the 30-tile radius, logged
+`POST standoff (x,y) d~N covers K/B border (contact (x,y))`. An empty ring shrinks by 4 toward the contact — a
+3-tile island still builds, at the contact itself. `Situation.postFacing` widens its sampled scan by half the
+standoff so the threat-post dedupe still sees the rival the post faces. Coverage trade, measured
+(postStandoff.test.ts fixture, straight border): the old 8-back post covered 57 border tiles, the standoff post
+29 — bought with the building 28 from the enemy instead of 8 and the radius edge AT the border.
+
+Params: `postStandoff` (int, default 28 = defensePostRange − 2; 0 restores the old geometry byte-for-byte — the
+parity pin, and the CMA can tune it). Tests: `tests/playbook/postStandoff.test.ts` (the incoming-attack post sits
+~28 behind the contact with its radius still covering it, 0 reproduces the old 8-back tile, thinGuard's pinch post
+inherits the shared picker shrunk to a 6-wide corridor); `build.test.ts` re-asserted to the new geometry. Golden
+HASH UNCHANGED — verified: no defense post is built in the 2400-tick golden window (material has only `build City`
+at t1260). Decision parity: MIN=3 africa/Medium with `PARAMS='{"postStandoff":0}'` byte-identical to base
+c38fc2020 (replay-recipe PARAMS line and FINAL botMs/gameMs only) — the same diff also proves the `tribeBorders`
+removal decision-neutral.
+
+Smoke (12-min africa/Hard, defaults): FINAL rank=5 share=0.60 alive, 9 posts (8 through the picker, 1 ring-empty
+fallback to the contact), e.g. `t2400 POST standoff (955,433)
+d~28 covers 30/39 border (contact (954,405))`, `t2250 POST standoff (1105,317) d~24 covers 51/81 border` — d
+shrinks (24/16/12) where the interior is thin.
+
+A/B (full games, wins objective — run as a REMOVAL, the correction is default-on):
+`CONFIGS='{"base":{},"old":{"postStandoff":0}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh` — posts
+are a Hard/push finding, so also a DIFF=hard leg; the CMA can tune the standoff on the usual grid.
