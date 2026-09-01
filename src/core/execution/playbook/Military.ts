@@ -674,6 +674,7 @@ export class Military {
     if (o !== null) this.actExpand(o.troops);
   }
   private falloutLogged = -1e9;
+  private falloutWaitLogged = -1e9; // the wait log's own timer: a deferral at t and the take at t+coolTicks should both log
   /** The expand click this pass would make (decide half of expand()). */
   expandOption(): { troops: number; contested: boolean } | null {
     const { rivals, wilderness } = this.q.neighbours();
@@ -682,6 +683,20 @@ export class Military {
       if (!this.ctx.p.takeFallout || this.ctx.sit.troops < this.q.cap() * this.ctx.p.fightAbove) return null;
       const n = this.q.falloutBordering(this.ctx.mg.ticks());
       if (n === 0) return null;
+      // `falloutPatience`: engine fallout never cools (one bit, cleared only by conquest/flood; the ~5× penalty is
+      // 5 − 2 × the GLOBAL fallout share — Config.falloutDefenseModifier — never tile age), so the wait is for the
+      // BOMBS, not the isotopes: while a bordering basin is still growing (a nuke landed < falloutCoolTicks ago)
+      // the land we clear at ~5× mag can be re-nuked away — defer, unless a hostile borders the basin (front-line
+      // fallout: taking it advances the border with zero defender losses and denies the human reclaim).
+      if (this.ctx.p.falloutPatience) {
+        const ticks = this.ctx.mg.ticks();
+        const b = this.q.falloutBasins(ticks);
+        if (!b.hostile && ticks - b.lastGrowth < this.ctx.p.falloutCoolTicks) {
+          this.lim.fire("falloutPatience", "defer"); // off would have clicked: the deferral is the changed decision
+          if (ticks - this.falloutWaitLogged >= 600) { this.falloutWaitLogged = ticks; this.ctx.log(`t${ticks} FALLOUT wait: basin ~${b.size} tiles still hot (grew ${ticks - b.lastGrowth} ticks ago), no hostile on its rim — deferring ${this.ctx.p.falloutCoolTicks - (ticks - b.lastGrowth)} more ticks`); }
+          return null;
+        }
+      }
       this.lim.fire("takeFallout", "expand");
       if (this.ctx.mg.ticks() - this.falloutLogged >= 600) { this.falloutLogged = this.ctx.mg.ticks(); this.ctx.log(`t${this.ctx.mg.ticks()} FALLOUT expand: ~${n * 3} irradiated tiles on our border, troops at ${Math.round(100 * this.ctx.sit.capShare)} % of cap`); }
       return { troops: Math.floor(this.ctx.sit.troops * this.ctx.p.expandContested), contested: true };

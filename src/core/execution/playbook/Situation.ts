@@ -188,6 +188,34 @@ export class SituationQueries {
     this.falloutCache = { tick, n };
     return n;
   }
+  /** `falloutPatience`: the unowned fallout basins touching our border, flood-filled (cap 1500 tiles) from the
+   *  falloutBordering seeds — their size, whether a living hostile non-bot owns land on a basin's rim, and the last
+   *  tick the size GREW (fallout never decays, so growth means a nuke just landed there; shrink is conquest/flood).
+   *  Refreshed every 100 ticks — and only ever called with the flag on, so off-behaviour is untouched. */
+  private basinCache = { tick: -1e9, size: 0, hostile: false, lastGrowth: -1e9 };
+  falloutBasins(tick: number): { size: number; hostile: boolean; lastGrowth: number } {
+    if (tick - this.basinCache.tick < 100) return this.basinCache;
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const seen = new Set<TileRef>(), queue: TileRef[] = [];
+    let i = 0;
+    for (const t of borderOf(me)) {
+      if ((i++ % 3) !== 0) continue; // the falloutBordering walk's sampling; the flood fill recovers skipped basin tiles
+      for (const nb of mg.neighbors(t)) if (mg.isLand(nb) && !mg.hasOwner(nb) && mg.hasFallout(nb) && !seen.has(nb)) { seen.add(nb); queue.push(nb); }
+    }
+    let hostile = false;
+    for (let qi = 0; qi < queue.length && seen.size < 1500; qi++) {
+      for (const nb of mg.neighbors(queue[qi])) {
+        if (!mg.isLand(nb)) continue;
+        if (!mg.hasOwner(nb)) { if (mg.hasFallout(nb) && !seen.has(nb)) { seen.add(nb); queue.push(nb); } continue; }
+        if (hostile) continue;
+        const o = mg.owner(nb);
+        if (o.isPlayer() && o !== me && o.isAlive() && o.type() !== PlayerType.Bot && !me.isFriendly(o)) hostile = true;
+      }
+    }
+    const lastGrowth = seen.size > this.basinCache.size ? tick : this.basinCache.lastGrowth;
+    this.basinCache = { tick, size: seen.size, hostile, lastGrowth };
+    return this.basinCache;
+  }
   /** Unowned, fallout-free land on our own landmass (flood fill capped at 4000 tiles, refreshed every 100 ticks). */
   freeLandReachable(tick: number): boolean {
     if (tick - this.freeLandCache.tick < 100) return this.freeLandCache.ok;
