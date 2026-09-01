@@ -1113,9 +1113,10 @@ export class Economy {
     }
     return best;
   }
-  /** `boatDefense`: our land tile nearest the predicted landing tile where a post can go — the post's 30-tile
-   *  range covers the landing from anywhere in the 12-tile box, so nearest-first is enough (defensePostTile needs
-   *  an attacker who already owns border tiles; a boat still at sea has none). */
+  /** `boatDefense` landing + `thinGuard` pinch posts: our land tile nearest the predicted landing/pinch tile
+   *  where a post can go (defensePostTile needs an attacker who already owns border tiles; a boat still at sea
+   *  has none). With `postStandoff` on, that nearest tile is only the CONTACT — the post itself steps back
+   *  through the shared standoff picker so its radius covers the border band instead of sitting on the shore. */
   private landingPostTile(at: TileRef): TileRef | null {
     const mg = this.ctx.mg, me = this.ctx.me;
     const ax = mg.x(at), ay = mg.y(at);
@@ -1128,7 +1129,54 @@ export class Economy {
         const d = Math.abs(dx) + Math.abs(dy);
         if (d < bestD && me.canBuild(UnitType.DefensePost, t) !== false) { bestD = d; best = t; }
       }
+    if (best !== null && this.ctx.p.postStandoff > 0) {
+      // score against our border tiles the post could still protect around the contact
+      const R2 = mg.config().defensePostRange() ** 2;
+      const border: TileRef[] = [];
+      for (const b of borderOf(me)) {
+        if (mg.euclideanDistSquared(b, best) <= R2) { border.push(b); if (border.length >= 200) break; }
+      }
+      const t = this.standoffPostTile(best, border);
+      if (t !== null) return t;
+    }
     return best;
+  }
+  /** `postStandoff` — the shared post-site picker (attack-landing / threat posts via defensePostTile, boatDefense
+   *  landing and thinGuard pinch posts via landingPostTile): our buildable tile ~postStandoff back from `contact`
+   *  toward the interior. Candidates are the ring |dist − standoff| ≤ 1 around the contact, kept only when they
+   *  stand at least (standoff − 2) from EVERY scored border tile — that pins them to the border-normal, off the
+   *  border itself; the winner covers the most border tiles within the engine's defensePostRange (30, EUCLIDEAN:
+   *  AttackExecution.attackLogicInput grants the 5×/3× defense bonus to a conquered tile with a defender post in
+   *  that circle). An empty ring shrinks by 4 toward the contact — a 3-tile island still builds (the caller falls
+   *  back to the contact tile on null). */
+  private standoffPostTile(contact: TileRef, borderTiles: readonly TileRef[]): TileRef | null {
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const R2 = mg.config().defensePostRange() ** 2;
+    const cx = mg.x(contact), cy = mg.y(contact);
+    const max = Math.min(Math.round(this.ctx.p.postStandoff), mg.config().defensePostRange() - 2);
+    for (let d = Math.max(1, max); d > 0; d -= 4) {
+      const lo = (d - 1) * (d - 1), hi = (d + 1) * (d + 1), back = (d - 2) * (d - 2);
+      let best: TileRef | null = null, bestScore = -1;
+      for (let dy = -d - 1; dy <= d + 1; dy++)
+        for (let dx = -d - 1; dx <= d + 1; dx++) {
+          const r2 = dx * dx + dy * dy;
+          if (r2 < lo || r2 > hi || !mg.isValidCoord(cx + dx, cy + dy)) continue;
+          const t = mg.ref(cx + dx, cy + dy);
+          if (mg.owner(t) !== me || !mg.isLand(t)) continue;
+          let score = 0;
+          for (const b of borderTiles) {
+            const e2 = mg.euclideanDistSquared(b, t);
+            if (e2 < back) { score = -1; break; } // hugging the border: not a standoff site
+            if (e2 <= R2) score++;
+          }
+          if (score > bestScore && me.canBuild(UnitType.DefensePost, t) !== false) { bestScore = score; best = t; }
+        }
+      if (best !== null) {
+        this.ctx.log(`t${this.ctx.mg.ticks()} POST standoff (${mg.x(best)},${mg.y(best)}) d~${d} covers ${bestScore}/${borderTiles.length} border (contact (${cx},${cy}))`);
+        return best;
+      }
+    }
+    return null;
   }
   defensePostTile(attacker: Player): TileRef | null {
     const me = this.ctx.me;
@@ -1143,8 +1191,14 @@ export class Economy {
       if (candidates.length > 80) break;
     }
     if (candidates.length === 0) return null;
-    // contact midpoint, then step 6–12 tiles away from the attacker's side of the border
     const mid = candidates[Math.floor(candidates.length / 2)];
+    // `postStandoff`: back the post off the contact so the RADIUS edge reaches the enemy border, not the building
+    if (this.ctx.p.postStandoff > 0) {
+      const t = this.standoffPostTile(mid, candidates);
+      if (t !== null) return t;
+      return me.canBuild(UnitType.DefensePost, mid) !== false ? mid : null;
+    }
+    // postStandoff 0 — the old geometry: contact midpoint, then step 6–12 tiles away from the attacker's side of the border
     const mx = this.ctx.mg.x(mid),
       my = this.ctx.mg.y(mid);
     let ax = 0,

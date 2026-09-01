@@ -705,20 +705,14 @@ export class Military {
     const { bots, wilderness } = this.q.neighbours();
     if (bots.length === 0) return;
     bots.sort((a, b) => a.troops() - b.troops());
-    // `tribeBorders` / `thinGuard`: only the ORDER changes (same sizing, gates, concurrency). Rival-bordering
-    // tribes are eaten before the plain weakest-first pick — their frontier becomes a real border before the rival
-    // takes them — and `thinGuard`'s pinch tribe goes first of all. Equal troops tie-break toward the tribe whose
-    // border is most ours already: eating it shortens our exposed frontier most.
+    // `thinGuard`: only the ORDER changes (same sizing, gates, concurrency) — the pinch tribe goes first,
+    // everything else stays weakest-first. (`tribeBorders`, the rival-bordering reorder, was removed 2026-08-31 —
+    // bad single-seed smokes, never A/B'd; last commit with the code: c38fc2020.)
     const thinTribe = this.ctx.p.thinGuard && this.thinTribe !== null && bots.includes(this.thinTribe.bot) ? this.thinTribe.bot : null;
-    const plainOrder = this.ctx.p.tribeBorders || thinTribe !== null ? bots.slice() : null;
+    const plainOrder = thinTribe !== null ? bots.slice() : null;
     if (plainOrder !== null) bots.sort((a, b) => {
       if (a === thinTribe) return -1;
       if (b === thinTribe) return 1;
-      if (this.ctx.p.tribeBorders) {
-        const d = (this.tribeRival(b).rival !== null ? 1 : 0) - (this.tribeRival(a).rival !== null ? 1 : 0);
-        if (d !== 0) return d;
-        if (a.troops() === b.troops()) return this.tribeRival(b).oursShare - this.tribeRival(a).oursShare;
-      }
       return a.troops() - b.troops();
     });
     const plentiful = me.troops() > this.q.cap() * this.ctx.p.fightAbove;
@@ -763,52 +757,15 @@ export class Military {
     w.sent += send; w.last = this.ctx.mg.ticks();
     this.noteFollowUp(bot, send);
   }
-  // ---------------------------------------------------------------- tribeBorders: which tribe first
-  private tribeRivalCache = new Map<Player, { tick: number; rival: Player | null; oursShare: number }>();
-  /** `tribeBorders`: the non-ally rival (living non-bot player, not us, not our friend) touching most of `bot`'s
-   *  sampled border, and the share of the samples touching US (the annex walk's shape: every 3rd border tile,
-   *  cached 100 ticks — a tribe's border moves slowly). */
-  private tribeRival(bot: Player): { rival: Player | null; oursShare: number } {
-    const t = this.ctx.mg.ticks();
-    const c = this.tribeRivalCache.get(bot);
-    if (c !== undefined && t - c.tick < 100) return c;
-    const mg = this.ctx.mg, me = this.ctx.me;
-    const touch = new Map<Player, number>();
-    let ours = 0, n = 0, i = 0;
-    for (const tile of borderOf(bot)) {
-      if ((i++ % 3) !== 0) continue;
-      n++;
-      let mine = false;
-      let riv: Player | null = null;
-      for (const nb of mg.neighbors(tile)) {
-        const o = mg.owner(nb);
-        if (!o.isPlayer()) continue;
-        if (o === me) mine = true;
-        else if (o.type() !== PlayerType.Bot && !me.isFriendly(o) && o.isAlive()) riv = o;
-      }
-      if (mine) ours++;
-      if (riv !== null) touch.set(riv, (touch.get(riv) ?? 0) + 1);
-    }
-    let rival: Player | null = null, best = 0;
-    for (const [r, k] of touch) if (k > best) { best = k; rival = r; }
-    const out = { tick: t, rival, oursShare: n > 0 ? ours / n : 0 };
-    this.tribeRivalCache.set(bot, out);
-    return out;
-  }
-  /** The first click of the pass went to a different tribe than the plain weakest-first order would have picked
-   *  (same gates): the flag changed the decision — count it and log TRIBE PRIORITY. */
+  /** The first click of the pass went to `thinGuard`'s pinch tribe when the plain weakest-first order would have
+   *  picked another tribe under the same gates: the flag changed the decision — count it and log TRIBE PRIORITY. */
   private notePriority(clicked: Player, plain: Player[], maxSend: number, thinTribe: Player | null): void {
     const me = this.ctx.me;
+    if (clicked !== thinTribe) return; // only thinGuard reorders
     const plainPick = plain.find((b) => me.canAttackPlayer(b) && this.reachable(b) && !this.q.outgoingTo(b) && b !== clicked && Math.ceil(b.troops() * this.ctx.p.botRatio) + 500 <= maxSend) ?? clicked;
     if (plainPick === clicked || plain.indexOf(plainPick) > plain.indexOf(clicked)) return; // same pick, or `clicked` came first in the plain order too
-    if (clicked === thinTribe) {
-      this.lim.fire("thinGuard", "tribe");
-      this.ctx.log(`t${this.ctx.mg.ticks()} TRIBE PRIORITY ${clicked.name()} (thin pinch)`);
-      return;
-    }
-    const r = this.tribeRival(clicked).rival;
-    this.lim.fire("tribeBorders", "pick");
-    this.ctx.log(`t${this.ctx.mg.ticks()} TRIBE PRIORITY ${clicked.name()} (borders ${r !== null ? r.name() : "nobody"})`);
+    this.lim.fire("thinGuard", "tribe");
+    this.ctx.log(`t${this.ctx.mg.ticks()} TRIBE PRIORITY ${clicked.name()} (thin pinch)`);
   }
   /** The first click on a tribe: `want` in total, at most botClickCap of home now (act half of harvestBots). */
   private tribeClick(bot: Player, want: number): boolean {
