@@ -2128,3 +2128,11 @@ shrinks (24/16/12) where the interior is thin.
 A/B (full games, wins objective — run as a REMOVAL, the correction is default-on):
 `CONFIGS='{"base":{},"old":{"postStandoff":0}}' MIRROR=1 MINUTES=full WORKERS=4 scripts/lab/remote.sh` — posts
 are a Hard/push finding, so also a DIFF=hard leg; the CMA can tune the standoff on the usual grid.
+
+## Hard, cleanly measured (2026-08-31 night, `lab-out/hard1` + hard1B/hard1C reruns)
+
+The first hard1 sweep was contaminated by a zombie hard0 launcher adopting recycled box IPs (post-mortem + fixes in 52ba23d64: capped .lab-ready wait, honest queue_len, exit-24 tolerance; 69 impostor SEED=hard0 transcripts quarantined in hard1-zombie/). After both arms were rerun on clean boxes at bcf649f7a:
+
+- **Hard baseline with the v6 boats: 67/120 (56 %)** — up from 18.5 % at hard0 (pre-v6, different seed set). The v6 boat work (water-path sails, escalating budget, landing re-anchor) is the difference; Hard's early game was mostly boat-shaped.
+- **boatDefense: 68/120, paired 28/27, p=1.0 — no effect** at these constants. Its smokes show it acting (inbound posts, beachhead waves, tribe races) but the actions don't convert; keep default-off as a Hard candidate for a constants pass, or prune next round.
+- Cross-environment nondeterminism documented: the same game diverges between Node 24.13 (Mac) and 24.20 (boxes) via V8's implementation-defined Math.hypot/cos in bot scoring — never mix environments within a sweep.
