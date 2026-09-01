@@ -2136,3 +2136,34 @@ The first hard1 sweep was contaminated by a zombie hard0 launcher adopting recyc
 - **Hard baseline with the v6 boats: 67/120 (56 %)** — up from 18.5 % at hard0 (pre-v6, different seed set). The v6 boat work (water-path sails, escalating budget, landing re-anchor) is the difference; Hard's early game was mostly boat-shaped.
 - **boatDefense: 68/120, paired 28/27, p=1.0 — no effect** at these constants. Its smokes show it acting (inbound posts, beachhead waves, tribe races) but the actions don't convert; keep default-off as a Hard candidate for a constants pass, or prune next round.
 - Cross-environment nondeterminism documented: the same game diverges between Node 24.13 (Mac) and 24.20 (boxes) via V8's implementation-defined Math.hypot/cos in bot scoring — never mix environments within a sweep.
+
+## Fallout patience (`falloutPatience`, 2026-09-01, branch `bot/fallout-cooling`)
+
+Josh's rule: "wait for irradiated land to cool before taking it in our sphere; on enemy territory it's always
+good to take". The engine facts say half of that premise cannot exist, so the flag implements what the
+mechanics actually support:
+
+- **Fallout never cools.** It is one bit per tile (GameMap bit 13), set by NukeExecution/DoomsdayClock after
+  the owner relinquishes, cleared ONLY by conquest (GameImpl.conquer) or flood — no timer, no stages, no decay
+  execution. The conquest penalty (Config.falloutDefenseModifier = 5 − 2 × GLOBAL fallout share of the map,
+  applied to both mag and tileCost in attackLogic) varies with how much of the MAP is irradiated, never with
+  tile age. Waiting for radiological decay is therefore pointless.
+- **"Enemy territory fallout" does not exist.** setFallout throws on owned tiles; nuked land is relinquished
+  first, so all fallout is unowned TerraNullius. Taking it engages no defender (the defender-null branch:
+  attacker loss = mag×modifier/5 ≈ 80 troops/tile on plains at low global fallout vs 16 clean, defender loss 0,
+  no defense-post bonus — those require a defender), and it does NOT "cost them land" (they already lost it to
+  the nuke). What IS true: it advances our border for zero combat losses and denies the HUMAN reclaim (nations
+  and bots never take fallout — AiAttackBehavior skips it everywhere).
+
+So the flag waits for the BOMBS, not the isotopes: while the fallout basins touching our border are still
+GROWING (Situation.falloutBasins: flood fill from the takeFallout border walk's seeds, cap 1500 tiles, refreshed
+every 100 ticks — fallout never decays, so growth means a nuke just landed there), the takeFallout expand is
+deferred for `falloutCoolTicks` (default 300 — silo cooldown is 90 ticks, an active bombardment refires well
+inside that) — land cleared at ~5× mag while shells still land can be re-nuked away. Exception, per Josh's (b)
+in the only form the engine supports: a living hostile non-bot on a basin's rim (front-line fallout) cancels the
+patience — taken at once. Off-behaviour (takeFallout alone) is untouched; falloutBasins is only ever called with
+the flag on. Tests: tests/playbook/falloutPatience.test.ts (defer + fire + log, take after the quiet window, a
+mid-wait nuke restarting the window, hostile rim taking at once, off unchanged). Smoke (12-min Hard, seedless):
+`t5220 FALLOUT wait: basin ~1422 tiles still hot (grew 0 ticks ago), no hostile on its rim — deferring 300 more
+ticks`, fired falloutPatience:3. A/B:
+`CONFIGS='{"base":{},"fp":{"falloutPatience":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
