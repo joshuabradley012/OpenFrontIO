@@ -153,8 +153,8 @@ run_job() {
   slot=${batch%b}; senv=""; [ "$slot" != "$batch" ] && senv="SHIFT=$MIRRORSHIFT SEED=$MIRRORSEED"   # med0b = slot b: shifted grid, other opponent field
   case $slot in
     hard[0-9]) benv="SPAWNRANK=${slot#hard}";;
-    med[0-9]) benv="DIFF=medium SPAWNRANK=${slot#med}";;
-    g[0-9]) benv="GLOBAL=1 DIFF=medium SPAWNRANK=${slot#g}";;      # global picker ranks 6k..6k+5 (Medium)
+    med[0-9]) benv="DIFF=${DIFF:-medium} SPAWNRANK=${slot#med}";;
+    g[0-9]) benv="GLOBAL=1 DIFF=${DIFF:-medium} SPAWNRANK=${slot#g}";;      # global picker ranks 6k..6k+5 (Medium)
     gh[0-9]) benv="GLOBAL=1 SPAWNRANK=${slot#gh}";;                # same on Hard
     *) echo "unknown batch $batch"; return 1;;
   esac
