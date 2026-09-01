@@ -2211,3 +2211,15 @@ bomb bar (956k gold vs 1.11M), the flags are a mid-game weapon. `SILO early` did
 A/B decides. A/B:
 `CONFIGS='{"base":{},"tempo":{"bombPush":true,"fastSilo":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
 (judge on MIN=full `winner=us`, per the objective).
+
+## `tempo1` — the tempo package and three queued flags on Hard (2026-09-01, `lab-out/tempo1`, 119 pairs each)
+
+| arm | wins vs base 75 | p | win-minute p25/med/p75 |
+|---|---|---|---|
+| tempo (bombPush+fastSilo) | 77 | 0.88 | **34/45/65** (base 38/56/72) |
+| tempoB (+bombBudget) | 74 | 1.0 | 32/44/60 |
+| falloutPatience | 77 | 0.86 | — |
+| thinGuard | 67 | 0.31 | — |
+| postStandoff:0 control | 75 | 1.0 | — |
+
+Read: the tempo package moves the **win-minute median 56 → 45** (tempoB 44) at a flat win rate — the bombs buy speed, not extra wins, on Hard's slow gold. thinGuard leans harmful (prune next round). falloutPatience and postStandoff are neutral on Hard (standoff kept: cost-free geometry; fp stays a flag). Next tempo lever per the win-minute shift: the package's effect should compound on Medium (fast gold) and against the endgame-race cluster — test tempo on Medium, and consider tempo+contestLeader for the race losses.
