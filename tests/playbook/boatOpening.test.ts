@@ -8,7 +8,7 @@
 import { describe, expect, test } from "vitest";
 import { BOAT_MAX_PATH } from "../../src/core/execution/playbook/Military";
 import { PlaybookParams } from "../../src/core/execution/playbook/PlaybookBotExecution";
-import { Game, Player, PlayerType, UnitType } from "../../src/core/game/Game";
+import { Difficulty, Game, Player, PlayerType, UnitType } from "../../src/core/game/Game";
 import { TileRef } from "../../src/core/game/GameMap";
 import { conquerRect, PlaybookHarness, playbookSetup, PRE_COMBO, Rect, RivalSpec } from "../util/PlaybookSetup";
 
@@ -247,7 +247,8 @@ describe("boatOpening", () => {
     { name: "NearTribeA", type: PlayerType.Bot, at: [1607, 360], troops: 1_000, tiles: [1602, 356, 1613, 364] },
     { name: "NearTribeB", type: PlayerType.Bot, at: [1607, 372], troops: 1_000, tiles: [1602, 365, 1613, 377] },
   ];
-  // the window needs the sailed path (the cap it lifts is BOAT_MAX_PATH.early on the water path)
+  // v6: the opening prices by the water path on its own; boatsWaterPath stays pinned on so the PLAIN first
+  // boat keeps the fixture timing these tests were built with (it is the only rule the pin still moves here)
   const V3_OCEAN: Partial<PlaybookParams> = { ...V2, boatsWaterPath: true, boatEatRate: 0.02, boatTribeWorth: 1.0, boatOceanBonus: 1.3 };
   const sailOf = (l: string) => Number(/sail=(\d+)/.exec(l)![1]);
   const isFar = (l: string) => l.includes("BOAT OPENING") && / sail=\d+/.test(l) && sailOf(l) > BOAT_MAX_PATH.early;
@@ -259,8 +260,8 @@ describe("boatOpening", () => {
     return h.until(() => { for (const t of tribes) if (t.isAlive() && t.troops() > 1000) t.setTroops(1000); return stop(); }, max);
   }
 
-  test("v3: the ocean window lifts the sail cap - the rich carve at water-path ~100+ beats the near tribe before boatOceanUntil", async () => {
-    const h = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 9000 });
+  test("v3/v6: with the sail budget open (rampTicks 1) the rich carve at water-path ~100+ beats the near tribe", async () => {
+    const h = await oceanSetup({ ...V3_OCEAN, boatSailRampTicks: 1 });
     blockFar(h);
     expect(runOcean(h, () => h.log.some(isFar), 500)).toBe(true);
     const line = h.log.find(isFar)!;
@@ -268,8 +269,8 @@ describe("boatOpening", () => {
     expect(h.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1);
   });
 
-  test("v3: after boatOceanUntil the early cap holds - the extras take a near tribe, nothing sails past the cap", async () => {
-    const h = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 0 });
+  test("v3/v6: a budget pinned at the early cap holds - the extras take a near tribe, nothing sails past the cap", async () => {
+    const h = await oceanSetup({ ...V3_OCEAN, boatSailMin: BOAT_MAX_PATH.early, boatSailRampTicks: 1_000_000_000 }); // maxSail stays 80 for the whole run (v3's closed window)
     blockFar(h);
     expect(runOcean(h, () => h.log.some((l) => l.includes("BOAT OPENING")), 500)).toBe(true);
     for (const l of h.log.filter((x) => x.includes("BOAT OPENING") && / sail=\d+/.test(x))) expect(sailOf(l)).toBeLessThanOrEqual(BOAT_MAX_PATH.early);
@@ -280,12 +281,12 @@ describe("boatOpening", () => {
     // Same carve, window open both times. At boatEatRate 2.0 the ~100-tick sail forfeits the whole basin
     // (2.0 x contact x sail >> basin, the eaters on its west and south rims), so the extras take the near
     // tribe instead; at 0 the far crossing wins as in the window test.
-    const safe = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 9000, boatEatRate: 2.0 });
+    const safe = await oceanSetup({ ...V3_OCEAN, boatSailRampTicks: 1, boatEatRate: 2.0 });
     blockFar(safe);
     expect(runOcean(safe, () => safe.log.some((l) => l.includes("BOAT OPENING")), 500)).toBe(true);
     for (const l of safe.log.filter((x) => x.includes("BOAT OPENING") && / sail=\d+/.test(x))) expect(sailOf(l)).toBeLessThanOrEqual(BOAT_MAX_PATH.early);
     expect(safe.log.some(isNear)).toBe(true); // the safer pick: tribes don't evaporate
-    const greedy = await oceanSetup({ ...V3_OCEAN, boatOceanUntil: 9000, boatEatRate: 0 });
+    const greedy = await oceanSetup({ ...V3_OCEAN, boatSailRampTicks: 1, boatEatRate: 0 });
     blockFar(greedy);
     expect(runOcean(greedy, () => greedy.log.some(isFar), 500)).toBe(true); // discount off: the same basin is taken
   });
@@ -335,7 +336,7 @@ describe("boatOpening", () => {
   // 225k-tile mainland saturated the 1500-tile landmass fill, read as a NEW landmass and collected the
   // ×1.5 × ×1.3 bonuses every pass — and once good targets were taken, the extras fed a junk tail of
   // basin<200 empty shores at sail 140+ and re-boated a coast whose landing a tribe had already eaten).
-  const V4: Partial<PlaybookParams> = { ...V3_OCEAN, boatOceanUntil: 9000, boatOpeningSailCost: 8, boatOpeningMinScore: 4 };
+  const V4: Partial<PlaybookParams> = { ...V3_OCEAN, boatSailRampTicks: 1, boatOpeningSailCost: 8, boatOpeningMinScore: 4 };
 
   test("v4: a remote uncontested basin at long sail loses to the nearer contested tribe (no new-mass bonus on a cap-saturated mass)", async () => {
     // The carve (basin ~1300 at water-path ~124) sits on the mainland — a mass the 1500-tile fill cannot finish.
@@ -528,6 +529,158 @@ describe("boatOpening", () => {
     expect(line).toContain("tribe MassTribe"); // a tribe across the bay on our own mass is still a fine boat
     expect(line).toContain("own=yes");
     expect(line).not.toContain("blocked=yes");
+  });
+
+  // ---- v6 fixtures ------------------------------------------------------------------------------------
+  // 1) True water-path sail (Josh: the openings land on the far side of rivers/peninsulas because the straight
+  //    line looks short — boatsWaterPath was the fix but its ranking lost the full-game A/B and is off).
+  //    Real corner: the Skagerrak. Our rect is southern Norway ([894,148,924,171]); Jutland hangs south of it.
+  //    Probed offline (water/land BFS on the test map): Jutland's EAST (Kattegat) shore at ~(901,178) is
+  //    chord ~8 from our south coast but ~115 tiles of real water — the Danish straits are closed on this
+  //    map, a boat must round Jutland's south tip (~y195) — while its WEST (North Sea) shore at ~(878,179)
+  //    is chord ~24 and ~25-40 by water. The straight-line ranking (the plain first boat, untouched) picks
+  //    the far Kattegat shore; the v6 extras must price the true sail and land on the North Sea side.
+  //    Jutland's land path back to Norway runs through all of Europe and Russia, so acrossWaterNear
+  //    saturates its 4000-tile cap and the tribe stays a boat target.
+  const ME_NORWAY: Rect = [894, 148, 924, 171];
+  const SPAWN_NORWAY: [number, number] = [908, 160];
+  const JUTLAND: Rect = [876, 178, 901, 196];
+  function blockEurope(h: PlaybookHarness): void {
+    const b = h.rival("Blocker");
+    conquerRect(h.game, b, [694, 0, 1124, 147]); // north of our rect, Arctic coasts included
+    conquerRect(h.game, b, [694, 148, 893, 171]); // west of it
+    conquerRect(h.game, b, [925, 148, 1124, 171]); // east of it (Sweden onward)
+    conquerRect(h.game, b, [694, 172, 875, 571]); // the Atlantic side, west of Jutland
+    conquerRect(h.game, b, [902, 172, 1124, 571]); // Sweden/Baltic/Europe east of Jutland
+    conquerRect(h.game, b, [876, 172, 901, 177]); // Jutland's north strip + the Skagen islets (seals the closed lagoon's shores)
+    conquerRect(h.game, b, [876, 197, 901, 571]); // Germany southward
+  }
+
+  test("v6: sail is the true water path - the extras land on Jutland's near (North Sea) shore where the straight line picks the far (Kattegat) shore", async () => {
+    const h = await playbookSetup({
+      map: "world", spawn: SPAWN_NORWAY, tiles: ME_NORWAY, troops: 2_000,
+      rivals: [BLOCKER, { name: "Jutland", type: PlayerType.Bot, at: [893, 185], troops: 1_000, tiles: JUTLAND }],
+      // islandMaxTiles 300: Scandinavia is ~1500 tiles on this map — under the 20000 default the opening
+      // would read the spawn as an island and stay inert; over 300 it is a mainland like any other
+      bot: { ...V2, boatShare: 0.3, boatSailRampTicks: 1, boatEatRate: 0, islandMaxTiles: 300 },
+    });
+    blockEurope(h);
+    const tribe = h.rival("Jutland");
+    const seen = new Map<TileRef, number>();
+    const done = h.until(() => {
+      if (tribe.isAlive() && tribe.troops() > 1000) tribe.setTroops(1000);
+      if (h.game.ticks() <= 651 && h.me.troops() > 2000) h.me.setTroops(2000);
+      if (h.game.ticks() === 652) h.me.setTroops(20_000);
+      for (const u of h.me.units(UnitType.TransportShip)) { const dt = u.targetTile(); if (dt !== undefined && !seen.has(dt)) seen.set(dt, h.game.ticks()); }
+      return h.log.some((l) => l.includes("out → tribe Jutland"));
+    }, 800);
+    expect(done).toBe(true);
+    // the PLAIN first boat (straight-line ranking, untouched by v6) launched at the chord-8 Kattagat tip
+    const plain = h.log.find((l) => /early boat → tribe Jutland, \d+ tiles$/.test(l))!;
+    expect(plain).toBeDefined();
+    expect(Number(/, (\d+) tiles$/.exec(plain)![1])).toBeLessThanOrEqual(110); // chord + 80: the straight line says ~8
+    const plainTarget = [...seen].sort((a, b) => a[1] - b[1])[0]?.[0];
+    expect(plainTarget).toBeDefined();
+    expect(h.game.x(plainTarget!)).toBeGreaterThanOrEqual(896); // the far (Kattegat) shore — ~115 real water tiles away
+    // the v6 extra priced the true sail and landed on the near (North Sea) side instead
+    const line = h.log.find((l) => l.includes("out → tribe Jutland"))!;
+    const m = /out → tribe Jutland at (\d+),(\d+), .* sail=(\d+)/.exec(line)!;
+    expect(line).toContain("by water");
+    expect(Number(m[1])).toBeLessThanOrEqual(890); // the North Sea coast, not the Kattegat one
+    expect(Number(m[3])).toBeGreaterThanOrEqual(10);
+    expect(Number(m[3])).toBeLessThanOrEqual(55); // the true water path of the near shore (the far one is ~115)
+    expect(h.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1);
+  });
+
+  // 2) The escalating sail budget (replaces the ocean window): close boats early, the far carve only once
+  //    maxSail(t) = boatSailMin + (250 − boatSailMin) × t / boatSailRampTicks reaches its water path.
+  //    rampTicks is pinned to 600 (not the 2000 default) purely so the launch lands before seaExpansion's
+  //    t600 start — the plain sea rule would otherwise beachhead the carve first and acrossWaterNear would
+  //    rightly refuse it; the budget line is the same, scaled (at the default the same carve crosses at
+  //    t ≈ (sail − 50) × 10 ≈ 740 and the full 250 opens at t2000 — comfortably inside Josh's t2500).
+  test("v6: the sail budget ramps - the far carve is held at t100 and launched only once maxSail covers its ~124-tile path", async () => {
+    // the BAIT tribe gives the plain rule its t60 boat, so the extras run (and hold) from t80 — without it
+    // the plain rule only times out into boatSent at t652 and the early hold is unobservable
+    const h = await playbookSetup({ map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 100_000, rivals: [BLOCKER, BAIT], bot: { ...V4, boatSailMin: 50, boatSailRampTicks: 600 } });
+    blockFar(h);
+    conquerRect(h.game, h.rival("Blocker"), [1602, 356, 1613, 377]); // the island: only the carve (and the bait islet) stay free
+    conquerRect(h.game, h.rival("Blocker"), [1360, 581, 1801, 730]); // the south
+    const bait = h.rival("Bait");
+    const found = h.until(() => {
+      if (bait.isAlive() && bait.troops() > 400) bait.setTroops(400);
+      return h.log.some(isFar);
+    }, 590);
+    expect(found).toBe(true); // allowed once the budget covers the crossing
+    const line = h.log.find(isFar)!;
+    const sail = sailOf(line), tick = Number(/^t(\d+) /.exec(line)![1]);
+    expect(tick).toBeGreaterThan(100); // held at t100: the budget was ~83 then
+    expect(tick).toBeGreaterThanOrEqual((sail - 50) * 3 - 25); // held until maxSail(t) ≥ its sail (one 20-tick pass of slack)
+    expect(Number(/cap=(\d+)/.exec(line)![1])).toBeGreaterThanOrEqual(sail); // the logged budget admits the launch
+  });
+
+  // 3) A landing the eaters reach before the boat does is re-anchored to a safer shore of the same basin,
+  //    or dropped when no reachable shore survives. Two-phase: the un-eaten control finds the landing the
+  //    scorer picks on Arabia, then the same fixture is rerun with an eater planted beside that exact tile.
+  const V6_EAT: Partial<PlaybookParams> = { ...V2, boatEatRate: 0.5 }; // threshold = 0.5 × sail ≈ 8-10 tiles on the ~16-20-tile Arabia hop
+  const outShore = (l: string) => l.includes("BOAT OPENING") && l.includes("out → empty shore");
+  async function arabiaOpening(over: Partial<PlaybookParams>, plant?: (h: PlaybookHarness) => void): Promise<PlaybookHarness> {
+    const h = await playbookSetup({
+      map: "world", spawn: SPAWN, tiles: [1120, 396, 1154, 445], troops: 100_000,
+      rivals: [{ name: "Eater", type: PlayerType.Nation, at: [1450, 200], troops: 5000, tiles: [1445, 195, 1455, 205] }],
+      bot: { ...V6_EAT, ...over },
+    });
+    plant?.(h);
+    h.until(() => h.log.some(outShore), 500);
+    return h;
+  }
+  test("v6: a landing tile the eater reaches first is re-anchored to a safer shore of the basin; with every reachable shore eaten the candidate is dropped", async () => {
+    // phase A: where does the scorer land on Arabia with nobody in the way?
+    const a = await arabiaOpening({});
+    const la = /out → empty shore at (\d+),(\d+), /.exec(a.log.find(outShore)!)!;
+    const [lx, ly] = [Number(la[1]), Number(la[2])];
+    expect(a.log.find(outShore)!).not.toContain("reanchored");
+    // phase B: an eater blob on one side of that exact landing (manhattan 2-5, south side) — the landing is
+    // projected eaten (dist 2 < 0.5 × sail), the coast north of it is not: the candidate re-anchors.
+    const b = await arabiaOpening({}, (h) => {
+      const e = h.rival("Eater");
+      for (let y = ly - 6; y <= ly + 6; y++) for (let x = lx - 6; x <= lx + 6; x++) {
+        const d = Math.abs(x - lx) + Math.abs(y - ly);
+        if (d < 2 || d > 5 || y < ly) continue;
+        const t = h.game.ref(x, y);
+        if (h.game.isLand(t)) e.conquer(t);
+      }
+    });
+    const lineB = b.log.find(outShore)!;
+    expect(lineB).toContain("reanchored=yes");
+    const mb = /out → empty shore at (\d+),(\d+), /.exec(lineB)!;
+    expect(Math.abs(Number(mb[1]) - lx) + Math.abs(Number(mb[2]) - ly)).toBeGreaterThanOrEqual(3); // a different, safer shore of the same basin
+    expect(b.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1);
+    // phase C: a shore picket around the landing (every other shore tile within 60, the landing's own 2-tile
+    // pocket left free) with the budget pinned at 25: every reachable shore is projected eaten — dropped, no launch.
+    const c = await arabiaOpening({ boatSailMin: 25, boatSailRampTicks: 1_000_000_000 }, (h) => {
+      const e = h.rival("Eater");
+      for (let y = ly - 60; y <= ly + 60; y++) for (let x = lx - 60; x <= lx + 60; x++) {
+        if (Math.abs(x - lx) + Math.abs(y - ly) < 3) continue;
+        if (!h.game.isValidCoord(x, y)) continue;
+        const t = h.game.ref(x, y);
+        if (h.game.isLand(t) && h.game.isShore(t) && !h.game.hasOwner(t)) e.conquer(t);
+      }
+    });
+    expect(c.log.some(outShore)).toBe(false); // dropped at every pass
+    expect(c.bot.fired.get("boatOpening")).toBeGreaterThanOrEqual(1); // the drop is the reanchor fire site
+  });
+
+  // 4) The eat rate reads the game difficulty: boatEatRateHard on Hard (defenders +33 %), boatEatRate on Medium.
+  test("v6: the discount uses boatEatRateHard on Hard - the carve is forfeited there and taken on Medium under the same pins", async () => {
+    const pins: Partial<PlaybookParams> = { ...V3_OCEAN, boatSailRampTicks: 1, boatEatRate: 0, boatEatRateHard: 2.0 };
+    const hard = await playbookSetup({ map: "world", spawn: SPAWN_STRAIT, tiles: ME_STRAIT, troops: 100_000, rivals: [BLOCKER, ...NEAR_TRIBES], bot: pins, config: { difficulty: Difficulty.Hard } });
+    blockFar(hard);
+    expect(runOcean(hard, () => hard.log.some((l) => l.includes("BOAT OPENING")), 500)).toBe(true);
+    expect(hard.log.some(isFar)).toBe(false); // Hard reads boatEatRateHard 2.0: the ~100-tick sail forfeits the carve
+    expect(hard.log.some(isNear)).toBe(true);
+    const med = await oceanSetup(pins);
+    blockFar(med);
+    expect(runOcean(med, () => med.log.some(isFar), 500)).toBe(true); // Medium reads boatEatRate 0: the same carve is taken
   });
 
   test("an opening that never becomes active is decision-identical to the plain bot (log equality)", async () => {
