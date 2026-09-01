@@ -1938,3 +1938,58 @@ Kept as **Hard candidates** (flat on Medium, shaped for the Hard frontier — no
 default-config MIN=3 africa/Medium lab transcript is byte-identical to base (0a8f35bc4) except the FINAL line's
 botMs/gameMs wall-clock fields. Full suite green, tsc, oxlint+eslint (the 14 pre-existing DetMath errors are the
 same at base).
+
+## Boat defense (`boatDefense`, 2026-08-31, branch `bot/boat-defense`)
+
+Josh (Hard GUI): the bot has no reaction to enemy amphibious play — enemy transports land on our island/coast, grow a
+beachhead behind our lines, and nothing answers until the generic counter's 5/15 % floor is crossed (a small landing
+never crosses it), while enemy boats also snatch the tribes inside our sphere.
+
+**What the engine exposes** (`TransportShipExecution`): the landing tile is stored on the transport unit itself —
+`buildUnit(TransportShip, src, { targetTile: dst })`, readable as `unit.targetTile()` — computed at LAUNCH
+(`targetTransportTile` from the clicked ref) and only changed by a retreat or a nuked-to-water shore, so the
+anticipation can be exact: destination, owner and troops are all public from the moment the boat sails. The ship
+moves 1 water tile per tick, so distance-to-target ≈ eta (manhattan is a floor for the real path). All enemy
+transports come from `mg.units(UnitType.TransportShip)` (map-wide, cheap). On landing the engine conquers `dst` and
+opens an `AttackExecution` at the launch-time owner; a land attack of ours against the beachhead's owner conquers
+from OUR border tiles adjacent to THEIR tiles — when we border only the beachhead, the wave IS the beachhead fight.
+
+The rule (`Military.boatDefense`, every 20 ticks, right after `counter` in the table so its wave outranks
+expand/wars for the pass's spendable):
+
+1. **Inbound**: every enemy (non-friendly) transport whose landing is within `bdCoastRange` (30) of our sampled
+   border is tracked and logged `BOAT INBOUND <owner> → (x,y) eta <t>`; if the landing zone has no post of ours
+   (30-tile range, under-construction counts) and a post can finish before the boat lands (eta > build 50 + 20),
+   `Military.bdPostWant` asks Economy.build for one — placed right after the attack-landing post, same ≤8-post
+   budget, `landingPostTile` = our nearest buildable tile to the landing (defensePostTile needs an attacker with
+   border tiles; a boat at sea has none). Nothing else is pre-staged.
+2. **Beachhead**: a tracked boat gone from the map has landed; the blob at the landing (flooded over the owner's
+   tiles, capped — a blob connected by land to its mainland blows the cap and is correctly not a beachhead) that
+   touches our border and is ≤ `bdBeachheadMax` (800) tiles gets ONE counter-sized wave per attacker per 300 ticks:
+   1.05× the troops that landed (counterAttack's shape, capped at half our troops), sent as "counter" (bypasses
+   fightAbove / the hold) but NOT put in `counters` — a counter auto-retreats when the enemy has no wave on us, and
+   a beachhead wave must run until the blob is gone. Logged `BEACHHEAD`.
+3. **Tribe race**: a transport bound for a TRIBE in our sphere (borders us, or its landmass is ours — this check is
+   not behind bdCoastRange: the tribe's own coast can be far from our rect) is raced: we click the tribe NOW with
+   harvestBots' sizing (botRatio + 500) and affordability (botMaxShare), jumping the one-at-a-time concurrency
+   queue. Logged `TRIBE RACE <tribe> vs <owner>`; a same-landmass tribe with no shared border is logged, not
+   clicked (a land click cannot connect — known gap, a boat race would be the follow-up if the A/B likes the flag).
+
+Fires (`boatDefense`, FireLimiter 1/100 ticks per site): `inbound`, `post`, `beachhead`, `race`. Params:
+`bdCoastRange`, `bdBeachheadMax`. Test: `tests/playbook/boatDefense.test.ts` (Bab-el-Mandeb: an 8k invasion of our
+Red Sea bank → post up BEFORE the landing and the beachhead counter-waved at 8k while the plain bot posts only
+AFTER the wave is ashore and never counters an under-5 % landing; a boat at a tribe bordering us → TRIBE RACE click
+while the plain rule's single slot is busy; flag off → none of it, golden unchanged).
+
+Honest baseline note: the plain bot is not fully blind — a landing that ATTACKS US does trigger the generic
+incoming-post and (if ≥ 5/15 % of our troops) the generic counter, but only after the wave is ashore; and a landing
+on free land / a tribe next to us triggers nothing at all. The flag's value is the pre-landing post, the immediate
+counter regardless of size, and the tribe race.
+
+Smokes: MIN=3 africa/Medium default-config transcript byte-identical to base 25138fcfb (FINAL botMs/gameMs only).
+6-min africa/Medium flag-on: fired boatDefense:29 — 20+ BOAT INBOUND, 5 BOAT DEFENSE posts, 8 BEACHHEAD waves,
+1 TRIBE RACE (logged-only), FINAL rank=5 share=0.69 alive. 12-min africa/Hard flag-on: fired 29 — ~60 BOAT INBOUND,
+1 post, 1 BEACHHEAD, 2 TRIBE RACE (one clicked, one no-land-contact).
+
+A/B (full games, wins objective): `CONFIGS='{"base":{},"bd":{"boatDefense":true}}' MIRROR=1 MINUTES=full WORKERS=4
+scripts/lab/remote.sh` — Hard is where Josh saw the gap, so also a DIFF=hard leg.

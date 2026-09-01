@@ -162,7 +162,7 @@ export class Military {
   prune(): void {
     const t = this.ctx.mg.ticks(), me = this.ctx.me;
     const dead = (p: Player) => !p.isAlive();
-    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged, this.finishedAt]) for (const p of m.keys()) if (dead(p)) m.delete(p);
+    for (const m of [this.waves, this.sentAt, this.blacklist, this.lastCounter, this.embargoedAt_, this.boatedAt, this.history, this.pileInLogged, this.finishedAt, this.bdCountered, this.bdRaced]) for (const p of m.keys()) if (dead(p)) m.delete(p);
     for (const [p, until] of this.blacklist) if (t >= until) this.blacklist.delete(p);
     for (const [p, s] of this.sentAt) if (t - s.tick >= 12) this.sentAt.delete(p); // reachable() only reads it inside 12 ticks
     for (const [p, at] of this.lastCounter) if (t - at >= 300) this.lastCounter.delete(p);
@@ -175,6 +175,10 @@ export class Military {
     const targets = new Set(me.outgoingAttacks().map((a) => a.target()));
     for (const p of this.waves.keys()) if (!targets.has(p)) this.waves.delete(p); // read only while an attack on that tribe runs
     for (const p of this.counters) if (dead(p)) this.counters.delete(p);
+    // `boatDefense`: the rule prunes its own landings in-pass; this is the backstop for a flag turned off mid-game
+    for (const [id, s] of this.bdSeen) if (t - s.last >= 200) this.bdSeen.delete(id);
+    this.bdLandings = this.bdLandings.filter((l) => t - l.tick < 600 && l.owner.isAlive());
+    if (!this.ctx.p.boatDefense) this.bdPostWant = null;
     // `boatEscort`: manageEscorts releases on its own cadence; this is the backstop for a flag turned off mid-game
     this.escorts = this.escorts.filter((e) => e.ship.isActive() && t - e.since < 4 * this.ctx.p.escortDeferTicks);
     this.deferrals = this.deferrals.filter((d) => t - d.since < 2 * this.ctx.p.escortDeferTicks);
@@ -705,6 +709,138 @@ export class Military {
       this.counters.add(a);
       this.ctx.log(`t${this.ctx.mg.ticks()} COUNTER ${a.name()} (${Math.round(inc.troops() / 1000)}k incoming) with ${Math.round(send / 1000)}k`);
     }
+  }
+
+  // ---------------------------------------------------------------- boatDefense: enemy amphibious play
+  /** `boatDefense`: inbound enemy transports being tracked, by unit id — owner, troops and landing tile at last
+   *  sight. TransportShipExecution stores the landing tile on the unit (buildUnit {targetTile: dst}); a tracked
+   *  boat gone from the map within a pass or two of its last sighting has landed (or was sunk, in which case the
+   *  blob check below finds nothing and the entry ages out). */
+  private bdSeen = new Map<number, { owner: Player; troops: number; dst: TileRef; last: number }>();
+  /** Landings to watch for a beachhead (kept 600 ticks — a blob that took that long to touch us is contained). */
+  private bdLandings: { owner: Player; troops: number; tile: TileRef; tick: number }[] = [];
+  private bdCountered = new Map<Player, number>();
+  private bdRaced = new Map<Player, number>();
+  /** `boatDefense`: the landing zone Economy.build should cover with a post — set here, consumed (or found already
+   *  covered) there, dropped when stale. `until` = estimated landing tick + the beachhead fight window. */
+  bdPostWant: { tile: TileRef; until: number } | null = null;
+  /** The whole rule (every 20 ticks, flag-gated by the table): scan enemy transports bound for our coast, request
+   *  the landing-zone post, race tribe-bound boats, and counter-wave fresh beachheads while they are small. */
+  boatDefense(): void {
+    const mg = this.ctx.mg, me = this.ctx.me, t = mg.ticks();
+    const border = borderOf(me);
+    if (border.length === 0) return;
+    // our border, sampled every 3rd tile (the annex/fallout walks' sampling), plus its bounding box: most of the
+    // map's transports are rejected on the box alone, the rest pay one pass over the ~border/3 sample
+    const bx: number[] = [], by: number[] = [];
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (let i = 0; i < border.length; i += 3) {
+      const x = mg.x(border[i]), y = mg.y(border[i]);
+      bx.push(x); by.push(y);
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    const range = this.ctx.p.bdCoastRange;
+    const live = new Set<number>();
+    for (const u of mg.units(UnitType.TransportShip)) {
+      const o = u.owner();
+      if (o === me || me.isFriendly(o) || !u.isActive() || u.transportShipState().isRetreating) continue;
+      const dst = u.targetTile();
+      if (dst === undefined) continue;
+      // 3. a boat bound for a TRIBE in our sphere (borders us, or sits on our landmass) — an enemy about to appear
+      // inside our lines wherever the tribe's own coast is, so this check is not behind the border-range gate
+      const tribe = mg.owner(dst);
+      if (tribe.isPlayer() && (tribe as Player).type() === PlayerType.Bot) this.bdTribeRace(tribe as Player, o, dst, t);
+      const dx = mg.x(dst), dy = mg.y(dst);
+      if (dx < x0 - range || dx > x1 + range || dy < y0 - range || dy > y1 + range) continue;
+      let d = 1e9;
+      for (let i = 0; i < bx.length; i++) { const dd = Math.abs(bx[i] - dx) + Math.abs(by[i] - dy); if (dd < d) d = dd; }
+      if (d > range) continue;
+      live.add(u.id());
+      const eta = mg.manhattanDist(u.tile(), dst); // the ship sails 1 water tile/tick; manhattan is a floor for the real path
+      const known = this.bdSeen.has(u.id());
+      this.bdSeen.set(u.id(), { owner: o, troops: u.troops(), dst, last: t });
+      if (!known) {
+        this.ctx.log(`t${t} BOAT INBOUND ${o.name()} → (${dx},${dy}) eta ${eta}`);
+        this.lim.fire("boatDefense", "inbound");
+      }
+      // 1. a post covering the landing zone, if it can finish before the boat lands (Economy holds the budget)
+      const postTicks = mg.config().unitInfo(UnitType.DefensePost).constructionDuration ?? 0;
+      if (this.bdPostWant === null && eta > postTicks + 20 &&
+        !mg.hasUnitNearby(dst, mg.config().defensePostRange(), UnitType.DefensePost, me.id(), true))
+        this.bdPostWant = { tile: dst, until: t + eta + 300 }; // + the beachhead fight: gold short now may cover it in time
+    }
+    // tracked boats gone from the map: landed (or sunk) — watch the spot for a beachhead
+    for (const [id, s] of this.bdSeen) {
+      if (live.has(id)) continue;
+      this.bdSeen.delete(id);
+      if (t - s.last <= 60 && s.owner.isAlive() && !me.isFriendly(s.owner)) this.bdLandings.push({ owner: s.owner, troops: s.troops, tile: s.dst, tick: t });
+    }
+    if (this.bdPostWant !== null && t > this.bdPostWant.until) this.bdPostWant = null;
+    // 2. crush the beachhead while it is small: one counter-sized wave per attacker, high priority ("counter"
+    // bypasses fightAbove/hold), but NOT in `counters` — a counter auto-retreats once the enemy has no wave on us,
+    // and a beachhead wave must run until the blob is gone (manageRetreats' losing/posts tests still apply)
+    this.bdLandings = this.bdLandings.filter((l) => t - l.tick < 600 && l.owner.isAlive());
+    for (const l of this.bdLandings) {
+      const o = l.owner;
+      if (me.isFriendly(o) || !me.canAttackPlayer(o) || this.q.outgoingTo(o)) continue;
+      if (t - (this.bdCountered.get(o) ?? -1e9) < 300) continue;
+      const blob = this.bdBlob(o, l.tile);
+      if (blob === null || !blob.touchesUs) continue; // sunk / nothing survived, or not on our border yet — retry next pass
+      if (blob.tiles > this.ctx.p.bdBeachheadMax) continue; // established: the generic machinery's problem
+      // counterAttack's sizing against the troops that landed; we border only the blob, so the wave IS the beachhead
+      // fight (AttackExecution conquers from our border tiles adjacent to the target — its mainland is across water)
+      const want = Math.min(Math.ceil(l.troops * 1.05), Math.floor(this.ctx.sit.troops * 0.5));
+      const send = this.ctx.send(o.id(), want, "counter", 1000);
+      if (send === 0) continue;
+      this.bdCountered.set(o, t);
+      this.noteSent(o);
+      this.ctx.log(`t${t} BEACHHEAD ${o.name()} ${blob.tiles}t at (${mg.x(l.tile)},${mg.y(l.tile)}) ← ${Math.round(send / 1000)}k`);
+      this.lim.fire("boatDefense", "beachhead");
+    }
+  }
+  /** The enemy blob at a watched landing: seeded from the nearest tile `o` owns around `at`, flooded over `o`'s
+   *  tiles capped at bdBeachheadMax + 1 (a blob that connects by land to its mainland blows the cap — correctly
+   *  not a beachhead), noting whether any blob tile touches ours. */
+  private bdBlob(o: Player, at: TileRef): { tiles: number; touchesUs: boolean } | null {
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const ax = mg.x(at), ay = mg.y(at);
+    let seed: TileRef | null = null;
+    for (let dy = -6; dy <= 6 && seed === null; dy += 2) for (let dx = -6; dx <= 6; dx += 2) {
+      if (!mg.isValidCoord(ax + dx, ay + dy)) continue;
+      const c = mg.ref(ax + dx, ay + dy);
+      if (mg.owner(c) === o) { seed = c; break; }
+    }
+    if (seed === null) return null;
+    const cap = this.ctx.p.bdBeachheadMax + 1;
+    const seen = new Set<TileRef>([seed]);
+    const q: TileRef[] = [seed];
+    let i = 0, touches = false;
+    while (i < q.length && seen.size < cap) {
+      const c = q[i++];
+      for (const n of mg.neighbors(c)) {
+        if (!mg.isLand(n)) continue;
+        if (mg.owner(n) === me) touches = true;
+        if (seen.has(n) || mg.owner(n) !== o) continue;
+        seen.add(n); q.push(n);
+      }
+    }
+    return { tiles: seen.size, touchesUs: touches };
+  }
+  /** `boatDefense` (3): an enemy transport is heading for `tribe` — a tribe that borders us (or sits on our
+   *  landmass) is about to become an enemy inside our lines. Click it NOW: harvestBots' sizing and affordability,
+   *  but the concurrency queue is jumped (the whole point — the plain rule would wait for a slot). */
+  private bdTribeRace(tribe: Player, o: Player, dst: TileRef, t: number): void {
+    const me = this.ctx.me;
+    if (t - (this.bdRaced.get(tribe) ?? -1e9) < 300) return; // one race per tribe per boat's sail
+    const borders = this.q.neighbours().bots.includes(tribe);
+    if (!borders && !this.landmass(dst).ours) return; // not in our sphere
+    this.bdRaced.set(tribe, t);
+    this.ctx.log(`t${t} TRIBE RACE ${tribe.name()} vs ${o.name()}${borders ? "" : " (no land contact — logged only)"}`);
+    if (!borders) return; // on our landmass but no shared border: a land click cannot connect
+    if (!me.canAttackPlayer(tribe) || !this.reachable(tribe) || this.q.outgoingTo(tribe)) return;
+    const want = Math.ceil(tribe.troops() * this.ctx.p.botRatio) + 500;
+    if (want > Math.floor(this.ctx.sit.spendable * this.ctx.p.botMaxShare)) return; // harvestBots' affordability gate
+    if (this.tribeClick(tribe, want)) this.lim.fire("boatDefense", "race");
   }
 
   // ---------------------------------------------------------------- fighting rivals
