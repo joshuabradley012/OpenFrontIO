@@ -142,7 +142,12 @@ run_pool() {
     DURATIONS="$DEST/durations.tsv" LIST=1 SPRT=0 STAGED=0 bash scripts/lab/sweep.sh > "$DEST/queue.$slug.txt"
   if awk -F'|' 'NF<4 {exit 1}' "$DEST/queue.$slug.txt"; then :; else echo "ERROR: malformed line in $DEST/queue.$slug.txt"; exit 1; fi
   echo "  queue: $(wc -l < "$DEST/queue.$slug.txt" | tr -d ' ') games, longest first"
-  for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait
+  # Clear the boxes only on the FIRST stage of a run: a later stage's wipe destroys any not-yet-pulled
+  # transcripts from the previous stage if the launcher dies mid-pull (hard1 lost 36 games this way —
+  # jobs are config-ordered, so one config's tail finishes last and is pulled last). Batch-named files
+  # cannot collide across stages of one run.
+  if [ "${POOL_STAGE:-0}" = 0 ]; then for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait; fi
+  POOL_STAGE=$((${POOL_STAGE:-0} + 1))
   rsync -az -e "$RSYNC_SSH $(rso "$QUEUE_HOST")" "$DEST/queue.$slug.txt" root@"$(rh "$QUEUE_HOST")":/root/lab-out/queue.txt
   # The launch runs in a subshell as a setsid/nohup'd background job, so sshd has nothing left to wait for
   # and ssh returns at once. (A bare `nohup … &` made ssh block until the whole sweep finished, which
@@ -227,7 +232,12 @@ run_sprt() {
     if awk -F'|' 'NF<4 {exit 1}' "$DEST/queue.$slug.txt"; then :; else echo "ERROR: malformed line in $DEST/queue.$slug.txt"; exit 1; fi
     files+=("$DEST/queue.$slug.txt")
   done
-  for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait
+  # Clear the boxes only on the FIRST stage of a run: a later stage's wipe destroys any not-yet-pulled
+  # transcripts from the previous stage if the launcher dies mid-pull (hard1 lost 36 games this way —
+  # jobs are config-ordered, so one config's tail finishes last and is pulled last). Batch-named files
+  # cannot collide across stages of one run.
+  if [ "${POOL_STAGE:-0}" = 0 ]; then for ip in "${ips[@]}"; do $SSH@"$ip" 'rm -rf /root/lab-out && mkdir -p /root/lab-out' & done; wait; fi
+  POOL_STAGE=$((${POOL_STAGE:-0} + 1))
   # enqueue <file>: append a chunk's games to the live queue under the workers' lock
   enqueue() {
     rsync -az -e "$RSYNC_SSH $(rso "$QUEUE_HOST")" "$1" root@"$(rh "$QUEUE_HOST")":/root/lab-out/queue.next.txt
