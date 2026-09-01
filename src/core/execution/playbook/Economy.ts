@@ -446,6 +446,37 @@ export class Economy {
       const tile = this.defensePostTile(incoming.attacker());
       if (tile !== null && this.tryBuild(UnitType.DefensePost, tile)) return;
     }
+    // `boatDefense` (1): a post covering the landing zone of an inbound enemy transport (Military.bdPostWant — set
+    // only when the post can finish before the boat lands). The attack-landing post's budget (≤ 8, gold in hand),
+    // right after it: a wave already ashore beats a boat still at sea, and both beat the threat posts below.
+    const landing = this.ctx.p.boatDefense ? this.military.bdPostWant : null;
+    if (
+      landing !== null &&
+      gold >= cost(UnitType.DefensePost) &&
+      me.unitsOwned(UnitType.DefensePost) < 8
+    ) {
+      if (
+        this.ctx.mg.hasUnitNearby(
+          landing.tile,
+          this.ctx.mg.config().defensePostRange(),
+          UnitType.DefensePost,
+          me.id(),
+          true, // one under construction there already covers it
+        )
+      ) {
+        this.military.bdPostWant = null;
+      } else {
+        const tile = this.landingPostTile(landing.tile);
+        if (tile !== null && this.tryBuild(UnitType.DefensePost, tile)) {
+          this.military.bdPostWant = null;
+          this.ctx.log(
+            `t${ticks} BOAT DEFENSE post covering the landing at (${this.ctx.mg.x(landing.tile)},${this.ctx.mg.y(landing.tile)})`,
+          );
+          this.lim.fire("boatDefense", "post");
+          return;
+        }
+      }
+    }
     if (
       cityUnits.length >= 1 &&
       ticks >= 900 &&
@@ -1050,6 +1081,23 @@ export class Economy {
         best = t;
       }
     }
+    return best;
+  }
+  /** `boatDefense`: our land tile nearest the predicted landing tile where a post can go — the post's 30-tile
+   *  range covers the landing from anywhere in the 12-tile box, so nearest-first is enough (defensePostTile needs
+   *  an attacker who already owns border tiles; a boat still at sea has none). */
+  private landingPostTile(at: TileRef): TileRef | null {
+    const mg = this.ctx.mg, me = this.ctx.me;
+    const ax = mg.x(at), ay = mg.y(at);
+    let best: TileRef | null = null, bestD = 1e9;
+    for (let dy = -12; dy <= 12; dy += 2)
+      for (let dx = -12; dx <= 12; dx += 2) {
+        if (!mg.isValidCoord(ax + dx, ay + dy)) continue;
+        const t = mg.ref(ax + dx, ay + dy);
+        if (mg.owner(t) !== me || !mg.isLand(t)) continue;
+        const d = Math.abs(dx) + Math.abs(dy);
+        if (d < bestD && me.canBuild(UnitType.DefensePost, t) !== false) { bestD = d; best = t; }
+      }
     return best;
   }
   defensePostTile(attacker: Player): TileRef | null {
