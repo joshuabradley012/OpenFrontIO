@@ -1938,3 +1938,7 @@ Kept as **Hard candidates** (flat on Medium, shaped for the Hard frontier — no
 default-config MIN=3 africa/Medium lab transcript is byte-identical to base (0a8f35bc4) except the FINAL line's
 botMs/gameMs wall-clock fields. Full suite green, tsc, oxlint+eslint (the 14 pre-existing DetMath errors are the
 same at base).
+
+## Hard baseline (2026-08-31 evening, `lab-out/hard0`, 119 full games, SEED=hard0, combo defaults)
+
+**22 wins (18.5 %)** vs Medium's 68 %. Clusters (95 losses): endgame race at top-3 36, plateau/outgrown 24, died-late 22, died-early 9, MIRVed 4 (the MIRV cluster nearly vanishes on Hard — nations buy armies, not silos). Deaths are mostly mid/late (only 9 before 15:00). Mechanism: Hard defenders carry +33 % troops (start 25k vs 18.75k, cap ×1.0 vs ×0.75) on the same loss formula, so expansion is slower everywhere → smaller peaks → out-raced or collapsed. Campaign plan: per-difficulty parameter overlays (HARD_OVERRIDES over DEFAULT_PLAYBOOK, same flags/code), first candidates botRatio/tribe gates/fightAbove per Josh's "pushes only work from ~3k" observation; the kept Hard-candidate flags (boatEscort, contestLeader, samOnRisk, mirvCounterforce) get their real A/B here. Lab: DIFF now passes through med* batches (f5a10424d).
