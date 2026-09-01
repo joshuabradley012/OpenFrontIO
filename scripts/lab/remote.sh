@@ -93,7 +93,18 @@ CI
     ips+=("$(hcloud server ip $IPFLAG "$n")")
   done
   echo "servers: ${names[*]} at ${ips[*]}; waiting for ssh/cloud-init ..."
-  for ip in "${ips[@]}"; do until $SSH@"$ip" test -f /root/.lab-ready 2>/dev/null; do sleep 5; done; done
+  # Capped: this loop used to be infinite, and a launcher stuck here (cloud-init never finishing) outlived
+  # its own boxes — when the names were later recreated for a NEW run, Hetzner recycled the same IPs, the
+  # zombie's wait passed on the new boxes' baked-in .lab-ready, and it wiped/relaunched over the live run
+  # (hard0 destroyed hard1's overlapped sweep this way, 2026-08-31).
+  for ip in "${ips[@]}"; do
+    tries=0
+    until $SSH@"$ip" test -f /root/.lab-ready 2>/dev/null; do
+      tries=$((tries + 1))
+      if [ "$tries" -ge 240 ]; then echo "ERROR: $ip not ready after 20 min — cloud-init failed or the box was replaced; boxes kept: ${names[*]}"; exit 1; fi
+      sleep 5
+    done
+  done
 fi
 
 echo "syncing tree to ${#ips[@]} box(es) ..."
@@ -243,7 +254,10 @@ run_sprt() {
     rsync -az -e "$RSYNC_SSH $(rso "$QUEUE_HOST")" "$1" root@"$(rh "$QUEUE_HOST")":/root/lab-out/queue.next.txt
     $SSH@"$QUEUE_HOST" 'cd /root/lab-out && touch queue.open && flock queue.lock sh -c "cat queue.next.txt >> queue.txt" && rm -f queue.next.txt'
   }
-  queue_len() { $SSH@"$QUEUE_HOST" 'wc -l < /root/lab-out/queue.txt 2>/dev/null || echo 0' 2>/dev/null | tr -d ' ' || echo 0; }
+  # A missing queue.txt or an unreachable queue host must NOT read as "queue drained" (= 0): the old
+  # `|| echo 0` fallback made a wiped queue dump every remaining chunk at once (hard1, 2026-08-31).
+  # Only a literal 0 from a real read triggers a top-up; anything else just retries next poll.
+  queue_len() { $SSH@"$QUEUE_HOST" '[ -f /root/lab-out/queue.txt ] && wc -l < /root/lab-out/queue.txt || echo missing' 2>/dev/null | tr -d ' ' || echo unreachable; }
   $SSH@"$QUEUE_HOST" 'mkdir -p /root/lab-out && touch /root/lab-out/queue.open && : > /root/lab-out/queue.txt'
   enqueue "${files[0]}"; echo "  chunk 1/${#chunks[@]} (${chunks[0]}): $(wc -l < "${files[0]}" | tr -d ' ') games queued"
   for ip in "${ips[@]}"; do
@@ -254,7 +268,9 @@ run_sprt() {
   # progress: the boxes' sweep.log lines, merged; a chunk is complete when every game of its queue file has one
   progress() { for ip in "${ips[@]}"; do $SSH@"$ip" 'cat /root/lab-out/sweep.log 2>/dev/null; true' 2>/dev/null; done > "$DEST/progress.log"; }
   chunk_left() { comm -23 <(awk -F'|' '{print $1" "$2" "$3}' "$1" | sort) <(grep -E '^(done|FAILED|SKIPPED) ' "$DEST/progress.log" | awk '{print $2" "$3" "$4}' | sort) | wc -l | tr -d ' '; }
-  pull() { for ip in "${ips[@]}"; do rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log --exclude 'sed*' --exclude 'queue*' --exclude 'queue*' root@"$(rh "$ip")":/root/lab-out/ "$DEST"/ ; done; bash scripts/lab/aggregate.sh "$DEST" >/dev/null 2>&1 || true; }
+  # `|| [ $? -eq 24 ]` as in run_pool's pull: a file vanishing mid-transfer (rsync exit 24) is routine while
+  # games are still writing, and a bare rsync here under set -e killed the nf1 launcher mid-pull (2026-08-31).
+  pull() { for ip in "${ips[@]}"; do rsync -az -e "$RSYNC_SSH $(rso "$ip")" --exclude sweep.log --exclude 'sed*' --exclude 'queue*' root@"$(rh "$ip")":/root/lab-out/ "$DEST"/ || [ $? -eq 24 ]; done; bash scripts/lab/aggregate.sh "$DEST" >/dev/null 2>&1 || true; }
   stop_all() {
     $SSH@"$QUEUE_HOST" 'cd /root/lab-out && rm -f queue.open && flock queue.lock sh -c ": > queue.txt"' || true
     for ip in "${ips[@]}"; do $SSH@"$ip" 'pkill -f "[s]cripts/lab/sweep.sh"; pkill -f "[t]ests/lab/playbook.lab.ts"; true' & done; wait
