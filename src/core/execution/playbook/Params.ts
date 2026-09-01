@@ -135,6 +135,10 @@ export interface PlaybookParams {
   escortMaxShips: number; // boatEscort: no escort purchase while we own this many warships (int)
   escortSwarm: number; // boatEscort: transports a worthy contested crossing is split into (same total troops, each ≥ 500, one rule pass apart; int)
   escortDeferTicks: number; // boatEscort: ticks a corridor is held before a worthy crossing swarms anyway, and the life of a purchase request (int)
+  bombPush: boolean; // tempo (Josh watching Enzo beat Insane in ~17 min: "he bombs his opponents heavily to set up pushes and to prevent silos from bombing him"; 478 hard1+salv2 full games: median win minute 48, 0.74 bombs/game before minute 10, only 21 % of war waves preceded by a bomb within 10 s, MIRVed in 89 % of games): bombs as push-enablers — (a) EVERY war wave opens with a pre-bomb on the target's densest cluster nearest our shared border when a silo is up and gold covers the bomb + bombReserve (the flag-off rule pre-bombs only a `richer` target); (b) an enemy neighbour's NEW silo (watched every 100 ticks) is a priority bomb inside bombSiloTicks of appearing — kill launchers before they fire; (c) the bomb cooldown while a war is active is bombWarEvery instead of bombEvery. All reserve/escrow guards stay. Default off until the full-game A/B
+  bombSiloTicks: number; // bombPush (b): ticks after a new enemy silo appears in which it is the priority bomb target (int)
+  bombWarEvery: number; // bombPush (c): ticks between bombs while a war is active (the plain bombEvery applies in peace; int)
+  fastSilo: boolean; // tempo: the offensive-silo schedule — the first silo goes when EITHER siloAtTick arrives (the plain path) OR rank ≤ 5 by tiles among non-bots, whichever is first (the port/factory economy gate is waived on the early path: the silo IS the play — it enables bombPush); a second silo follows the first bomb-opened war (Military.bombWarOpened). The fast buy waits for silo + a bomb + the 400k reserve in gold, escrowed through siloReserve so it actually pools. cityUnitCap, the 3000-tick floor and every other economy guard stay. Default off until the full-game A/B
 }
 
 export const DEFAULT_PLAYBOOK: PlaybookParams = {
@@ -229,4 +233,8 @@ export const DEFAULT_PLAYBOOK: PlaybookParams = {
   escortMaxShips: 2,
   escortSwarm: 3,
   escortDeferTicks: 600,
+  bombPush: false, // default off until the full-game A/B (tempo package)
+  bombSiloTicks: 600,
+  bombWarEvery: 150, // half of bombEvery: Enzo keeps bombing while he pushes
+  fastSilo: false, // default off until the full-game A/B (tempo package)
 };

@@ -2167,3 +2167,47 @@ mid-wait nuke restarting the window, hostile rim taking at once, off unchanged).
 `t5220 FALLOUT wait: basin ~1422 tiles still hot (grew 0 ticks ago), no hostile on its rim — deferring 300 more
 ticks`, fired falloutPatience:3. A/B:
 `CONFIGS='{"base":{},"fp":{"falloutPatience":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+
+## Tempo: `bombPush` + `fastSilo` (2026-09-01, branch `bot/tempo`)
+
+Josh, after watching the pro Enzo: "the bot plays pretty slow. Enzo beats Insane in ~17 minutes and never gets
+MIRVed as a result. He bombs his opponents heavily to set up pushes and to prevent silos from bombing him. He
+goes fast." The transcripts agree — measured over the 478 hard1 + salv2 full games (scratch script over
+`p_*.txt`; enemy-silo proxy = the first MIRV RISK line naming a saver/canFire):
+
+| tempo metric (478 full games, 62 % wins)          | value                                        |
+| ------------------------------------------------- | -------------------------------------------- |
+| win minute                                         | p25 35, median 48, p75 68 (Enzo: ~17)        |
+| bombs/game by phase                                | 0–10 min 0.74, 10–20 min 8.5, 20–30 min 7.8  |
+| first bomb / our first silo (median)               | 11 min / 10 min                              |
+| first enemy silo seen (proxy, median)              | 10 min — before our first bomb in 288/478    |
+| war waves preceded by a bomb within 10 s           | 21.4 % (of 58 928 waves)                     |
+| games where we get MIRVed                          | 424/478 (89 %); Enzo: never                  |
+| bombs before min 20, wins vs losses                | 10.2 vs 7.8                                  |
+
+Two default-off flags:
+
+- **`bombPush`** — bombs as push-enablers. (a) EVERY war wave opens with a pre-bomb the pass the wave actually
+  leaves (actWar → Military.preBomb): bombSearch restricted to THE target, preferring the cluster nearest our
+  shared border (the anchor divides value/gold by manhattan distance in units of 100 tiles) — the flag-off rule
+  pre-bombs only a `richer` target, through maybeBomb's whole-enemies value search. (b) counter-silo: a watch
+  (every 100 ticks, unfriendly neighbours, first sighting seeds so pre-existing silos are not "new") logs
+  `NEW SILO <owner>` and a new launcher is the priority bomb for `bombSiloTicks` (600) — `BOMB silo-kill` —
+  under all the plain guards (SAM umbrella, 32-tile friend clearance, collateral, the bombed blacklist, the
+  bomb reserve). (c) while a war is active the bomb cooldown is `bombWarEvery` (150) instead of bombEvery (300).
+- **`fastSilo`** — the offensive-silo schedule: the first silo at rank ≤ 5 (tiles, non-bots) — whichever of
+  this and the plain schedule comes first, the port/factory gate waived on the early path — and a second silo
+  after the first bomb-opened war (Military.bombWarOpened). The gold bar sits at the buy (silo + a bomb + the
+  400k reserve) and the siloReserve escrow carries the bomb's price too, so the gold actually pools.
+
+Tests: tests/playbook/bombPush.test.ts (pre-bomb precedes the wave in the same pass, off bombs ~140 ticks later
+on the plain cadence; a new enemy silo killed inside the window, off never), tests/playbook/fastSilo.test.ts
+(first silo at the 3000-tick floor at rank 1 long before siloAtTick, the gold bar, the second after the bomb
+war, off unchanged). MIN=3 medium parity byte-identical with both off. Smokes, same seed: 20-min Medium africa
+on = 15 bombs (first 8.8 min, `BOMB push Philippines: pre-wave`, `BOMB silo-kill Quebec … (up 30 ticks)`,
+fired bombPush:10) vs off = 8 bombs; 12-min Hard east-asia: identical FINALs — 12 Hard minutes never pool the
+bomb bar (956k gold vs 1.11M), the flags are a mid-game weapon. `SILO early` did not fire in the smokes
+(idleAtCap opens the plain path first in runaway games); it fires deterministically in the unit tests — the
+A/B decides. A/B:
+`CONFIGS='{"base":{},"tempo":{"bombPush":true,"fastSilo":true}}' MINUTES=20 WORKERS=3 scripts/lab/remote.sh`
+(judge on MIN=full `winner=us`, per the objective).

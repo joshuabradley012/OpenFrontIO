@@ -62,7 +62,9 @@ export class WaterPath {
 interface WarPick {
   r: Player;
   want: number;
-  bomb: boolean; // open the war with a bomb on their cluster (richer, silo)
+  bomb: boolean; // open the war with a bomb on their cluster (richer, silo — or any target with `bombPush`)
+  /** `bombPush`: the bomb is the flag's alone (the plain richer-rule said no) — the liveness marker. */
+  pushBomb: boolean;
   opportunity: boolean; // collapsed / gap owner / MIRV threat / annexable: goes at once
   annex: boolean; // `annexWars`: an encircled neighbour taken from most of its border (logged ANNEX WAR)
   /** `multiWar`: a war beside the running ones (the second or third slot). */
@@ -88,6 +90,7 @@ const OPENING_MIN_SAIL = 20; // boatOpening: sail-distance floor in the basin/sa
 const OPENING_CONTESTED = 1.5; // boatOpening: score boost on a tribe candidate with a rival (nation/human) adjacent — the wilderness near it will be eaten soon anyway, the tribe is ours alone (the tribe-tile coefficient itself is PlaybookParams.boatTribeWorth)
 const OPENING_PUSH_TICKS = 600; // boatOpening: how long a recorded opening landing is watched for a tribe having eaten its basin (sail + the wave's fight)
 const OPENING_REACH_TILES = 8000; // boatOpening v5: cap of openingCutOff's flood over land no other player owns — big enough to fully enumerate a rival-walled pocket (the escape hatch needs the fill to FINISH to call a basin cut off); a capped fill is treated as land-reachable
+const BOMB_PUSH_NEAR = 100; // bombPush: pre-bomb cluster distance unit — a cluster 200 tiles from our shared border needs 2× the value of one within 100
 const ESCORT_SWARM_GAP = 10; // boatEscort: ticks between a swarm's boats — the escorts rule's cadence (one launch per pass)
 const ESCORT_CORRIDOR_STEP = 4; // boatEscort: every k-th path tile is a corridor sample (a 250-tile path → ~60 tiles × a handful of warships per check)
 /** A bomb maybeBomb's value search picked: where, of what type, at whom, and its value per 100k of gold. */
@@ -175,6 +178,9 @@ export class Military {
     const targets = new Set(me.outgoingAttacks().map((a) => a.target()));
     for (const p of this.waves.keys()) if (!targets.has(p)) this.waves.delete(p); // read only while an attack on that tribe runs
     for (const p of this.counters) if (dead(p)) this.counters.delete(p);
+    // `bombPush`: the silo watch prunes itself in-pass; this is the backstop for a flag turned off mid-game
+    for (const p of this.siloSeen.keys()) if (dead(p)) this.siloSeen.delete(p);
+    this.newSilos = this.newSilos.filter((s) => s.owner.isAlive() && t - s.at < this.ctx.p.bombSiloTicks);
     // `boatDefense`: the rule prunes its own landings in-pass; this is the backstop for a flag turned off mid-game
     for (const [id, s] of this.bdSeen) if (t - s.last >= 200) this.bdSeen.delete(id);
     this.bdLandings = this.bdLandings.filter((l) => t - l.tick < 600 && l.owner.isAlive());
@@ -1055,7 +1061,12 @@ export class Military {
       return null;
     }
     const bomb = richer(best) && best !== this.currentTarget_ && me.units(UnitType.MissileSilo).length > 0 && this.ctx.mg.ticks() - this.lastBombTick > 100;
-    return { r: best, want: wantFor(best), bomb, opportunity: isOpp(best), annex: annex.has(best), extra };
+    // `bombPush` (a): EVERY war wave opens with a pre-bomb when a silo is up, the cooldown (the war cadence) has
+    // passed and gold covers a bomb above bombReserve — not only a `richer` target (Enzo: bombs set up pushes)
+    const pushBomb = !bomb && this.ctx.p.bombPush && me.units(UnitType.MissileSilo).length > 0
+      && this.ctx.mg.ticks() - this.lastBombTick >= this.ctx.p.bombWarEvery
+      && this.ctx.sit.gold >= this.ctx.mg.config().unitInfo(UnitType.AtomBomb).cost(this.ctx.mg, me) + BigInt(this.ctx.p.bombReserve);
+    return { r: best, want: wantFor(best), bomb: bomb || pushBomb, pushBomb, opportunity: isOpp(best), annex: annex.has(best), extra };
   }
   /** The scorer half of warPick, shared with wouldTarget(): the gates on ratio / posts / density / size and every
    *  bonus. `quiet` skips the flag counters (a what-if question, not a decision). */
@@ -1142,13 +1153,23 @@ export class Military {
    *  the mark. Returns true when a wave went. */
   private actWar(pick: WarPick): boolean {
     const me = this.ctx.me, r = pick.r, now = this.ctx.mg.ticks();
-    if (pick.bomb) { this.currentTarget_ = r; this.maybeBomb(now); } // open the war with a bomb on their cluster
+    if (pick.bomb && !this.ctx.p.bombPush) {
+      this.currentTarget_ = r; this.maybeBomb(now); // open the war with a bomb on their cluster
+      if (this.lastBombTick === now) this.bombWarAt = now; // `fastSilo`: the first bomb-opened war unlocks the second silo
+    }
     if (pick.want < 1000) return false;
     if (!pick.extra) this.currentTarget_ = r; // `multiWar`: the sticky target stays the first war's
     this.counters.delete(r); // a war wave, whatever the counter before it did
     if (!me.hasEmbargoAgainst(r) && r.type() !== PlayerType.Nation) { me.addEmbargo(r, false); this.embargoedAt_.set(r, now); }
     const want = this.ctx.send(r.id(), pick.want, "war", 1000, 0.3);
     if (want === 0) return false;
+    if (pick.bomb && this.ctx.p.bombPush) {
+      // `bombPush` (a): the pre-bomb goes the pass the wave actually leaves (a held wave must not waste a bomb),
+      // aimed at THIS target's cluster nearest our shared border — the plain path's maybeBomb (above) chases the
+      // best cluster among all bomb enemies of the moment instead
+      this.preBomb(pick, now);
+      if (this.lastBombTick === now) this.bombWarAt = now; // `fastSilo`: the first bomb-opened war unlocks the second silo
+    }
     if (!pick.extra) this.lastWarTick = now;
     this.noteSent(r);
     this.pending.set(r, want);
@@ -1924,11 +1945,21 @@ export class Military {
    *  count were already recorded here — so the bomb is judged on what is left after this pass's buys. */
   maybeBomb(ticks: number, spent = 0n): void {
     const me = this.ctx.me;
+    if (this.ctx.p.bombPush) this.watchSilos(ticks); // (b): the watch runs even before our own silo is up
     if (me.units(UnitType.MissileSilo).length === 0) return;
-    if (ticks - this.lastBombTick < this.ctx.p.bombEvery) return;
+    // `bombPush` (c): while a war is active the cooldown is bombWarEvery (150 = half of bombEvery) — Enzo keeps
+    // bombing while he pushes; `insidePlain` marks a launch the plain cadence would still be holding
+    const every = this.ctx.p.bombPush && this.warActive() ? this.ctx.p.bombWarEvery : this.ctx.p.bombEvery;
+    if (ticks - this.lastBombTick < every) return;
+    const insidePlain = ticks - this.lastBombTick < this.ctx.p.bombEvery;
     const atomCost = this.ctx.mg.config().unitInfo(UnitType.AtomBomb).cost(this.ctx.mg, me);
     const hCost = this.ctx.mg.config().unitInfo(UnitType.HydrogenBomb).cost(this.ctx.mg, me);
     const gold = me.gold();
+    // `bombPush` (b): a NEW enemy silo outranks every other bomb this pass — kill launchers before they fire
+    if (this.ctx.p.bombPush && this.siloKill(ticks, spent, gold, atomCost)) {
+      if (insidePlain) this.lim.fire("bombPush", "every");
+      return;
+    }
     if (this.ctx.p.bombBudget) {
       // `bombBudget`: the planned bomb goes the moment the fund covers it — no reserve on top; while it does not,
       // Economy.build is holding the price out of every discretionary buy (bombFund)
@@ -1942,6 +1973,7 @@ export class Military {
       const { rich } = this.bombEnemies(gold, true); // the buy path's side effects: a crown / idle-at-cap pick becomes the war target
       if (gold - spent < plan.cost + BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve)) this.lim.fire("bombBudget", "bomb", 1); // the old rule would not have afforded this bomb yet
       this.launch(plan, ticks);
+      if (this.lastBombTick === ticks && insidePlain) this.lim.fire("bombPush", "every"); // (c): only the war cadence allowed this pass
       if (this.lastBombTick === ticks && this.planCache?.contest === plan.enemy) this.lim.fire("contestLeader", "bomb"); // the leader only the flag put on the list took the bomb
       return;
     }
@@ -1951,7 +1983,102 @@ export class Military {
     const best = this.bombSearch(enemies, rich, (type) => gold - spent >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve);
     if (best === null) return;
     this.launch(best, ticks);
+    if (this.lastBombTick === ticks && insidePlain) this.lim.fire("bombPush", "every"); // (c): only the war cadence allowed this pass
     if (this.lastBombTick === ticks && contest !== null && best.enemy === contest) this.lim.fire("contestLeader", "bomb"); // the leader only the flag put on the list took the bomb
+  }
+  // ---------------------------------------------------------------- bombPush: pre-bombs and the silo watch
+  /** `fastSilo`: tick of the first war opened with a bomb (−1e9 = none yet) — Economy unlocks the second silo on it. */
+  private bombWarAt = -1e9;
+  get bombWarOpened(): boolean {
+    return this.bombWarAt > -1e9;
+  }
+  /** An active war: the sticky target lives and is unfriendly, or a land wave of ours is out on a non-bot. */
+  private warActive(): boolean {
+    const me = this.ctx.me;
+    if (this.currentTarget_ !== null && this.currentTarget_.isAlive() && !me.isFriendly(this.currentTarget_)) return true;
+    return me.outgoingAttacks().some((a) => a.target().isPlayer() && (a.target() as Player).type() !== PlayerType.Bot);
+  }
+  /** `bombPush` (a): the pre-bomb actWar fires the moment a war wave commits — the target's densest cluster
+   *  (bombSearch on it ALONE, so the wave's own enemy takes the hit) preferring clusters near our shared border
+   *  (the anchor: posts/cities on our side are what the wave walks into). Same reserve rule as maybeBomb. */
+  private preBomb(pick: WarPick, ticks: number): void {
+    const me = this.ctx.me, mg = this.ctx.mg, r = pick.r;
+    if (me.units(UnitType.MissileSilo).length === 0) return;
+    if (ticks - this.lastBombTick < this.ctx.p.bombWarEvery) return;
+    const atomCost = mg.config().unitInfo(UnitType.AtomBomb).cost(mg, me);
+    const hCost = mg.config().unitInfo(UnitType.HydrogenBomb).cost(mg, me);
+    const mirvCost = mg.config().unitInfo(UnitType.MIRV).cost(mg, me);
+    const gold = me.gold();
+    const rich = this.ctx.p.endgameV2 && ticks >= 9000 && gold >= 8_000_000n && (gold < mirvCost || me.units(UnitType.MIRV).length > 0); // maybeBomb's own reserve rule
+    const reserve = BigInt(rich ? 2_000_000 : this.ctx.p.bombReserve);
+    const allow = (type: UnitType) => gold >= (type === UnitType.HydrogenBomb ? hCost : atomCost) + reserve;
+    const best = this.bombSearch(new Set([r]), rich, allow, this.borderAnchor(r));
+    if (best === null) return;
+    const insidePlain = ticks - this.lastBombTick < this.ctx.p.bombEvery; // the plain cadence was still holding
+    const plain = pick.pushBomb || insidePlain ? null : this.bombSearch(new Set([r]), rich, allow); // the aim without the anchor
+    this.launch(best, ticks);
+    if (this.lastBombTick !== ticks) return;
+    // liveness: the plain rule would not have bombed this wave (not richer), could not yet (cadence), or aimed elsewhere
+    if (pick.pushBomb || insidePlain || plain === null || plain.tile !== best.tile) this.lim.fire("bombPush", "pre");
+    this.ctx.log(`t${ticks} BOMB push ${r.name()}: pre-wave at ${mg.x(best.tile)},${mg.y(best.tile)}`);
+  }
+  /** Midpoint of our sampled border tiles touching `r` — the pre-bomb's "our side"; null when we share no border. */
+  private borderAnchor(r: Player): TileRef | null {
+    const mg = this.ctx.mg;
+    let sx = 0, sy = 0, n = 0, i = 0;
+    for (const t of borderOf(this.ctx.me)) {
+      if ((i++ % 4) !== 0) continue;
+      for (const nb of mg.neighbors(t)) if (mg.owner(nb) === r) { sx += mg.x(t); sy += mg.y(t); n++; break; }
+    }
+    return n === 0 ? null : mg.ref(Math.round(sx / n), Math.round(sy / n));
+  }
+  /** `bombPush` (b): known silo unit ids per unfriendly neighbour; a first sighting of a player seeds without
+   *  flagging (a silo that predates the watch is not "new"). */
+  private siloSeen = new Map<Player, Set<number>>();
+  private newSilos: { owner: Player; unit: Unit; at: number }[] = [];
+  private lastSiloScan = -1e9;
+  /** Every 100 ticks: any NEW silo among our unfriendly neighbours joins the kill list for bombSiloTicks. */
+  private watchSilos(ticks: number): void {
+    if (ticks - this.lastSiloScan < 100) return;
+    this.lastSiloScan = ticks;
+    const me = this.ctx.me;
+    const rivals = this.q.neighbours().rivals;
+    const live = new Set(rivals);
+    for (const p of this.siloSeen.keys()) if (!live.has(p)) this.siloSeen.delete(p); // a lost neighbour re-seeds on return
+    for (const r of rivals) {
+      const silos = r.units(UnitType.MissileSilo);
+      const seen = this.siloSeen.get(r);
+      if (seen === undefined) { this.siloSeen.set(r, new Set(silos.map((u) => u.id()))); continue; }
+      for (const u of silos) {
+        if (seen.has(u.id())) continue;
+        seen.add(u.id());
+        this.newSilos.push({ owner: r, unit: u, at: ticks });
+        this.ctx.log(`t${ticks} NEW SILO ${r.name()} at ${this.ctx.mg.x(u.tile())},${this.ctx.mg.y(u.tile())}`);
+      }
+    }
+    this.newSilos = this.newSilos.filter((s) => ticks - s.at < this.ctx.p.bombSiloTicks && s.unit.isActive() && s.owner.isAlive() && !me.isFriendly(s.owner));
+  }
+  /** The counter-silo bomb: an atom on the oldest killable NEW silo — SAM umbrellas, the 32-tile friend clearance,
+   *  the collateral rule, the `bombed` blacklist and the bomb reserve all still apply. True when one launched. */
+  private siloKill(ticks: number, spent: bigint, gold: bigint, atomCost: bigint): boolean {
+    const me = this.ctx.me, mg = this.ctx.mg;
+    if (this.newSilos.length === 0) return false;
+    if (gold - spent < atomCost + BigInt(this.ctx.p.bombReserve)) return false;
+    for (const s of this.newSilos) {
+      const tile = s.unit.tile();
+      if (!s.unit.isActive() || !s.owner.isAlive() || me.isFriendly(s.owner)) continue;
+      if ((this.bombed.get(tile) ?? 0) >= 1) continue;
+      const sams = s.owner.units(UnitType.SAMLauncher);
+      if (sams.some((sm) => mg.euclideanDistSquared(sm.tile(), tile) <= (mg.config().samRange(sm.level()) + 5) ** 2)) continue;
+      if (!this.clearOfFriends(tile, 32) || this.blastCollateral(tile, UnitType.AtomBomb, s.owner)) continue;
+      this.launch({ tile, value: 0, type: UnitType.AtomBomb, enemy: s.owner, cost: atomCost }, ticks);
+      if (this.lastBombTick !== ticks) continue; // out of every ready silo's range: try the next
+      this.newSilos = this.newSilos.filter((x) => x !== s);
+      this.lim.fire("bombPush", "silo");
+      this.ctx.log(`t${ticks} BOMB silo-kill ${s.owner.name()} at ${mg.x(tile)},${mg.y(tile)} (up ${ticks - s.at} ticks)`);
+      return true;
+    }
+    return false;
   }
   private lastFundLog = -1e9;
   private lastFundKey = "";
@@ -2014,9 +2141,12 @@ export class Military {
    *  any structure under it, is docked −100 relation and, if allied, betrayed): a bomb that would touch anyone but
    *  its target is refused. The sampled clearOfFriends misses a thin strip; this one is exact and runs only on a
    *  candidate about to become the pick. */
-  private bombSearch(enemies: Set<Player>, rich: boolean, allow: (type: UnitType) => boolean): BombPick | null {
+  private bombSearch(enemies: Set<Player>, rich: boolean, allow: (type: UnitType) => boolean, anchor: TileRef | null = null): BombPick | null {
     const atomCost = this.ctx.mg.config().unitInfo(UnitType.AtomBomb).cost(this.ctx.mg, this.ctx.me);
     const hCost = this.ctx.mg.config().unitInfo(UnitType.HydrogenBomb).cost(this.ctx.mg, this.ctx.me);
+    // `bombPush`: the pre-bomb prefers the cluster on OUR side — value per gold is divided by the manhattan distance
+    // from `anchor` (the shared-border midpoint) in units of BOMB_PUSH_NEAR tiles (≤ one unit is free)
+    const near = (t: TileRef) => anchor === null ? 1 : Math.max(1, (Math.abs(this.ctx.mg.x(t) - this.ctx.mg.x(anchor)) + Math.abs(this.ctx.mg.y(t) - this.ctx.mg.y(anchor))) / BOMB_PUSH_NEAR);
     let best: BombPick | null = null;
     for (const enemy of enemies) {
       const structures = enemy.units([UnitType.City, UnitType.Port, UnitType.Factory, UnitType.MissileSilo, UnitType.SAMLauncher, UnitType.DefensePost]);
@@ -2033,7 +2163,7 @@ export class Military {
           const r = this.ctx.mg.config().nukeMagnitudes(type).outer;
           let value = 0;
           for (const o of structures) if (this.ctx.mg.euclideanDistSquared(o.tile(), tile) <= r * r) value += (o.type() === UnitType.City ? 3 : o.type() === UnitType.MissileSilo || o.type() === UnitType.SAMLauncher ? 4 : 2) * o.level();
-          const perGold = value / Number(cost / 100_000n);
+          const perGold = value / Number(cost / 100_000n) / near(tile);
           if (value >= 4 && (best === null || perGold > best.value) && !this.blastCollateral(tile, type, enemy)) best = { tile, value: perGold, type, enemy, cost };
         }
       }
