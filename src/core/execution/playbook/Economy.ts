@@ -647,9 +647,32 @@ export class Economy {
                 idleAtCap)
             ? 1
             : 0; // v8 (silo at 4 cities, SAM per 5, warships early) cost 36 % of land: the ratios wait for the economy
-    const siloTarget = onRisk ? Math.max(baseSiloTarget, 2) : baseSiloTarget; // `samOnRisk`: the counter silo
+    const plainSiloTarget = onRisk ? Math.max(baseSiloTarget, 2) : baseSiloTarget; // `samOnRisk`: the counter silo
+    // `fastSilo` (tempo): the offensive-silo schedule — the first silo goes at rank ≤ 5 by tiles among non-bots
+    // (whichever of this and siloAtTick comes first; the port/factory gate is waived — the silo IS the play, it
+    // enables bombPush), and a second follows the first bomb-opened war (Military.bombWarOpened). The gold bar sits
+    // at the BUY — silo + a bomb + the 400k reserve, so the silo arrives with its first bomb affordable — and the
+    // siloReserve escrow below carries the bomb's price too (without it gold never pools: build() spends every
+    // pass, and a bar tested before the escrow starts is a chicken-and-egg). The 3000-tick floor (wantSilo) stays.
+    const fastFirst =
+      this.ctx.p.fastSilo && silos.length === 0 && this.rank() <= 5;
+    const fastSecond =
+      this.ctx.p.fastSilo &&
+      silos.length === 1 &&
+      this.military.bombWarOpened;
+    const siloTarget = Math.max(
+      plainSiloTarget,
+      fastFirst ? 1 : 0,
+      fastSecond ? 2 : 0,
+    );
     const wantSilo = silos.length < siloTarget && this.ctx.mg.ticks() >= 3000;
-    const siloReserve = wantSilo ? cost(UnitType.MissileSilo) + 400_000n : 0n;
+    const fastWant =
+      wantSilo && silos.length >= plainSiloTarget && (fastFirst || fastSecond); // the fast path alone wants it
+    const siloReserve = wantSilo
+      ? cost(UnitType.MissileSilo) +
+        (fastWant ? cost(UnitType.AtomBomb) : 0n) +
+        400_000n
+      : 0n;
     // 3. first three city levels
     if (cities < 3 && spare("city", gold, cost(UnitType.City))) {
       const tile = this.railInfillTile() ?? this.interiorTile(UnitType.City);
@@ -763,7 +786,10 @@ export class Economy {
     //    a second at twelve, a third at twenty; a level when a bomb target sat out of range
     if (
       wantSilo &&
-      gold >= cost(UnitType.MissileSilo) + (onRisk ? 0n : 400_000n)
+      gold >=
+        cost(UnitType.MissileSilo) +
+          (onRisk ? 0n : 400_000n) +
+          (fastWant ? cost(UnitType.AtomBomb) : 0n) // `fastSilo`: the fast silo waits for its first bomb's price too
     ) {
       if (onRisk && silos.length >= baseSiloTarget)
         this.lim.fire("samOnRisk", "silo", 300);
@@ -777,7 +803,19 @@ export class Economy {
                     this.ctx.mg.euclideanDistSquared(sl.tile(), t) > 50 * 50,
                 ) && me.canBuild(UnitType.MissileSilo, t) !== false,
             ) ?? null);
-      if (tile !== null && this.tryBuild(UnitType.MissileSilo, tile)) return;
+      if (tile !== null && this.tryBuild(UnitType.MissileSilo, tile)) {
+        // `fastSilo` liveness: the fast path alone wanted this silo (the plain target said no)
+        if (silos.length >= plainSiloTarget) {
+          if (silos.length === 0 && fastFirst) {
+            this.lim.fire("fastSilo", "early");
+            this.ctx.log(`t${ticks} SILO early (rank ${this.rank()})`);
+          } else if (silos.length === 1 && fastSecond) {
+            this.lim.fire("fastSilo", "second");
+            this.ctx.log(`t${ticks} SILO early (second, after the bomb war)`);
+          }
+        }
+        return;
+      }
     }
     if (
       this.military.bombOutOfRange >= 3 &&
