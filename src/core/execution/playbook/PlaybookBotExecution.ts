@@ -228,6 +228,8 @@ export class PlaybookBotExecution implements Execution {
   }
   private rules: { name: string; every: number; run: () => void }[] = [
     { name: "split", every: 200, run: () => this.military.watchSplit() },
+    // `thinGuard`: pinch watch — before expand/tribes so a widening click and the pinch tribe land in this pass
+    { name: "thin", every: 100, run: () => { if (this.p.thinGuard) this.military.thinGuard(); } },
     { name: "counter", every: 10, run: () => this.military.counterAttack() },
     // `boatDefense`: inbound transports / beachheads / tribe races — right after counter: a beachhead wave spends
     // through the same "counter" path and must outrank expand/wars for the pass's spendable
